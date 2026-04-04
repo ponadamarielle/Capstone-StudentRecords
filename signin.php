@@ -17,23 +17,32 @@
         $email = $_POST['email'];
         $pass = $_POST['password'];
 
-        $sql = "SELECT * FROM accounts WHERE email='$email' AND pass='$pass'";
+        $sql = "SELECT * FROM accounts WHERE email='$email'";
         $result = mysqli_query($conn, $sql);
 
         if(mysqli_num_rows($result) > 0){
             $row = mysqli_fetch_assoc($result);
 
-            $_SESSION['email'] = $row['email'];
-            $_SESSION['role'] = $row['role'];
-            $_SESSION['name'] = $row['name'];
+            if(password_verify($pass, $row['pass'])){
+                if($row['status'] !== 'Active') {
+                    $error = "Your account is inactive. Please contact admin.";
+                } else {
+                    $_SESSION['email'] = $row['email'];
+                    $_SESSION['role'] = $row['role'];
+                    $_SESSION['name'] = $row['name'];
 
-            if ($row['role'] == 'super admin') {
-                echo "<script>window.location.href='superadmin/dashboard.php';</script>";
-            } elseif ($row['role'] == 'Registrar') {
-                echo "<script>window.location.href='admin/admin.php';</script>";
+                    if ($row['role'] == 'Super Admin') {
+                        header("Location: superadmin/dashboard.php");
+                        exit();
+                    } elseif ($row['role'] == 'Registrar') {
+                        header("Location: admin/dashboard.php");
+                        exit();
+                    }
+                }
             } else {
-                $error = "Unknown role.";
+                $error = "Invalid Credentials";
             }
+
         } else {
             $error = "Invalid Credentials";
         }

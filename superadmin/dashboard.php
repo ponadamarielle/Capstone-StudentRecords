@@ -34,7 +34,7 @@ include 'navbar.php';
 </head>
 
 <body>
-    <div class="container mt-5 d-flex gap-5">
+    <div class="container mt-5 d-flex gap-5 justify-content-center">
     <div class="card custom-card">
         <div class="card-body">
         <h5 class="card-title">Total Students</h5>
