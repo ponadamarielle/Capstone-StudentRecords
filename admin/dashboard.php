@@ -93,8 +93,8 @@ include 'navbar.php';
         text-align: left;
     }
     .student-table th {
-        background-color: #800503;
-        color: white;
+        background-color: #ebebeb;
+        color: black;
     }
     .student-table td:last-child {
         text-align: center;

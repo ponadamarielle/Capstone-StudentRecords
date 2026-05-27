@@ -106,7 +106,7 @@
     <nav class="navbar navbar-expand-lg navbar">
     <div class="container-fluid">
         <a class="navbar-brand d-flex align-items-center" href="#">
-            <img src="pup_logo.png" alt="#" width="50" height="50" class="logo">
+            <img src="../logo.png" alt="PUP Logo" class="logo">
             <span class = "pup">PUP <span class="erecords">eRecords</span></span>
         </a>
 
@@ -118,7 +118,7 @@
         </ul>
 
         <ul class="navbar-nav ms-auto align-items-center">
-        <!-- Registrar info -->
+        <!-- Admin info -->
         <li class="nav-item d-flex flex-column text-start me-3">
           <span class="fw-bold text-white"><?php echo htmlspecialchars($userName)?></span>
           <small class="text-white-50"><?php echo htmlspecialchars($userRole)?></small>
@@ -132,9 +132,9 @@
 
         <!-- Dropdown Box -->
         <div class="dropdown-menu user-dropdown-menu p-3">
-            <a class="dropdown-item" href="#">Profile</a>
-            <hr class="dropdown-divider">
-            <a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#logoutModal">Sign Out</a>
+            <a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#logoutModal">
+                <i class="bi bi-box-arrow-right me-2"></i> Sign Out
+            </a>
         </div>
         </li>
     </div>

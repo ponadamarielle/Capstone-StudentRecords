@@ -36,7 +36,7 @@ if (isset($_POST['add_admin'])) {
     $pass = substr(str_shuffle('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'), 0, 8);
     $hashedPass = password_hash($pass, PASSWORD_DEFAULT);
 
-    $role = "Registrar";
+    $role = "Admin";
     $status = "Active";
 
     $sql = "INSERT INTO accounts (name, email, pass, role, status) 
@@ -84,7 +84,7 @@ if (isset($_POST['toggle_status'])) {
     $currentStatus = $_POST['current_status'];
     $newStatus = ($currentStatus === 'Active') ? 'Inactive' : 'Active';
 
-    $sql = "UPDATE accounts SET status='$newStatus' WHERE email='$email' AND role='Registrar'";
+    $sql = "UPDATE accounts SET status='$newStatus' WHERE email='$email' AND role='Admin'";
     mysqli_query($conn, $sql);
 }
 ?>
@@ -222,7 +222,7 @@ if (isset($_POST['toggle_status'])) {
     $filter = $_GET['status'] ?? 'all';
     $where = ($filter === 'active') ? "AND status='Active'" : (($filter === 'inactive') ? "AND status='Inactive'" : "");
 
-    $result = mysqli_query($conn, "SELECT name, email, status FROM accounts WHERE role='Registrar' $where");
+    $result = mysqli_query($conn, "SELECT name, email, status FROM accounts WHERE role='Admin' $where");
     while ($row = mysqli_fetch_assoc($result)) {
         $isActive = $row['status'] === 'Active';
         $btnClass = $isActive ? 'deactivate-btn' : 'activate-btn';
@@ -247,7 +247,7 @@ if (isset($_POST['toggle_status'])) {
     ?>
 </table>
 
-<!-- add registrar modal -->
+<!-- add admin -->
 <div class="modal fade" id="addStudentModal" tabindex="-1" aria-labelledby="addStudentModalLabel" aria-hidden="true">
   <div class="modal-dialog  modal-dialog-centered">
     <div class="modal-content">
