@@ -1,4 +1,13 @@
 <?php
+session_start();
+
+if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] !== 'Super Admin') {
+    header("Location: ../signin.php");
+    exit();
+}
+
+include 'navbar.php';
+
 //php mailer
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
@@ -13,9 +22,6 @@ $config = json_decode(file_get_contents($configPath), true);
 
 $gmailUser = $config['gmail_user'];
 $gmailAppPassword = $config['gmail_app_password'];
-
-session_start();
-include 'navbar.php';
 
 $DBHost = "localhost";
 $DBUser = "root";
@@ -38,6 +44,12 @@ if (isset($_POST['add_admin'])) {
 
     $role = "Admin";
     $status = "Active";
+
+    $sql = "SELECT id FROM accounts WHERE email = '$email'";
+    $checkResult = mysqli_query($conn, $sql);
+    if (mysqli_num_rows($checkResult) > 0) {
+        $error = "This email is already associated with an existing account.";
+    } else {
 
     $sql = "INSERT INTO accounts (name, email, pass, role, status) 
         VALUES ('$name', '$email', '$hashedPass', '$role', '$status')";
@@ -76,6 +88,7 @@ if (isset($_POST['add_admin'])) {
     } else {
         $error = "Could not create account: " . mysqli_error($conn);
     }
+    }
 }
 
 // toggle status
@@ -84,8 +97,21 @@ if (isset($_POST['toggle_status'])) {
     $currentStatus = $_POST['current_status'];
     $newStatus = ($currentStatus === 'Active') ? 'Inactive' : 'Active';
 
-    $sql = "UPDATE accounts SET status='$newStatus' WHERE email='$email' AND role='Admin'";
-    mysqli_query($conn, $sql);
+    if ($currentStatus === 'Active') {
+        $countSql = "SELECT COUNT(*) as cnt FROM accounts WHERE role='Admin' AND status='Active'";
+        $countResult = mysqli_query($conn, $countSql);
+        $countRow = mysqli_fetch_assoc($countResult);
+
+    if ($countRow['cnt'] <= 1) {
+        $toggleError = "Cannot deactivate the last active Admin account.";
+    } else {
+        $sql = "UPDATE accounts SET status='$newStatus' WHERE email='$email' AND role='Admin'";
+        mysqli_query($conn, $sql);
+    }
+    } else {
+        $sql = "UPDATE accounts SET status='$newStatus' WHERE email='$email' AND role='Admin'";
+        mysqli_query($conn, $sql);
+    }
 }
 ?>
 
@@ -256,6 +282,7 @@ if (isset($_POST['toggle_status'])) {
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
+
         <form name = "signin" method = "POST">
             <div class = "input-container">
             <div class = "form-floating mb-3">
@@ -267,6 +294,10 @@ if (isset($_POST['toggle_status'])) {
                 <input type="email" class="form-control" id="email" name="email" placeholder="email" required>
                 <label for="email">Email Address</label>
             </div>
+
+            <?php if (isset($error) && isset($_POST['add_admin'])): ?>
+                <div class="alert alert-danger"><?= $error ?></div>
+            <?php endif; ?>
             <button type="submit" name="add_admin" class="btn btn-custom w-100 mt-3">Create Account</button>
             </div>
         </form>
@@ -298,6 +329,21 @@ if (isset($_POST['toggle_status'])) {
   </div>
 </div>
 
+<!-- Toggle Error Modal -->
+<div class="modal fade" id="toggleErrorModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content text-center p-4">
+      <div class="modal-body mb-3">
+        <i class="bi bi-exclamation-triangle-fill text-danger fs-3 mb-2 d-block"></i>
+        <?= isset($toggleError) ? $toggleError : '' ?>
+      </div>
+      <div class="d-flex justify-content-center">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 document.getElementById('confirmToggleModal').addEventListener('show.bs.modal', function(e) {
     const btn = e.relatedTarget;
@@ -305,6 +351,16 @@ document.getElementById('confirmToggleModal').addEventListener('show.bs.modal', 
     document.getElementById('modalStatus').value = btn.getAttribute('data-status');
     document.getElementById('modalConfirmBtn').innerText = btn.getAttribute('data-label');
 });
+
+<?php if (isset($error) && isset($_POST['add_admin'])): ?>
+    var addModal = new bootstrap.Modal(document.getElementById('addStudentModal'));
+    addModal.show();
+<?php endif; ?>
+
+<?php if (isset($toggleError) && isset($_POST['toggle_status'])): ?>
+    var toggleErrorModal = new bootstrap.Modal(document.getElementById('toggleErrorModal'));
+    toggleErrorModal.show();
+<?php endif; ?>
 </script>
 </body>
 </html>

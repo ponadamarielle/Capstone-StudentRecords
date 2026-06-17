@@ -1,8 +1,13 @@
 <?php
 session_start();
 
-if (!isset($_SESSION['name']) || !isset($_SESSION['role'])) {
+if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] !== 'Admin') {
     header("Location: ../signin.php");
+    exit();
+}
+
+if (isset($_SESSION['is_first_login']) && $_SESSION['is_first_login'] == 1) {
+    header("Location: ../change_password.php");
     exit();
 }
 

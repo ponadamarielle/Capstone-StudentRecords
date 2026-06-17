@@ -159,7 +159,7 @@
 
         <div class="d-flex justify-content-center gap-2">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            <a href="../signin.php" class="btn btn-danger">Sign Out</a>
+            <a href="../logout.php" class="btn btn-danger">Sign Out</a>
         </div>
 
         </div>

@@ -14,8 +14,12 @@ if(!$conn) {
 }
 
 if($_SERVER['REQUEST_METHOD'] == 'POST'){
-    $email = $_POST['email'];
+    $email = trim($_POST['email']);
     $pass = $_POST['password'];
+
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $error = "Please enter a valid email address.";
+    } else {
 
     $sql = "SELECT * FROM accounts WHERE email='$email'";
     $result = mysqli_query($conn, $sql);
@@ -30,21 +34,28 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
                 $_SESSION['email'] = $row['email'];
                 $_SESSION['role'] = $row['role'];
                 $_SESSION['name'] = $row['name'];
+                $_SESSION['is_first_login'] = $row['is_first_login']; 
+
+                if($row['is_first_login'] == 1 && $row['role'] == 'Admin') {
+                    header("Location: change_password.php");
+                    exit();
+                }
 
                 if ($row['role'] == 'Super Admin') {
                     header("Location: superadmin/dashboard.php");
                     exit();
-                } elseif ($row['role'] == 'Registrar') {
+                } elseif ($row['role'] == 'Admin') {
                     header("Location: admin/dashboard.php");
                     exit();
                 }
             }
         } else {
-            $error = "Invalid Credentials";
+            $error = "Invalid email or password";
         }
 
     } else {
-        $error = "Invalid Credentials";
+        $error = "Invalid email or password";
+    }
     }
 }
 ?>
@@ -218,6 +229,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
                         name="email"
                         placeholder="Email"
                         value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>"
+                        pattern="[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+                        title="Please enter a valid email address"
                         required
                     >
                     <input
