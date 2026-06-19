@@ -1,0 +1,19 @@
+.custom-card {
+    width: 250px;
+    height: 150px;
+    padding-top: 15px;
+    padding-left: 10px;
+    border-radius: 15px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    transition: transform 0.3s;
+}
+.custom-card:hover {
+    transform: translateY(-5px);
+}
+.custom-card .card-title {
+    font-weight: bold;
+    color: #333;
+}
+.custom-card .card-text {
+    color: #555;
+}

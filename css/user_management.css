@@ -1,0 +1,93 @@
+.btn-add {
+    background-color: #2E2E2E;
+    color: #ffffff;
+    font-weight: 700;
+    text-align: center;
+    padding: 5px 35px; 
+    border: none;
+    margin-right: 50px;
+}
+.btn-add i {
+    margin-right: 10px;
+    color: #ffde59;
+}
+.admin-table {
+    width: 91%;         
+    margin: 20px auto;    
+    border-collapse: collapse;
+    font-size: 14px;   
+}
+.admin-table th, 
+.admin-table td {
+    border: 1px solid #ccc;
+    padding: 8px 12px;    
+    text-align: left;
+    border-right: none;
+    border-left: none; 
+}
+.admin-table th {
+    background-color: #808080;
+    color: white;
+    font-size: 15px;
+}
+.admin-table td {
+    background-color: #f9f9f9;
+}
+.deactivate-btn {
+    background-color: #2E2E2E;
+    color: white;
+    border: none;
+    padding: 5px 12px;
+    font-size: 13px;
+    border-radius: 5px;
+}
+#addStudentModal .btn-custom {
+    background-color: #2E2E2E; 
+    color: #ffffff;          
+    font-weight: 700;
+}
+#addStudentModal .btn-custom:hover {
+    background-color: #444444; 
+}
+.filter-tabs {
+    display: flex;
+    gap: 4px;
+    background: #f0f0f0;
+    padding: 4px;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+}
+.filter-tab {
+    padding: 6px 18px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    color: #555;
+}
+.filter-tab:hover { 
+    background: #ffde59; 
+    color: #2E2E2E; 
+}
+.filter-tab.active { 
+    background: #2E2E2E; 
+    color: white; 
+    font-weight: 600; 
+}
+.activate-btn {
+    background-color: white;
+    color: #2E2E2E;
+    border: 1px solid #2E2E2E;
+    padding: 5px 12px;
+    font-size: 13px;
+    border-radius: 5px;
+}
+.filter-add {
+    padding-top: 50px;
+    padding-left: 68px;
+    padding-right: 20px;
+}
+#confirmToggleModal .modal-dialog {
+    max-width: 350px;
+}

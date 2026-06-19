@@ -1,5 +1,13 @@
+<!DOCTYPE html>
 <?php
+include 'security_headers.php';
 session_start();
+
+// csrf token
+if (!isset($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
 $error = "";
 
 $DBHost = "localhost";
@@ -14,6 +22,15 @@ if(!$conn) {
 }
 
 if($_SERVER['REQUEST_METHOD'] == 'POST'){
+
+ if (
+    !isset($_POST['csrf_token']) ||
+    !isset($_SESSION['csrf_token']) ||
+    !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])
+) {
+    die("CSRF validation failed.");
+}
+
     $email = trim($_POST['email']);
     $pass = $_POST['password'];
 
@@ -29,7 +46,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
 
         if(password_verify($pass, $row['pass'])){
             if($row['status'] !== 'Active') {
-                $error = "Your account is inactive. Please contact admin.";
+                $error = "Your account is inactive. Please contact super admin.";
             } else {
                 $_SESSION['email'] = $row['email'];
                 $_SESSION['role'] = $row['role'];
@@ -59,154 +76,13 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
     }
 }
 ?>
-<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PUP Student Records</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
-
-    <style>
-        *, *::before, *::after {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body, html {
-            height: 100%;
-            font-family: 'Inter', sans-serif;
-        }
-
-        .bg-wrapper {
-            position: fixed;
-            inset: 0;
-            background: url('pupbinan.jpg') no-repeat center center / cover;
-            z-index: 0;
-        }
-
-        .bg-wrapper::after {
-            content: '';
-            position: absolute;
-            inset: 0;
-            background: rgba(0, 0, 0, 0.45);
-        }
-
-        .page-center {
-            position: relative;
-            z-index: 1;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 24px;
-        }
-
-        .login-card {
-            background: rgba(255, 255, 255, 0.92);
-            backdrop-filter: blur(8px);
-            -webkit-backdrop-filter: blur(8px);
-            border-radius: 12px;
-            padding: 48px 40px 44px;
-            width: 100%;
-            max-width: 400px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            text-align: center;
-        }
-
-        .brand-logo {
-            width: 80px;
-            height: 80px;
-            object-fit: contain;
-            margin-bottom: 4px;
-        }
-
-        .brand-name {
-            font-family: 'Poppins', sans-serif;
-            font-size: 25px;
-            font-weight: 700;
-            letter-spacing: -0.3px;
-            margin-top: 12px;
-        }
-
-        .brand-name .pup {
-            color: #1a1a2e;
-        }
-
-        .brand-name .erecords {
-            color: #800503;
-        }
-
-        .card-subtitle {
-            font-size: 12px;
-            color: #666;
-            margin-bottom: 28px;
-            font-weight: 400;
-            margin-top: 6px;
-        }
-
-        .form-control {
-            border: 1px solid #ddd;
-            border-radius: 6px;
-            padding: 12px 14px;
-            font-size: 14px;
-            color: #333;
-            background: #fff;
-            transition: border-color 0.2s;
-            height: auto;
-        }
-
-        .form-control::placeholder {
-            color: #aaa;
-            font-size: 13px;
-        }
-
-        .form-control:focus {
-            border-color: #800503;
-            box-shadow: 0 0 0 3px rgba(128, 5, 3, 0.1);
-            outline: none;
-        }
-
-        .input-gap {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            margin-bottom: 20px;
-        }
-
-        .btn-login {
-            width: 100%;
-            padding: 12px;
-            background: #800503;
-            color: #fff;
-            border: none;
-            border-radius: 6px;
-            font-size: 14px;
-            font-weight: 600;
-            letter-spacing: 1.2px;
-            text-transform: uppercase;
-            cursor: pointer;
-            transition: background 0.2s, transform 0.1s;
-        }
-
-        .btn-login:hover {
-            background: #6a0402;
-        }
-
-        .btn-login:active {
-            transform: scale(0.98);
-        }
-
-        .alert-danger {
-            font-size: 13px;
-            padding: 10px 14px;
-            border-radius: 6px;
-            margin-bottom: 14px;
-            text-align: left;
-        }
-    </style>
+    <link href="css/bootstrap.min.css" rel="stylesheet">
+    <link href="css/signin.css" rel="stylesheet">
 </head>
 <body>
 
@@ -215,13 +91,18 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
     <div class="page-center">
         <div class="login-card">
 
-            <img src="logo.png" class="brand-logo" alt="PUP Logo">
+            <img src="images/logo.png" class="brand-logo" alt="PUP Logo">
             <div class="brand-name">
                 <span class="pup">PUP </span><span class="erecords">eRecords</span>
             </div>
             <p class="card-subtitle">Sign in to your account</p>
 
             <form method="POST">
+            <input
+                type="hidden"
+                name="csrf_token"
+                value="<?php echo $_SESSION['csrf_token']; ?>"
+            >
                 <div class="input-gap">
                     <input
                         type="email"

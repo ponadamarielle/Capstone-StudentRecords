@@ -1,0 +1,100 @@
+.textNButton-row {
+    display: flex;    
+    justify-content: space-between;
+    align-items: flex-start; 
+}
+.body-title {
+    font-size: 20px;
+    font-family: "Cambria";
+    font-weight: 900;
+}
+.btn-add {
+    background-color: #800503;
+    color: #ffffff;
+    font-weight: 700;
+    text-align: center;
+    padding: 5px 35px; 
+    border: none;
+}
+.btn-add i {
+    margin-right: 10px;
+}
+.main-container{
+    display: flex;
+    flex-direction: column; 
+    gap: 15px;           
+    padding: 50px 60px;
+}
+.filter {
+    width: 100%;
+    padding: 7px 14px;
+    border: 2px solid #ccc;
+    border-radius: 5px;
+    background-color: white;
+    cursor: pointer;
+}
+.searchbar{
+    width: 600px;
+    padding: 10px 14px;
+    border: 2px solid #ccc;
+    border-right: none;
+    border-radius: 5px 0 0 5px;
+}
+.search-icon{
+    width: 50px;
+    padding: 10px 14px;
+    border: 2px solid #800503;
+    border-left: none;
+    border-radius: 0 5px 5px 0;
+    background-color: #800503;
+}
+.search-icon i {
+    font-size: 16px;
+    color: #ffffff;
+}
+.search-group {
+    display: flex;
+    align-items: center;
+}
+.add-filter{
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 30px;
+}
+.student-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 20px;
+}
+.student-table th, .student-table td {
+    border: 1px solid #ccc;
+    padding: 10px;
+    text-align: left;
+}
+.student-table th {
+    background-color: #ebebeb;
+    color: black;
+}
+.student-table td:last-child {
+    text-align: center;
+}
+.view-btn {
+    background-color: #800503;
+    color: #ffffff;
+    border: none;
+    align-items: center;
+    border-radius: 5px;
+    padding: 3px 10px;
+}
+.view-btn i {
+    color: #ffffff;
+    margin-right: 6px;
+}
+.status-fliter {
+    padding: 7px;
+    border: 2px solid #ccc;
+    border-radius: 5px;
+    background-color: white;
+    cursor: pointer;
+}

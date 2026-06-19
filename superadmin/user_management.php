@@ -1,12 +1,32 @@
+<!DOCTYPE html>
 <?php
+include '../security_headers.php';
 session_start();
+
+$envFile = __DIR__ . '/../.env';
+
+if (file_exists($envFile)) {
+    $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+
+    foreach ($lines as $line) {
+        if (strpos(trim($line), '#') === 0) continue;
+
+        list($key, $value) = explode('=', $line, 2);
+
+        $_ENV[trim($key)] = trim($value);
+        putenv(trim($key) . '=' . trim($value));
+    }
+}
+
+// csrf token
+if (!isset($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
 
 if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] !== 'Super Admin') {
     header("Location: ../signin.php");
     exit();
 }
-
-include 'navbar.php';
 
 //php mailer
 use PHPMailer\PHPMailer\PHPMailer;
@@ -16,12 +36,9 @@ require __DIR__ . '/../PHPMailer-7.0.1/src/PHPMailer.php';
 require __DIR__ . '/../PHPMailer-7.0.1/src/SMTP.php';
 require __DIR__ . '/../PHPMailer-7.0.1/src/Exception.php';
 
-// config.json
-$configPath = __DIR__ . '/config.json';
-$config = json_decode(file_get_contents($configPath), true);
-
-$gmailUser = $config['gmail_user'];
-$gmailAppPassword = $config['gmail_app_password'];
+// .env
+$gmailUser = $_ENV['GMAIL_USER'];
+$gmailAppPassword = $_ENV['GMAIL_APP_PASSWORD'];
 
 $DBHost = "localhost";
 $DBUser = "root";
@@ -36,8 +53,15 @@ if (!$conn) {
 // create account
 $pass = '';
 if (isset($_POST['add_admin'])) {
-    $name = $_POST['name'];
-    $email = $_POST['email'];
+    if (
+        !isset($_POST['csrf_token']) ||
+        !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])
+    ) {
+        die("CSRF validation failed.");
+    }
+
+    $name = trim($_POST['name']);
+    $email = trim($_POST['email']);
 
     $pass = substr(str_shuffle('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'), 0, 8);
     $hashedPass = password_hash($pass, PASSWORD_DEFAULT);
@@ -45,55 +69,66 @@ if (isset($_POST['add_admin'])) {
     $role = "Admin";
     $status = "Active";
 
-    $sql = "SELECT id FROM accounts WHERE email = '$email'";
-    $checkResult = mysqli_query($conn, $sql);
-    if (mysqli_num_rows($checkResult) > 0) {
+    $checkStmt = $conn->prepare("SELECT id FROM accounts WHERE email = ?");
+    $checkStmt->bind_param("s", $email);
+    $checkStmt->execute();
+    $checkStmt->store_result();
+
+    if ($checkStmt->num_rows > 0) {
         $error = "This email is already associated with an existing account.";
     } else {
+        $insertStmt = $conn->prepare("INSERT INTO accounts (name, email, pass, role, status) VALUES (?, ?, ?, ?, ?)");
+        $insertStmt->bind_param("sssss", $name, $email, $hashedPass, $role, $status);
 
-    $sql = "INSERT INTO accounts (name, email, pass, role, status) 
-        VALUES ('$name', '$email', '$hashedPass', '$role', '$status')";
+        if ($insertStmt->execute()) {
+            $success = true;
 
-    if (mysqli_query($conn, $sql)) {
-        $success = true;
+            // send gmail via PHPMailer
+            $mail = new PHPMailer(true);
+            try {
+                $mail->isSMTP();
+                $mail->Host = 'smtp.gmail.com';
+                $mail->SMTPAuth = true;
+                $mail->Username = $gmailUser;
+                $mail->Password = $gmailAppPassword;
+                $mail->SMTPSecure = 'tls';
+                $mail->Port = 587;
 
-        // send gmail via PHPMailer
-        $mail = new PHPMailer(true);
-        try {
-            $mail->isSMTP();
-            $mail->Host = 'smtp.gmail.com';
-            $mail->SMTPAuth = true;
-            $mail->Username = $gmailUser;
-            $mail->Password = $gmailAppPassword;  
-            $mail->SMTPSecure = 'tls';
-            $mail->Port = 587;
+                $mail->setFrom('pupbc.superadmin@gmail.com', 'PUP eRecords - Admin Module');
+                $mail->addAddress($email, $name);
 
-            $mail->setFrom('pupbc.superadmin@gmail.com', 'PUP eRecords - Admin Module');
-            $mail->addAddress($email, $name);
+                $refNumber = random_int(1000, 9999);
 
-            $refNumber = random_int(1000, 9999);
+                $mail->isHTML(true);
+                $mail->Subject = "PUP eRecords Admin Module Password [Ref: {$refNumber}]";
+                $mail->Body    = "
+                    <h3>Hi {$name}, below is your login credentials:</h3>
+                    <p><strong>Email:</strong> $email</p>
+                    <p><strong>Password:</strong> $pass</p>
+                ";
 
-            $mail->isHTML(true);
-            $mail->Subject = "PUP eRecords Admin Module Password [Ref: {$refNumber}]";
-            $mail->Body    = "
-                <h3>Hi {$name}, below is your login credentials:</h3>
-                <p><strong>Email:</strong> $email</p>
-                <p><strong>Password:</strong> $pass</p>
-            ";
-
-            $mail->send();
-        } catch (Exception $e) {
-            $error = "Email could not be sent: {$mail->ErrorInfo}";
+                $mail->send();
+            } catch (Exception $e) {
+                $error = "Email could not be sent: {$mail->ErrorInfo}";
+            }
+        } else {
+            $error = "Could not create account: " . $insertStmt->error;
         }
-    } else {
-        $error = "Could not create account: " . mysqli_error($conn);
     }
-    }
+    $checkStmt->close();
 }
 
 // toggle status
-if (isset($_POST['toggle_status'])) {
-    $email = $_POST['email'];
+if (isset($_POST['toggle_status']) && $_POST['toggle_status'] === '1') {
+
+    if (
+        !isset($_POST['csrf_token']) ||
+        !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])
+    ) {
+        die("CSRF validation failed.");
+    }
+
+    $email = trim($_POST['email']);
     $currentStatus = $_POST['current_status'];
     $newStatus = ($currentStatus === 'Active') ? 'Inactive' : 'Active';
 
@@ -102,131 +137,44 @@ if (isset($_POST['toggle_status'])) {
         $countResult = mysqli_query($conn, $countSql);
         $countRow = mysqli_fetch_assoc($countResult);
 
-    if ($countRow['cnt'] <= 1) {
-        $toggleError = "Cannot deactivate the last active Admin account.";
+        if ($countRow['cnt'] <= 1) {
+            $toggleError = "Cannot deactivate the last active Admin account.";
+        } else {
+            $stmt = $conn->prepare("UPDATE accounts SET status=? WHERE email=? AND role='Admin'");
+            $stmt->bind_param("ss", $newStatus, $email);
+            $stmt->execute();
+            $stmt->close();
+        }
     } else {
-        $sql = "UPDATE accounts SET status='$newStatus' WHERE email='$email' AND role='Admin'";
-        mysqli_query($conn, $sql);
-    }
-    } else {
-        $sql = "UPDATE accounts SET status='$newStatus' WHERE email='$email' AND role='Admin'";
-        mysqli_query($conn, $sql);
+        $stmt = $conn->prepare("UPDATE accounts SET status=? WHERE email=? AND role='Admin'");
+        $stmt->bind_param("ss", $newStatus, $email);
+        $stmt->execute();
+        $stmt->close();
     }
 }
 ?>
 
-<!DOCTYPE html>
 <html>
 <head>
     <title>User Management</title>
-
-    <style>
-    .btn-add {
-        background-color: #2E2E2E;
-        color: #ffffff;
-        font-weight: 700;
-        text-align: center;
-        padding: 5px 35px; 
-        border: none;
-        margin-right: 50px;
-    }
-    .btn-add i {
-        margin-right: 10px;
-        color: #ffde59;
-    }
-    .admin-table {
-        width: 91%;         
-        margin: 20px auto;    
-        border-collapse: collapse;
-        font-size: 14px;   
-    }
-    .admin-table th, 
-    .admin-table td {
-        border: 1px solid #ccc;
-        padding: 8px 12px;    
-        text-align: left;
-        border-right: none;
-        border-left: none; 
-    }
-    .admin-table th {
-        background-color: #808080;
-        color: white;
-        font-size: 15px;
-    }
-    .admin-table td {
-        background-color: #f9f9f9;
-    }
-    .deactivate-btn {
-        background-color: #2E2E2E;
-        color: white;
-        border: none;
-        padding: 5px 12px;
-        font-size: 13px;
-        border-radius: 5px;
-    }
-    #addStudentModal .btn-custom {
-        background-color: #2E2E2E; 
-        color: #ffffff;          
-        font-weight: 700;
-    }
-    #addStudentModal .btn-custom:hover {
-        background-color: #444444; 
-    }
-    .filter-tabs {
-        display: flex;
-        gap: 4px;
-        background: #f0f0f0;
-        padding: 4px;
-        border-radius: 8px;
-        border: 1px solid #ddd;
-    }
-    .filter-tab {
-        padding: 6px 18px;
-        border-radius: 6px;
-        font-size: 13px;
-        cursor: pointer;
-        border: none;
-        background: transparent;
-        color: #555;
-    }
-    .filter-tab:hover { 
-        background: #ffde59; 
-        color: #2E2E2E; 
-    }
-    .filter-tab.active { 
-        background: #2E2E2E; 
-        color: white; 
-        font-weight: 600; 
-    }
-    .activate-btn {
-        background-color: white;
-        color: #2E2E2E;
-        border: 1px solid #2E2E2E;
-        padding: 5px 12px;
-        font-size: 13px;
-        border-radius: 5px;
-    }
-    .filter-add {
-        padding-top: 50px;
-        padding-left: 68px;
-        padding-right: 20px;
-    }
-    #confirmToggleModal .modal-dialog {
-        max-width: 350px;
-    }
-    </style>
+    <link href="../css/bootstrap.min.css" rel="stylesheet">
+    <link href="../css/bootstrap-icons.css" rel="stylesheet">
+    <link href="../css/navbar-superadmin.css" rel="stylesheet">
+    <link href="../css/user_management.css" rel="stylesheet">
 </head>
-
 <body>
-    <div class="d-flex justify-content-between align-items-center filter-add">
+
+<?php include 'navbar.php'; ?>
+
+<div class="d-flex justify-content-between align-items-center filter-add">
     <!-- Filter Tabs -->
     <div class="filter-tabs">
         <button class="filter-tab <?= (!isset($_GET['status']) || $_GET['status'] == 'all') ? 'active' : '' ?>"
-            onclick="window.location='?status=all'">All</button>
+            data-filter="all">All</button>
         <button class="filter-tab <?= (isset($_GET['status']) && $_GET['status'] == 'active') ? 'active' : '' ?>"
-            onclick="window.location='?status=active'">Active</button>
+            data-filter="active">Active</button>
         <button class="filter-tab <?= (isset($_GET['status']) && $_GET['status'] == 'inactive') ? 'active' : '' ?>"
-            onclick="window.location='?status=inactive'">Inactive</button>
+            data-filter="inactive">Inactive</button>
     </div>
 
     <!-- ADD Button -->
@@ -235,8 +183,8 @@ if (isset($_POST['toggle_status'])) {
     </button>
 </div>
 
-    <!-- table -->
-    <table class="admin-table">
+<!-- table -->
+<table class="admin-table">
     <tr>
         <th>Name</th>
         <th>Email Address</th>
@@ -253,17 +201,20 @@ if (isset($_POST['toggle_status'])) {
         $isActive = $row['status'] === 'Active';
         $btnClass = $isActive ? 'deactivate-btn' : 'activate-btn';
         $btnLabel = $isActive ? 'Deactivate' : 'Activate';
+        $safeEmail = htmlspecialchars($row['email'], ENT_QUOTES);
+        $safeName = htmlspecialchars($row['name'], ENT_QUOTES);
+        $safeStatus = htmlspecialchars($row['status'], ENT_QUOTES);
 
         echo "<tr>
-        <td>{$row['name']}</td>
-        <td>{$row['email']}</td>
-        <td>{$row['status']}</td>
+        <td>{$safeName}</td>
+        <td>{$safeEmail}</td>
+        <td>{$safeStatus}</td>
         <td>
             <button class='$btnClass'
                 data-bs-toggle='modal'
                 data-bs-target='#confirmToggleModal'
-                data-email='{$row['email']}'
-                data-status='{$row['status']}'
+                data-email='{$safeEmail}'
+                data-status='{$safeStatus}'
                 data-label='$btnLabel'>
                 $btnLabel
             </button>
@@ -275,7 +226,7 @@ if (isset($_POST['toggle_status'])) {
 
 <!-- add admin -->
 <div class="modal fade" id="addStudentModal" tabindex="-1" aria-labelledby="addStudentModalLabel" aria-hidden="true">
-  <div class="modal-dialog  modal-dialog-centered">
+  <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
       <div class="modal-header">
         <h5 class="modal-title" id="addStudentModalLabel">Add new admin</h5>
@@ -283,20 +234,25 @@ if (isset($_POST['toggle_status'])) {
       </div>
       <div class="modal-body">
 
-        <form name = "signin" method = "POST">
-            <div class = "input-container">
-            <div class = "form-floating mb-3">
+        <form name="signin" method="POST" action="<?php echo htmlspecialchars($_SERVER['PHP_SELF']); ?>">
+        <input
+            type="hidden"
+            name="csrf_token"
+            value="<?php echo $_SESSION['csrf_token']; ?>"
+        >
+            <div class="input-container">
+            <div class="form-floating mb-3">
                 <input type="text" class="form-control" id="name" name="name" placeholder="name" required>
                 <label for="name">Name</label>
             </div>
 
-            <div class = "form-floating mb-3">
+            <div class="form-floating mb-3">
                 <input type="email" class="form-control" id="email" name="email" placeholder="email" required>
                 <label for="email">Email Address</label>
             </div>
 
             <?php if (isset($error) && isset($_POST['add_admin'])): ?>
-                <div class="alert alert-danger"><?= $error ?></div>
+                <div class="alert alert-danger"><?= htmlspecialchars($error) ?></div>
             <?php endif; ?>
             <button type="submit" name="add_admin" class="btn btn-custom w-100 mt-3">Create Account</button>
             </div>
@@ -315,13 +271,15 @@ if (isset($_POST['toggle_status'])) {
         Are you sure you want to change this account's status?
       </div>
 
-      <form method="POST">
+      <form method="POST" action="<?php echo htmlspecialchars($_SERVER['PHP_SELF']) . (isset($_GET['status']) ? '?status=' . htmlspecialchars($_GET['status']) : ''); ?>">
+        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
         <input type="hidden" name="email" id="modalEmail">
         <input type="hidden" name="current_status" id="modalStatus">
+        <input type="hidden" name="toggle_status" value="1">
 
         <div class="d-flex justify-content-center gap-2">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-          <button type="submit" name="toggle_status" class="btn btn-danger" id="modalConfirmBtn">Confirm</button>
+          <button type="submit" class="btn btn-danger" id="modalConfirmBtn">Confirm</button>
         </div>
       </form>
 
@@ -335,7 +293,7 @@ if (isset($_POST['toggle_status'])) {
     <div class="modal-content text-center p-4">
       <div class="modal-body mb-3">
         <i class="bi bi-exclamation-triangle-fill text-danger fs-3 mb-2 d-block"></i>
-        <?= isset($toggleError) ? $toggleError : '' ?>
+        <?= isset($toggleError) ? htmlspecialchars($toggleError) : '' ?>
       </div>
       <div class="d-flex justify-content-center">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
@@ -344,23 +302,10 @@ if (isset($_POST['toggle_status'])) {
   </div>
 </div>
 
-<script>
-document.getElementById('confirmToggleModal').addEventListener('show.bs.modal', function(e) {
-    const btn = e.relatedTarget;
-    document.getElementById('modalEmail').value = btn.getAttribute('data-email');
-    document.getElementById('modalStatus').value = btn.getAttribute('data-status');
-    document.getElementById('modalConfirmBtn').innerText = btn.getAttribute('data-label');
-});
-
-<?php if (isset($error) && isset($_POST['add_admin'])): ?>
-    var addModal = new bootstrap.Modal(document.getElementById('addStudentModal'));
-    addModal.show();
-<?php endif; ?>
-
-<?php if (isset($toggleError) && isset($_POST['toggle_status'])): ?>
-    var toggleErrorModal = new bootstrap.Modal(document.getElementById('toggleErrorModal'));
-    toggleErrorModal.show();
-<?php endif; ?>
-</script>
+<div id="jsFlags"
+    data-show-add-modal="<?= (isset($error) && isset($_POST['add_admin'])) ? 'true' : 'false' ?>"
+    data-show-toggle-error="<?= isset($toggleError) ? 'true' : 'false' ?>">
+</div>
+<script src="../js/user_management.js"></script>
 </body>
 </html>
