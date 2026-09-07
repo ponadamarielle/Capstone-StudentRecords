@@ -74,6 +74,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
     <title>PUP eRecords - Change Password</title>
     <link href="css/bootstrap.min.css" rel="stylesheet">
     <link href="css/bootstrap-icons.css" rel="stylesheet">
+    <link href="css/font.css" rel="stylesheet">
     <link href="css/change_password.css" rel="stylesheet">
 
 </head>

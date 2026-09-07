@@ -4,8 +4,9 @@
     $currentPage = basename($_SERVER['PHP_SELF']);
 ?>
 
-<link href="../css/navbar-admin.css" rel="stylesheet">
+<link href="../css/font.css" rel="stylesheet">
 <script src="../js/bootstrap.bundle.min.js"></script>
+<script src="../js/navbar-admin.js"></script>
 
 <nav class="navbar navbar-expand-lg navbar">
     <div class="container-fluid">
@@ -17,14 +18,14 @@
         <div class="collapse navbar-collapse" id="navbarMenu">
             <ul class="navbar-nav navbar-menu">
                 <li class="nav-item">
-                    <a class="nav-link <?php echo ($currentPage == 'dashboard.php') ? 'active' : ''; ?>" href="dashboard.php">Dashboard</a>
+                    <a class="nav-link <?php echo ($currentPage == 'student_directory.php') ? 'active' : ''; ?>" href="student_directory.php">Student Directory</a>
                 </li>
             </ul>
 
             <ul class="navbar-nav ms-auto align-items-center">
                 <li class="nav-item d-flex flex-column text-start me-3">
-                    <span class="fw-bold text-white"><?php echo htmlspecialchars($userName); ?></span>
-                    <small class="text-white-50"><?php echo htmlspecialchars($userRole); ?></small>
+                    <span class="fw-bold text-white navbar-username"><?php echo htmlspecialchars($userName); ?></span>
+                    <small class="text-white-50 navbar-role"><?php echo htmlspecialchars($userRole); ?></small>
                 </li>
 
                 <!-- Icons -->
@@ -33,12 +34,12 @@
                         <i class="bi bi-person-fill"></i>
                     </a>
 
-                    <!-- Dropdown Box -->
-                    <div class="dropdown-menu user-dropdown-menu p-3">
-                        <a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#logoutModal">
-                            <i class="bi bi-box-arrow-right me-2"></i> Sign Out
-                        </a>
-                    </div>
+                <!-- Dropdown Box -->
+                <div class="dropdown-menu user-dropdown-menu p-3">
+                    <a class="dropdown-item signout-link" href="#" data-bs-toggle="modal" data-bs-target="#logoutModal">
+                        <i class="bi bi-box-arrow-right me-2"></i> Sign Out
+                    </a>
+                </div>
                 </li>
             </ul>
         </div>

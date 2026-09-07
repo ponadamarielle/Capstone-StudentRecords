@@ -1,14 +1,16 @@
 .navbar {
-    background-color: #800503;
+    background-color: #800000;
 }
 .erecords {
+    font-family: "Poppins";
+    font-weight: bold;
     color: #ffde59;
-    font-weight: 700;
     font-size: 20px;
 }
 .pup {
+    font-family: "Poppins";
+    font-weight: bold;
     color: #ffffff;
-    font-weight: 700;
     font-size: 20px;
 }
 .nav-link {
@@ -22,6 +24,7 @@
     margin-left: 350px;
 }
 .nav-item a {
+    font-family: "Poppins";
     font-size: 16px;
     font-weight: 700;
     color: #ffffff;
@@ -30,6 +33,16 @@
     font-size: 30px;
     color: #ffffff;
     margin-right: 20px;
+}
+.navbar-username {
+    font-family: "Poppins";
+    font-size: 14px;
+}
+
+.navbar-role {
+    font-family: "Poppins";
+    font-weight: normal;
+    font-size: 12px;
 }
 .logo {
     width: 50px;
@@ -66,19 +79,27 @@
     border-radius: 10px;
 }
 .btn-danger {
-    background-color: #800503;
+    font-family: "Inter";
+    background-color: #800000;
     border: none;
 }
 .btn-danger:hover {
-    background-color: #a0060a;
+    background-color: #660403;
 }
 .btn-secondary {
-    background-color: #ccc;
-    border: none;
+    font-family: "Inter";
+    background-color: #000;
+    color: #ffffff;
+    border-color: #000;
 }
 .btn-secondary:hover {
-    background-color: #999;
+    background-color: #333333;
+    border-color: #333333;
 }
 #logoutModal .modal-dialog {
     max-width: 350px;
+}
+.signout-link {
+    font-family: "Inter";
+    font-size: 14px;
 }

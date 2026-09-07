@@ -62,7 +62,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
                     header("Location: superadmin/dashboard.php");
                     exit();
                 } elseif ($row['role'] == 'Admin') {
-                    header("Location: admin/dashboard.php");
+                    header("Location: admin/student_directory.php");
                     exit();
                 }
             }
@@ -82,6 +82,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PUP Student Records</title>
     <link href="css/bootstrap.min.css" rel="stylesheet">
+    <link href="css/font.css" rel="stylesheet">
     <link href="css/signin.css" rel="stylesheet">
 </head>
 <body>
