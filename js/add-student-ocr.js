@@ -158,8 +158,6 @@ document.addEventListener('DOMContentLoaded', function () {
                             file_path: data.file_path,
                             image_path: data.image_path || '',
                             ocr_text: '',
-                            drive_link: data.drive_link || '',
-                            drive_file_id: data.drive_file_id || '',
                         });
                     }
                     if (data.image_path) {
@@ -173,8 +171,6 @@ document.addEventListener('DOMContentLoaded', function () {
                     file_path: data.file_path,
                     image_path: data.image_path || '',
                     ocr_text: data.ocr_text,
-                    drive_link: data.drive_link || '',
-                    drive_file_id: data.drive_file_id || '',
                 });
 
                 uploadedDocuments[docIndex].appliedFields = populateFields(data.extracted);
@@ -230,19 +226,6 @@ document.addEventListener('DOMContentLoaded', function () {
             viewBtn.addEventListener('click', function () {
                 window.open(doc.file_path, '_blank');
             });
-        }
-
-        if (doc.drive_link) {
-            const driveBtn = document.createElement('button');
-            driveBtn.type = 'button';
-            driveBtn.className = 'btn btn-sm btn-outline-secondary';
-            driveBtn.title = 'View on Google Drive';
-            driveBtn.innerHTML = '<i class="bi bi-google"></i>';
-            driveBtn.addEventListener('click', function () {
-                window.open(doc.drive_link, '_blank');
-            });
-            const changeBtnRef = node.querySelector('.document-change-btn');
-            if (changeBtnRef) changeBtnRef.parentNode.insertBefore(driveBtn, changeBtnRef);
         }
 
         const changeBtn = node.querySelector('.document-change-btn');

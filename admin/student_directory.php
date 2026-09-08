@@ -51,12 +51,6 @@ define('TESSERACT_BIN', 'C:\\Program Files\\Tesseract-OCR\\tesseract.exe');
 
 loadEnv(__DIR__ . '/../.env');
 
-define('GOOGLE_OAUTH_CLIENT_ID', getenv('GOOGLE_OAUTH_CLIENT_ID') ?: '');
-define('GOOGLE_OAUTH_CLIENT_SECRET', getenv('GOOGLE_OAUTH_CLIENT_SECRET') ?: '');
-define('GOOGLE_OAUTH_REFRESH_TOKEN_FILE', getenv('GOOGLE_OAUTH_REFRESH_TOKEN_FILE') ?: 'C:\\xampp\\pupbc-erecords-secrets\\refresh-token.txt');
-define('GOOGLE_DRIVE_FOLDER_ID', getenv('GOOGLE_DRIVE_FOLDER_ID') ?: '');
-define('GOOGLE_DRIVE_ARCHIVE_FOLDER_ID', getenv('GOOGLE_DRIVE_ARCHIVE_FOLDER_ID') ?: '');
-
 $conn = mysqli_connect($DBHost, $DBUser, $DBPass, $DBName);
 
 if(!$conn) {
@@ -172,202 +166,6 @@ function handleOcrExtract()
 function base64UrlEncode($data)
 {
     return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
-}
-
-function getGoogleAccessToken()
-{
-    static $cachedToken = null;
-    static $cachedExpiry = 0;
-
-    $now = time();
-    if ($cachedToken && $now < $cachedExpiry - 60) {
-        return $cachedToken;
-    }
-
-    if (!file_exists(GOOGLE_OAUTH_REFRESH_TOKEN_FILE)) {
-        error_log('Google Drive: refresh token file not found at ' . GOOGLE_OAUTH_REFRESH_TOKEN_FILE . '. Visit google_authorize.php to authorize.');
-        return null;
-    }
-
-    $refreshToken = trim(file_get_contents(GOOGLE_OAUTH_REFRESH_TOKEN_FILE));
-    if ($refreshToken === '') {
-        error_log('Google Drive: refresh token file is empty. Visit google_authorize.php to authorize.');
-        return null;
-    }
-
-    $ch = curl_init('https://oauth2.googleapis.com/token');
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query([
-        'client_id'     => GOOGLE_OAUTH_CLIENT_ID,
-        'client_secret' => GOOGLE_OAUTH_CLIENT_SECRET,
-        'refresh_token' => $refreshToken,
-        'grant_type'    => 'refresh_token',
-    ]));
-    $response = curl_exec($ch);
-    $curlErr = curl_error($ch);
-    curl_close($ch);
-
-    if ($curlErr) {
-        error_log('Google Drive: token request cURL error: ' . $curlErr);
-        return null;
-    }
-
-    $data = json_decode($response, true);
-    if (empty($data['access_token'])) {
-        error_log('Google Drive: token request failed: ' . $response);
-        return null;
-    }
-
-    $cachedToken = $data['access_token'];
-    $cachedExpiry = $now + ($data['expires_in'] ?? 3600);
-    return $cachedToken;
-}
-
-function driveQueryEscape($value)
-{
-    return str_replace("'", "\\'", $value);
-}
-
-function findOrCreateDriveFolder($name, $parentId, $accessToken)
-{
-    $name = trim($name) !== '' ? trim($name) : 'Unspecified';
-
-    $query = "name = '" . driveQueryEscape($name) . "' and '" . $parentId . "' in parents "
-            . "and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
-    $searchUrl = 'https://www.googleapis.com/drive/v3/files?' . http_build_query([
-        'q'      => $query,
-        'fields' => 'files(id, name)',
-        'spaces' => 'drive',
-    ]);
-
-    $ch = curl_init($searchUrl);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Authorization: Bearer ' . $accessToken]);
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($httpCode === 200) {
-        $data = json_decode($response, true);
-        if (!empty($data['files'][0]['id'])) {
-            return $data['files'][0]['id'];
-        }
-    } else {
-        error_log('Google Drive: folder search failed for "' . $name . '": ' . $response);
-    }
-
-    $metadata = json_encode([
-        'name'     => $name,
-        'mimeType' => 'application/vnd.google-apps.folder',
-        'parents'  => [$parentId],
-    ]);
-
-    $ch = curl_init('https://www.googleapis.com/drive/v3/files?fields=id');
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        'Authorization: Bearer ' . $accessToken,
-        'Content-Type: application/json',
-    ]);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $metadata);
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($httpCode !== 200) {
-        error_log('Google Drive: folder create failed for "' . $name . '": ' . $response);
-        return null;
-    }
-
-    $data = json_decode($response, true);
-    return $data['id'] ?? null;
-}
-
-function getStudentDriveFolderId($course, $yearSection, $studentName, $studentNumber, $accessToken)
-{
-    if (!$accessToken || GOOGLE_DRIVE_FOLDER_ID === '') {
-        return null;
-    }
-
-    $courseFolderId = findOrCreateDriveFolder($course, GOOGLE_DRIVE_FOLDER_ID, $accessToken);
-    if (!$courseFolderId) {
-        return null;
-    }
-
-    $sectionFolderId = findOrCreateDriveFolder($yearSection, $courseFolderId, $accessToken);
-    if (!$sectionFolderId) {
-        return null;
-    }
-
-    $studentFolderName = trim($studentName . ' - ' . $studentNumber, ' -');
-    return findOrCreateDriveFolder($studentFolderName, $sectionFolderId, $accessToken);
-}
-
-function mimeTypeForExtension($ext)
-{
-    $map = ['jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png', 'pdf' => 'application/pdf'];
-    return $map[strtolower($ext)] ?? 'application/octet-stream';
-}
-
-function uploadFileToGoogleDrive($localFilePath, $fileName, $mimeType, $parentFolderId, $accessToken)
-{
-    if (!$parentFolderId) {
-        error_log('Google Drive: no target folder ID for upload of ' . $fileName);
-        return null;
-    }
-
-    if (!$accessToken) {
-        return null;
-    }
-
-    $fileContent = @file_get_contents($localFilePath);
-    if ($fileContent === false) {
-        error_log('Google Drive: could not read local file ' . $localFilePath);
-        return null;
-    }
-
-    $metadata = json_encode([
-        'name'    => $fileName,
-        'parents' => [$parentFolderId],
-    ]);
-
-    $boundary = 'pupbc_' . uniqid();
-    $body  = "--{$boundary}\r\n";
-    $body .= "Content-Type: application/json; charset=UTF-8\r\n\r\n";
-    $body .= $metadata . "\r\n";
-    $body .= "--{$boundary}\r\n";
-    $body .= "Content-Type: {$mimeType}\r\n\r\n";
-    $body .= $fileContent . "\r\n";
-    $body .= "--{$boundary}--";
-
-    $ch = curl_init('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink');
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        'Authorization: Bearer ' . $accessToken,
-        'Content-Type: multipart/related; boundary=' . $boundary,
-    ]);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
-    $response = curl_exec($ch);
-    $curlErr = curl_error($ch);
-    curl_close($ch);
-
-    if ($curlErr) {
-        error_log('Google Drive: upload cURL error: ' . $curlErr);
-        return null;
-    }
-
-    $data = json_decode($response, true);
-    if (empty($data['id'])) {
-        error_log('Google Drive: upload failed: ' . $response);
-        return null;
-    }
-
-    return [
-        'id'   => $data['id'],
-        'link' => $data['webViewLink'] ?? ('https://drive.google.com/file/d/' . $data['id'] . '/view'),
-    ];
 }
 
 function stripCommonOcrArtifacts($value)
@@ -697,11 +495,17 @@ function handleAddStudent($conn)
     }
 
     $sex              = trim($_POST['sex'] ?? '');
+    $sex              = ($sex === '') ? null : $sex;
     $dob              = trim($_POST['date_of_birth'] ?? '');
+    $dob              = ($dob === '') ? null : $dob;
     $placeOfBirth     = trim($_POST['place_of_birth'] ?? '');
+    $placeOfBirth     = ($placeOfBirth === '') ? null : $placeOfBirth;
     $address          = trim($_POST['address'] ?? '');
+    $address          = ($address === '') ? null : $address;
     $mobileNumber    = trim($_POST['mobile_number'] ?? '');
+    $mobileNumber    = ($mobileNumber === '') ? null : $mobileNumber;
     $email            = trim($_POST['email'] ?? '');
+    $email            = ($email === '') ? null : $email;
     $status           = 'active';
 
     $photoBinary = null;
@@ -758,15 +562,10 @@ function handleAddStudent($conn)
 
         if (count($documents) > 0) {
             $docSql = "INSERT INTO documents
-                       (student_id, document_type, file_name, file_path, drive_link, drive_file_id, added_by)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)";
+                       (student_id, document_type, file_name, file_path, added_by)
+                       VALUES (?, ?, ?, ?, ?)";
             $docStmt = mysqli_prepare($conn, $docSql);
             $addedBy = $_SESSION['name'] ?? '';
-
-            $driveAccessToken = getGoogleAccessToken();
-            $studentFolderId = $driveAccessToken
-                ? getStudentDriveFolderId($course, $yearSection, $name, $studentNumber, $driveAccessToken)
-                : null;
 
             foreach ($documents as $doc) {
                 $filePath     = $doc['file_path'] ?? '';
@@ -776,20 +575,9 @@ function handleAddStudent($conn)
                     continue;
                 }
 
-                $driveLink   = null;
-                $driveFileId = null;
-                if ($studentFolderId && is_file($filePath)) {
-                    $ext = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
-                    $driveResult = uploadFileToGoogleDrive(
-                        $filePath, $fileName, mimeTypeForExtension($ext), $studentFolderId, $driveAccessToken
-                    );
-                    $driveLink   = $driveResult['link'] ?? null;
-                    $driveFileId = $driveResult['id'] ?? null;
-                }
-
                 mysqli_stmt_bind_param(
-                    $docStmt, "issssss",
-                    $studentId, $documentType, $fileName, $filePath, $driveLink, $driveFileId, $addedBy
+                    $docStmt, "issss",
+                    $studentId, $documentType, $fileName, $filePath, $addedBy
                 );
                 mysqli_stmt_execute($docStmt);
             }
