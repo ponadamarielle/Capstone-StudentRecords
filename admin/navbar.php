@@ -15,10 +15,19 @@
             <span class="pup">PUP <span class="erecords">eRecords</span></span>
         </a>
 
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse"
+                data-bs-target="#navbarMenu" aria-controls="navbarMenu"
+                aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+
         <div class="collapse navbar-collapse" id="navbarMenu">
             <ul class="navbar-nav navbar-menu">
                 <li class="nav-item">
                     <a class="nav-link <?php echo ($currentPage == 'student_directory.php') ? 'active' : ''; ?>" href="student_directory.php">Student Directory</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link <?php echo ($currentPage == 'archive.php') ? 'active' : ''; ?>" href="archive.php">Archive</a>
                 </li>
             </ul>
 
@@ -30,7 +39,7 @@
 
                 <!-- Icons -->
                 <li class="nav-item dropdown me-3 user-dropdown">
-                    <a class="nav-link" href="#" id="userDropdown">
+                    <a class="nav-link" href="#" id="userDropdown" data-bs-toggle="dropdown" aria-expanded="false">
                         <i class="bi bi-person-fill"></i>
                     </a>
 

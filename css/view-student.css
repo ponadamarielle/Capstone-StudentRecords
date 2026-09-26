@@ -1,9 +1,7 @@
 .view-container {
     width: 100%;
     margin: 28px 0;
-    padding: 0 24px;
-    padding-left: 70px;
-    padding-right: 50px;
+    padding: 0 50px 0 70px;
     box-sizing: border-box;
 }
 .back-arrow {
@@ -77,54 +75,201 @@
     color: #000;
     border-color: #dee2e6 #dee2e6 #fff;
 }
-.tab-content {
+.view-details .tab-content {
     min-height: 480px;
     padding: 40px 48px !important;
     font-size: 1.1rem;
 }
-.tab-content p {
+.view-details .tab-content p {
     margin-bottom: 28px;
     line-height: 1.4;
+    overflow-wrap: anywhere;
 }
-.tab-content .row {
+.view-details .tab-content .row {
     row-gap: 0;
 }
-.tab-content .row > [class^="col-"] {
+.view-details .tab-content .row > [class^="col-"] {
     padding-right: 30px;
 }
 .view-actions {
     text-align: right;
     margin-top: 18px;
 }
-.upload-file-btn {
-    background-color: #7a0019;
-    color: #fff;
-    border: none;
-    padding: 10px 24px;
-    border-radius: 4px;
-    font-weight: 600;
-    letter-spacing: 0.03em;
+.arrow-add {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
 }
-.upload-file-btn:hover {
-    background-color: #5c0013;
-    color: #fff;
+.arrow-add .btn-add {
+    align-self: center;
 }
 .document-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 10px;
     border: 1px solid #dee2e6;
     border-radius: 6px;
     padding: 12px 16px;
 }
 .document-name {
     font-size: 0.95rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 .document-actions {
     display: flex;
+    flex-shrink: 0;
     gap: 6px;
 }
-.document-empty-state {
+.view-details .document-empty-state {
     text-align: center;
     padding: 40px 0;
+}
+#addRecordsModal .modal-body {
+    max-height: 70vh;
+    overflow-y: auto;
+}
+#addDocumentFeedback:empty {
+    display: none !important;
+}
+.document-preview-body {
+    overflow: auto;
+}
+.document-preview-body img {
+    display: block;
+    max-width: 100%;
+    margin: 0 auto;
+    padding: 12px;
+    box-sizing: border-box;
+}
+.document-preview-fallback {
+    padding: 16px;
+    font-family: "Inter";
+}
+body.is-resizing-preview {
+    user-select: none;
+    cursor: col-resize;
+}
+body.is-resizing-preview .view-container {
+    transition: none !important;
+}
+@media (min-width: 769px) {
+    body.has-document-preview:not(.modal-open) .view-container,
+    body.has-document-preview:not(.modal-open) .navbar {
+        width: calc(100% - var(--doc-preview-width));
+        transition: width 0.2s ease;
+    }
+}
+@media (max-width: 768px) {
+    .document-preview-resize-handle {
+        display: none;
+    }
+}
+@media (max-width: 1200px) {
+    .view-container {
+        padding-left: 56px;
+        padding-right: 32px;
+    }
+    .view-content {
+        gap: 32px;
+    }
+    .view-details .tab-content {
+        padding: 32px !important;
+    }
+}
+@media (max-width: 992px) {
+    .view-container {
+        padding-left: 40px;
+        padding-right: 24px;
+    }
+    .view-content {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 20px;
+    }
+    .view-sidebar {
+        flex: none;
+        width: 100%;
+        padding-top: 0;
+    }
+    .view-name {
+        white-space: normal;
+    }
+    .view-details {
+        flex: none;
+        width: 100%;
+    }
+    .view-details .tab-content {
+        min-height: 0;
+        height: auto;
+        max-height: none;
+        overflow-y: visible;
+        padding: 28px 24px !important;
+        font-size: 1rem;
+    }
+}
+@media (max-width: 768px) {
+    .view-container {
+        padding-left: 32px;
+        padding-right: 20px;
+    }
+    .view-details .tab-content .row > [class^="col-"] {
+        padding-right: calc(var(--bs-gutter-x, 1.5rem) * 0.5);
+    }
+    .view-details .tab-content p {
+        margin-bottom: 18px;
+    }
+}
+@media (max-width: 576px) {
+    .view-container {
+        margin: 16px 0;
+        padding: 0 14px;
+    }
+    .back-arrow {
+        margin-left: 0;
+        margin-bottom: 12px;
+        width: 36px;
+        height: 36px;
+        font-size: 1.4rem;
+    }
+    .arrow-add .btn-add {
+        padding: 6px 18px;
+        font-size: 0.9rem;
+    }
+    .view-photo {
+        width: 120px;
+        height: 120px;
+        margin-bottom: 12px;
+    }
+    .view-name {
+        font-size: 1rem;
+    }
+    .view-details .nav-tabs {
+        flex-wrap: nowrap;
+    }
+    .view-details .nav-tabs .nav-item {
+        flex: 1 1 0;
+    }
+    .view-details .nav-tabs .nav-link {
+        width: 100%;
+        padding: 10px 6px;
+        font-size: 0.9rem;
+        text-align: center;
+    }
+    .view-details .tab-content {
+        padding: 20px 16px !important;
+    }
+    .document-row {
+        padding: 10px 12px;
+    }
+    .document-actions .btn {
+        padding: 6px 10px;
+    }
+}
+body:has(#confirmDeleteDocModal.show) #addRecordsModal .modal-content {
+    filter: brightness(0.6);
+    transition: filter 0.15s ease;
 }

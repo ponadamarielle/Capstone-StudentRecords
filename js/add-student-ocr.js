@@ -1,25 +1,82 @@
 document.addEventListener('DOMContentLoaded', function () {
     const ACTIONS_URL = 'student_directory.php';
+    let studentPhotoSet = false;
+    let currentPhotoDocIndex = null;
+    let recordSaved = false;
 
-    let faceModelsLoaded = false;
-    let faceModelsPromise = null;
+    const previewPanel = document.getElementById('documentPreviewPanel');
+    const previewFrame = document.getElementById('documentPreviewFrame');
+    const previewTitle = document.getElementById('documentPreviewTitle');
+    const previewCloseBtn = document.getElementById('documentPreviewCloseBtn');
+    const previewExpandBtn = document.getElementById('documentPreviewExpandBtn');
+    const previewResizeHandle = document.getElementById('documentPreviewResizeHandle');
+    let currentPreviewFilePath = '';
 
-    function loadFaceModels() {
-        if (faceModelsPromise) return faceModelsPromise;
-        faceModelsPromise = (async () => {
-            try {
-                await faceapi.tf.setBackend('cpu');
-                await faceapi.tf.ready();
-            } catch (e) {
-                console.warn('Could not force CPU backend, continuing with default:', e);
-            }
-            await faceapi.nets.tinyFaceDetector.loadFromUri('../js/models');
-            faceModelsLoaded = true;
-        })();
-        return faceModelsPromise;
+    if (previewResizeHandle && previewPanel) {
+        let dragging = false;
+
+        previewResizeHandle.addEventListener('mousedown', function (e) {
+            dragging = true;
+            previewPanel.classList.add('is-resizing');
+            document.body.classList.add('is-resizing-preview');
+            document.body.style.userSelect = 'none';
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', function (e) {
+            if (!dragging) return;
+            const newWidth = window.innerWidth - e.clientX;
+            const clamped = Math.min(Math.max(newWidth, 320), Math.min(900, window.innerWidth - 300));
+            document.documentElement.style.setProperty('--doc-preview-width', clamped + 'px');
+        });
+
+        document.addEventListener('mouseup', function () {
+            if (!dragging) return;
+            dragging = false;
+            previewPanel.classList.remove('is-resizing');
+            document.body.classList.remove('is-resizing-preview');
+            document.body.style.userSelect = '';
+        });
     }
 
-    loadFaceModels();
+    if (previewExpandBtn) {
+        previewExpandBtn.addEventListener('click', function () {
+            if (currentPreviewFilePath) {
+                window.open(currentPreviewFilePath, '_blank');
+            }
+        });
+    }
+
+    function openDocumentPreview(filePath, fileName) {
+        if (!previewPanel || !previewFrame) {
+            window.open(filePath, '_blank');
+            return;
+        }
+        currentPreviewFilePath = filePath;
+        previewFrame.src = filePath + (filePath.indexOf('#') === -1 ? '#view=FitH' : '');
+        if (previewTitle) previewTitle.textContent = fileName || 'Document Preview';
+        previewPanel.classList.add('is-open');
+        previewPanel.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('has-document-preview');
+    }
+
+    function closeDocumentPreview() {
+        if (!previewPanel || !previewFrame) return;
+        previewPanel.classList.remove('is-open');
+        previewPanel.setAttribute('aria-hidden', 'true');
+        previewFrame.src = 'about:blank';
+        currentPreviewFilePath = '';
+        document.body.classList.remove('has-document-preview');
+    }
+
+    if (previewCloseBtn) {
+        previewCloseBtn.addEventListener('click', closeDocumentPreview);
+    }
+
+    const addRecordsModalElForPreview = document.getElementById('addRecordsModal');
+    if (addRecordsModalElForPreview) {
+        addRecordsModalElForPreview.addEventListener('hidden.bs.modal', closeDocumentPreview);
+    }
 
     function setStudentPhoto(dataUrl) {
         const container = document.getElementById('photoContainer');
@@ -34,6 +91,7 @@ document.addEventListener('DOMContentLoaded', function () {
             document.getElementById('addStudentForm').appendChild(hidden);
         }
         hidden.value = dataUrl;
+        studentPhotoSet = true;
 
         const replaceBtnLabel = document.getElementById('replacePhotoBtn');
         if (replaceBtnLabel) {
@@ -41,57 +99,21 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    async function extractFaceFromScan(imageUrl) {
-        try {
-            await loadFaceModels();
+    function resetStudentPhoto() {
+        const container = document.getElementById('photoContainer');
+        container.innerHTML = `<div class="photo-placeholder">
+                        <i class="bi bi-person-circle"></i>
+                        <span>Student Photo</span>
+                    </div>`;
 
-            const img = await faceapi.fetchImage(imageUrl);
-            const detection = await faceapi.detectSingleFace(
-                img,
-                new faceapi.TinyFaceDetectorOptions()
-            );
+        const hidden = document.getElementById('photoData');
+        if (hidden) hidden.value = '';
+        studentPhotoSet = false;
+        currentPhotoDocIndex = null;
 
-            if (!detection) {
-                console.warn('No face detected in scanned document.');
-                return null;
-            }
-
-            const box = detection.box;
-            const cx = box.x + box.width / 2;
-            const cy = box.y + box.height / 2;
-
-            const cropW = box.width * 1.55;
-            const cropH = box.height * 2.00;
-            const topFraction = 0.22;
-            const leftFraction = 0.44;
-
-            
-            let sx = cx - cropW * leftFraction;
-            let sy = cy - cropH * topFraction;
-
-            sx = Math.max(0, Math.min(sx, img.width - cropW));
-            sy = Math.max(0, Math.min(sy, img.height - cropH));
-            const sw = Math.min(cropW, img.width - sx);
-            const sh = Math.min(cropH, img.height - sy);
-
-            const canvas = document.createElement('canvas');
-            canvas.width = 300;
-            canvas.height = 300;
-            const ctx = canvas.getContext('2d');
-
-            const scale = Math.max(300 / sw, 300 / sh);
-            const drawW = sw * scale;
-            const drawH = sh * scale;
-            const dx = (300 - drawW) / 2;
-            const dy = (300 - drawH) / 2;
-            ctx.drawImage(img, sx, sy, sw, sh, dx, dy, drawW, drawH);
-
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-            setStudentPhoto(dataUrl);
-            return dataUrl;
-        } catch (err) {
-            console.error('Face extraction failed:', err);
-            return null;
+        const replaceBtnLabel = document.getElementById('replacePhotoBtn');
+        if (replaceBtnLabel) {
+            replaceBtnLabel.innerHTML = '<i class="bi bi-upload"></i> Upload Photo';
         }
     }
 
@@ -126,11 +148,31 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    function isPdfFile(file) {
+        const extOk = /\.pdf$/i.test(file.name);
+        const typeOk = !file.type || file.type === 'application/pdf';
+        return extOk && typeOk;
+    }
+
     if (uploadInput) {
         uploadInput.addEventListener('change', function () {
             const file = uploadInput.files[0];
             if (!file) return;
-            uploadAndExtract(file);
+
+            if (!isPdfFile(file)) {
+                setStatus('Only PDF files are allowed.', 'error');
+                uploadInput.value = '';
+                pendingReplaceIndex = null;
+                return;
+            }
+
+            if (pendingReplaceIndex !== null) {
+                const indexToReplace = pendingReplaceIndex;
+                pendingReplaceIndex = null;
+                replaceDocument(indexToReplace, file);
+            } else {
+                uploadAndExtract(file);
+            }
             uploadInput.value = '';
         });
     }
@@ -152,37 +194,118 @@ document.addEventListener('DOMContentLoaded', function () {
 
                 if (!data.success) {
                     setStatus(data.message || 'OCR extraction failed.', 'error');
+                    let docIndex = null;
                     if (data.file_path) {
-                        addDocument({
+                        docIndex = addDocument({
                             file_name: data.file_name || file.name,
                             file_path: data.file_path,
                             image_path: data.image_path || '',
+                            photo_path: data.photo_path || '',
+                            doc_type: data.doc_type || null,
                             ocr_text: '',
                         });
                     }
-                    if (data.image_path) {
-                        extractFaceFromScan(data.image_path);
+                    if (data.photo_path && !studentPhotoSet) {
+                        setStudentPhoto(data.photo_path);
+                        currentPhotoDocIndex = docIndex;
                     }
                     return;
                 }
+
+                const docType = data.doc_type || null;
 
                 const docIndex = addDocument({
                     file_name: data.file_name,
                     file_path: data.file_path,
                     image_path: data.image_path || '',
+                    photo_path: data.photo_path || '',
+                    doc_type: docType,
                     ocr_text: data.ocr_text,
                 });
 
                 uploadedDocuments[docIndex].appliedFields = populateFields(data.extracted);
                 setStatus('Please review both tabs before saving.', 'success');
 
-                if (data.image_path) {
-                    extractFaceFromScan(data.image_path);
+                if (data.photo_path && !studentPhotoSet) {
+                    setStudentPhoto(data.photo_path);
+                    currentPhotoDocIndex = docIndex;
                 }
             })
             .catch((err) => {
                 toggleSaveDisabled(false);
                 setStatus('Upload failed: ' + err.message, 'error');
+            });
+    }
+
+    function replaceDocument(index, file) {
+        const oldDoc = uploadedDocuments[index];
+        if (!oldDoc) return;
+
+        setStatus('Uploading replacement... please wait.', 'loading');
+        toggleSaveDisabled(true);
+
+        const formData = new FormData();
+        formData.append('document', file);
+
+        fetch(ACTIONS_URL + '?action=ocr_extract', {
+            method: 'POST',
+            body: formData,
+        })
+            .then((res) => res.json())
+            .then((data) => {
+                toggleSaveDisabled(false);
+
+                if (!data.success && !data.file_path) {
+                    setStatus(data.message || 'OCR extraction failed.', 'error');
+                    return;
+                }
+
+                const docType = data.doc_type || null;
+                deleteFileSet(oldDoc);
+
+                if (oldDoc.appliedFields && oldDoc.appliedFields.length) {
+                    oldDoc.appliedFields.forEach(function (name) {
+                        const el = form.elements[name];
+                        if (el) el.value = '';
+                    });
+                    if (oldDoc.appliedFields.indexOf('student_number') !== -1) {
+                        numberIsDuplicate = false;
+                        if (numberFeedback) numberFeedback.textContent = '';
+                        if (studentNumberInput) studentNumberInput.classList.remove('is-invalid');
+                    }
+                }
+
+                const wasStudentPhotoSource = (currentPhotoDocIndex === index);
+
+                const newDoc = {
+                    file_name: data.file_name || file.name,
+                    file_path: data.file_path,
+                    image_path: data.image_path || '',
+                    photo_path: data.photo_path || '',
+                    doc_type: docType,
+                    ocr_text: data.ocr_text || '',
+                };
+                newDoc.appliedFields = data.success ? populateFields(data.extracted) : [];
+
+                uploadedDocuments[index] = newDoc;
+                syncDocumentsHiddenField();
+                rerenderDocumentList();
+
+                if (newDoc.photo_path && (wasStudentPhotoSource || !studentPhotoSet)) {
+                    setStudentPhoto(newDoc.photo_path);
+                    currentPhotoDocIndex = index;
+                } else if (wasStudentPhotoSource && !newDoc.photo_path) {
+                    resetStudentPhoto();
+                }
+
+                setStatus(
+                    data.success ? 'Document replaced. Please review both tabs before saving.' : (data.message || 'Replaced, but OCR could not read the new file.'),
+                    data.success ? 'success' : 'error'
+                );
+            })
+            .catch((err) => {
+                toggleSaveDisabled(false);
+                setStatus('Replace failed: ' + err.message, 'error');
             });
     }
 
@@ -222,9 +345,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const viewBtn = node.querySelector('.document-view-btn');
         if (viewBtn) {
-            viewBtn.title = 'View local file';
+            viewBtn.title = 'Preview document';
             viewBtn.addEventListener('click', function () {
-                window.open(doc.file_path, '_blank');
+                openDocumentPreview(doc.file_path, doc.file_name);
             });
         }
 
@@ -251,18 +374,27 @@ document.addEventListener('DOMContentLoaded', function () {
         const doc = uploadedDocuments[index];
         if (!doc) return;
 
-        if (doc.file_path || doc.image_path) {
+        setStatus('', '');
+
+        if (doc.file_path || doc.image_path || doc.photo_path) {
             const formData = new FormData();
             if (doc.file_path) formData.append('file_path', doc.file_path);
             if (doc.image_path && doc.image_path !== doc.file_path) {
                 formData.append('image_path', doc.image_path);
             }
+            if (doc.photo_path) formData.append('photo_path', doc.photo_path);
             fetch(ACTIONS_URL + '?action=delete_document', {
                 method: 'POST',
                 body: formData,
             }).catch(function (err) {
                 console.error('Failed to delete file:', err);
             });
+        }
+
+        if (index === currentPhotoDocIndex) {
+            resetStudentPhoto();
+        } else if (currentPhotoDocIndex !== null && currentPhotoDocIndex > index) {
+            currentPhotoDocIndex -= 1;
         }
 
         if (doc.appliedFields && doc.appliedFields.length) {
@@ -460,6 +592,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     return;
                 }
                 setStatus('Saved!', 'success');
+                recordSaved = true;
                 window.location.reload();
             })
             .catch((err) => {
@@ -486,6 +619,41 @@ document.addEventListener('DOMContentLoaded', function () {
             };
             reader.readAsDataURL(file);
             replacePhotoInput.value = '';
+        });
+    }
+
+    function deleteFileSet(doc) {
+        if (!doc || (!doc.file_path && !doc.image_path && !doc.photo_path)) return;
+        const formData = new FormData();
+        if (doc.file_path) formData.append('file_path', doc.file_path);
+        if (doc.image_path && doc.image_path !== doc.file_path) {
+            formData.append('image_path', doc.image_path);
+        }
+        if (doc.photo_path) formData.append('photo_path', doc.photo_path);
+        fetch(ACTIONS_URL + '?action=delete_document', {
+            method: 'POST',
+            body: formData,
+        }).catch(function (err) {
+            console.error('Failed to delete file:', err);
+        });
+    }
+
+    const addRecordsModalEl = document.getElementById('addRecordsModal');
+    if (addRecordsModalEl) {
+        addRecordsModalEl.addEventListener('hidden.bs.modal', function () {
+            if (!recordSaved) {
+                uploadedDocuments.forEach(deleteFileSet);
+                uploadedDocuments = [];
+                syncDocumentsHiddenField();
+                rerenderDocumentList();
+                resetStudentPhoto();
+                form.reset();
+                clearRequiredFieldErrors();
+                numberIsDuplicate = false;
+                if (numberFeedback) numberFeedback.textContent = '';
+                setStatus('', '');
+            }
+            recordSaved = false;
         });
     }
 });

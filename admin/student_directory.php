@@ -1,6 +1,7 @@
 <?php
 include '../security_headers.php';
 session_start();
+require_once __DIR__ . '/course_catalog.php';
 
 function loadEnv($path)
 {
@@ -47,7 +48,6 @@ $DBPass = "";
 $DBName = "db_pup_eRecords";
 
 define('PDFTOPPM_BIN', 'C:\\xampp\\htdocs\\CAPSTONE\\poppler-26.02.0\\Library\\bin\\pdftoppm.exe');
-define('TESSERACT_BIN', 'C:\\Program Files\\Tesseract-OCR\\tesseract.exe');
 
 loadEnv(__DIR__ . '/../.env');
 
@@ -64,6 +64,7 @@ if(!$conn) {
 
 if ($isAjaxAction) {
     header('Content-Type: application/json');
+    ini_set('display_errors', '0');
 
     switch ($action) {
         case 'ocr_extract':
@@ -87,6 +88,310 @@ if ($isAjaxAction) {
     exit();
 }
 
+function detectDocumentTypeFromText($text)
+{
+    if (preg_match('/health\s*information\s*form/i', $text)) {
+        return 'health_information_form';
+    }
+    if (preg_match('/sar[\s\-]*form|confirmation\s*slip/i', $text)) {
+        return 'sar_form';
+    }
+    return null;
+}
+
+function extractIdPhoto($pdfPath, $docType)
+{
+    static $idPhotoBoxes = [
+        'sar_form' => ['x' => 1890, 'y' => 390, 'width' => 600, 'height' => 600],
+        'health_information_form' => ['x' => 1845, 'y' => 50, 'width' => 540, 'height' => 580],
+    ];
+
+    if (!isset($idPhotoBoxes[$docType])) {
+        return null;
+    }
+    $box = $idPhotoBoxes[$docType];
+
+    $photoDir = '../uploads/photos/';
+    if (!is_dir($photoDir)) {
+        mkdir($photoDir, 0755, true);
+    }
+    $photoBase = $photoDir . uniqid('photo_', true);
+
+    $cmd = escapeshellarg(PDFTOPPM_BIN)
+        . ' -jpeg -r 300 -f 1 -l 1'
+        . ' -x ' . escapeshellarg($box['x'])
+        . ' -y ' . escapeshellarg($box['y'])
+        . ' -W ' . escapeshellarg($box['width'])
+        . ' -H ' . escapeshellarg($box['height'])
+        . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($photoBase) . ' 2>&1';
+    exec($cmd, $cmdOut, $cmdCode);
+
+    $generated = $photoBase . '-1.jpg';
+    if (!file_exists($generated)) {
+        $generated = $photoBase . '.jpg';
+    }
+
+    if (!file_exists($generated)) {
+        return null;
+    }
+
+    if (!cropLooksLikePersonPhoto($pdfPath, $box)) {
+        @unlink($generated);
+        return null;
+    }
+
+    return $generated;
+}
+
+function readPpmPixels($path)
+{
+    $data = @file_get_contents($path);
+    if ($data === false || strlen($data) < 2 || substr($data, 0, 2) !== 'P6') {
+        return null;
+    }
+
+    $pos = 2;
+    $len = strlen($data);
+    $tokens = [];
+
+    while (count($tokens) < 3 && $pos < $len) {
+        while ($pos < $len && ctype_space($data[$pos])) {
+            $pos++;
+        }
+        if ($pos < $len && $data[$pos] === '#') {
+            while ($pos < $len && $data[$pos] !== "\n") {
+                $pos++;
+            }
+            continue;
+        }
+        $start = $pos;
+        while ($pos < $len && !ctype_space($data[$pos])) {
+            $pos++;
+        }
+        if ($pos > $start) {
+            $tokens[] = substr($data, $start, $pos - $start);
+        }
+    }
+
+    if (count($tokens) < 3) {
+        return null;
+    }
+
+    $pos++;
+
+    $width = (int) $tokens[0];
+    $height = (int) $tokens[1];
+    if ($width <= 0 || $height <= 0) {
+        return null;
+    }
+
+    return ['width' => $width, 'height' => $height, 'data' => substr($data, $pos)];
+}
+
+function cropLooksLikePersonPhoto($pdfPath, $box, $minSkinRatio = 0.04)
+{
+    $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('ppmcheck_', true);
+
+    $cmd = escapeshellarg(PDFTOPPM_BIN)
+        . ' -r 300 -f 1 -l 1'
+        . ' -x ' . escapeshellarg($box['x'])
+        . ' -y ' . escapeshellarg($box['y'])
+        . ' -W ' . escapeshellarg($box['width'])
+        . ' -H ' . escapeshellarg($box['height'])
+        . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($tmpBase) . ' 2>&1';
+    exec($cmd, $cmdOut, $cmdCode);
+
+    $generated = $tmpBase . '-1.ppm';
+    if (!file_exists($generated)) {
+        $generated = $tmpBase . '.ppm';
+    }
+    if (!file_exists($generated)) {
+        return true;
+    }
+
+    $ppm = readPpmPixels($generated);
+    @unlink($generated);
+
+    if ($ppm === null) {
+        return true;
+    }
+
+    $totalPixels = $ppm['width'] * $ppm['height'];
+    $bytes = $ppm['data'];
+    if ($totalPixels <= 0 || strlen($bytes) < $totalPixels * 3) {
+        return true;
+    }
+
+    $step = max(1, (int) floor($totalPixels / 6000));
+    $skinCount = 0;
+    $sampleCount = 0;
+
+    for ($i = 0; $i < $totalPixels; $i += $step) {
+        $offset = $i * 3;
+        $r = ord($bytes[$offset]);
+        $g = ord($bytes[$offset + 1]);
+        $b = ord($bytes[$offset + 2]);
+
+        $sampleCount++;
+
+        $maxC = max($r, $g, $b);
+        $minC = min($r, $g, $b);
+        $isSkin = $r > 95 && $g > 40 && $b > 20
+            && ($maxC - $minC) > 15
+            && abs($r - $g) > 15
+            && $r > $g && $r > $b;
+
+        if ($isSkin) {
+            $skinCount++;
+        }
+    }
+
+    if ($sampleCount === 0) {
+        return false;
+    }
+
+    return ($skinCount / $sampleCount) >= $minSkinRatio;
+}
+
+function callAzureVisionOcr($imagePath)
+{
+    $apiKey = getenv('AZURE_VISION_KEY');
+    $endpoint = rtrim(getenv('AZURE_VISION_ENDPOINT') ?: '', '/');
+    if (!$apiKey || !$endpoint) {
+        error_log('AZURE_VISION_KEY or AZURE_VISION_ENDPOINT not set in .env — skipping Azure OCR.');
+        return null;
+    }
+
+    $imageData = @file_get_contents($imagePath);
+    if ($imageData === false) {
+        return null;
+    }
+
+    $submitUrl = $endpoint . '/vision/v3.2/read/analyze';
+    $ch = curl_init($submitUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HEADER         => true,
+        CURLOPT_HTTPHEADER     => [
+            'Content-Type: application/octet-stream',
+            'Ocp-Apim-Subscription-Key: ' . $apiKey,
+        ],
+        CURLOPT_POSTFIELDS => $imageData,
+        CURLOPT_TIMEOUT    => 30,
+    ]);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($response === false || $httpCode !== 202) {
+        error_log('Azure Read API submit failed, HTTP ' . $httpCode . ': ' . $response);
+        return null;
+    }
+
+    if (!preg_match('/Operation-Location:\s*(\S+)/i', $response, $m)) {
+        error_log('Azure Read API: no Operation-Location header returned.');
+        return null;
+    }
+    $operationUrl = trim($m[1]);
+
+    for ($attempt = 0; $attempt < 15; $attempt++) {
+        sleep(1);
+
+        $ch = curl_init($operationUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER     => ['Ocp-Apim-Subscription-Key: ' . $apiKey],
+            CURLOPT_TIMEOUT        => 15,
+        ]);
+        $pollResponse = curl_exec($ch);
+        curl_close($ch);
+
+        if ($pollResponse === false) {
+            continue;
+        }
+
+        $result = json_decode($pollResponse, true);
+        $status = $result['status'] ?? '';
+
+        if ($status === 'succeeded') {
+            $lines = [];
+            $GLOBALS['azureLineBoxes'] = [];
+            foreach ($result['analyzeResult']['readResults'] ?? [] as $page) {
+                foreach ($page['lines'] ?? [] as $line) {
+                    $lines[] = $line['text'];
+                    $GLOBALS['azureLineBoxes'][] = ['text' => $line['text'], 'box' => $line['boundingBox'] ?? []];
+                }
+            }
+            return implode("\n", $lines);
+        }
+
+        if ($status === 'failed') {
+            error_log('Azure Read API analysis failed: ' . $pollResponse);
+            return null;
+        }
+    }
+
+    error_log('Azure Read API: timed out waiting for result.');
+    return null;
+}
+
+function sectionBoxHasStroke($pdfPath)
+{
+    $label = null;
+    foreach ($GLOBALS['azureLineBoxes'] ?? [] as $l) {
+        if (preg_match('/^\s*section\s*:?\s*$/i', $l['text']) && count($l['box']) >= 8) {
+            $label = $l['box'];
+        }
+    }
+    if ($label === null) {
+        return false;
+    }
+
+    $ys = [$label[1], $label[3], $label[5], $label[7]];
+    $x = (int) (max($label[0], $label[2], $label[4], $label[6]) + 15);
+    $y = (int) min($ys);
+    $w = 200;
+    $h = max(20, (int) (max($ys) - min($ys)) - 12);
+
+    $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('sectioncheck_', true);
+    $cmd = escapeshellarg(PDFTOPPM_BIN)
+        . ' -r 300 -f 1 -l 1'
+        . ' -x ' . $x . ' -y ' . $y . ' -W ' . $w . ' -H ' . $h
+        . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($tmpBase) . ' 2>&1';
+    exec($cmd, $cmdOut, $cmdCode);
+
+    $generated = $tmpBase . '-1.ppm';
+    if (!file_exists($generated)) {
+        $generated = $tmpBase . '.ppm';
+    }
+    if (!file_exists($generated)) {
+        return false;
+    }
+    $ppm = readPpmPixels($generated);
+    @unlink($generated);
+    if ($ppm === null) {
+        return false;
+    }
+
+    $width = $ppm['width'];
+    $height = $ppm['height'];
+    $bytes = $ppm['data'];
+    $columnInk = array_fill(0, $width, 0);
+    for ($row = 0; $row < $height; $row++) {
+        for ($col = 0; $col < $width; $col++) {
+            $i = ($row * $width + $col) * 3;
+            if ($i + 2 >= strlen($bytes)) {
+                break 2;
+            }
+            if ((ord($bytes[$i]) + ord($bytes[$i + 1]) + ord($bytes[$i + 2])) / 3 < 140) {
+                $columnInk[$col]++;
+            }
+        }
+    }
+    return max($columnInk) >= max(12, (int) ($height * 0.4));
+}
+
 function handleOcrExtract()
 {
     if (!isset($_FILES['document']) || $_FILES['document']['error'] !== UPLOAD_ERR_OK) {
@@ -94,12 +399,18 @@ function handleOcrExtract()
         return;
     }
 
-    $allowedExt = ['jpg', 'jpeg', 'png', 'pdf'];
+    $allowedExt = ['pdf'];
     $originalName = $_FILES['document']['name'];
     $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
 
     if (!in_array($ext, $allowedExt, true)) {
-        echo json_encode(['success' => false, 'message' => 'Unsupported file type. Use JPG, PNG, or PDF.']);
+        echo json_encode(['success' => false, 'message' => 'Unsupported file type. Only PDF files are allowed.']);
+        return;
+    }
+
+    $mimeType = mime_content_type($_FILES['document']['tmp_name']);
+    if ($mimeType !== 'application/pdf') {
+        echo json_encode(['success' => false, 'message' => 'Unsupported file type. Only PDF files are allowed.']);
         return;
     }
 
@@ -140,18 +451,26 @@ function handleOcrExtract()
         }
     }
 
-    $cmd = escapeshellarg(TESSERACT_BIN) . ' ' . escapeshellarg($imagePath) . ' stdout -l eng 2>&1';
-    $ocrOutput = shell_exec($cmd);
+    $ocrOutput = callAzureVisionOcr($imagePath);
+    $ocrSource = 'azure_vision';
 
     if ($ocrOutput === null || trim($ocrOutput) === '') {
         echo json_encode([
             'success'      => false,
-            'message'      => 'OCR returned no text. Check that Tesseract is installed and the scan is legible.',
+            'message'      => 'OCR returned no text from Azure Vision. Check your internet connection, the AZURE_VISION_KEY / AZURE_VISION_ENDPOINT values in .env, and that the scan is legible.',
             'file_path'    => $destPath,
             'file_name'    => $originalName,
         ]);
         return;
     }
+
+        $docType = detectDocumentTypeFromText($ocrOutput);
+        $photoPath = extractIdPhoto($destPath, $docType);
+
+        $extracted = parseOcrText($ocrOutput);
+        if ($extracted['year_section'] === '' && sectionBoxHasStroke($destPath)) {
+            $extracted['year_section'] = '1-1';
+        }
 
         echo json_encode([
             'success'         => true,
@@ -159,7 +478,10 @@ function handleOcrExtract()
             'image_path'      => $imagePath,
             'file_name'       => $originalName,
             'ocr_text'        => $ocrOutput,
-            'extracted'       => parseOcrText($ocrOutput),
+            'ocr_source'      => $ocrSource,
+            'extracted'       => $extracted,
+            'photo_path'      => $photoPath,
+            'doc_type'        => $docType,
         ]);
 }
 
@@ -189,6 +511,13 @@ function parseOcrText($text)
 {
     $text = preg_replace('/_{2,}/', ' ', $text);
 
+    $stampMonths = 'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC';
+    $text = preg_replace(
+        '/\b[A-Z]{2,6}(?:-[A-Z0-9]+){2,}\b[ \t]*\r?\n?[ \t]*Rev\.?\s*\d+[ \t]*\r?\n?[ \t]*(?:' . $stampMonths . ')[A-Za-z]*\.?\s+\d{1,2},?\s*(?:19|20)\d{2}/i',
+        ' ',
+        $text
+    );
+
     $fields = [
         'student_number'    => '',
         'name'              => '',
@@ -202,39 +531,40 @@ function parseOcrText($text)
         'email'             => '',
     ];
 
-    $nextLabel = '(?=[ \t]*(?:pup[ \t]*)?(?:student[ \t]*(?:no|number|#)?\.?|school[ \t]*year|course(?:[ \t]*\/[ \t]*college)?|program|address|sex|gender|civil[ \t]*status|blood[ \t]*type|email(?:[ \t]*address)?|parent|guardian|spouse|landline|cellphone|mobile|age|section|year|date[ \t]*of[ \t]*birth|place[ \t]*of[ \t]*birth)[ \t]*[:\-]|[ \t]*(?:\r?\n|$))';
+    $nextLabel = '(?=[ \t]*(?:pup[ \t]*)?(?:student[ \t]*(?:no|number|#)?[ \t]*\.?|school[ \t]*year|course(?:[ \t]*\/[ \t]*college)?|program|address|sex|gender|civil[ \t]*status|blood[ \t]*type|email(?:[ \t]*address)?|parent|guardian|spouse|landline|cellphone|mobile|age|section|year|date[ \t]*of[ \t]*birth|place[ \t]*of[ \t]*birth)[ \t]*[:\-]|[ \t]*(?:\r?\n|$))';
 
     $patternGroups = [
         'student_number' => [
-            '/(?:pup[ \t]*)?student[ \t]*(?:no|number|#)?\.?[ \t]*[:\-][ \t]*([0-9][0-9A-Za-z\-]{4,20})/i',
+            '/(?:pup[ \t]*)?student[ \t]*(?:no|number|#)?[ \t]*\.?[ \t]*[:\-][ \t]*\r?\n?[ \t]*([0-9][0-9A-Za-z\-]{4,20})/i',
         ],
         'name' => [
-            '/name[ \t]*of[ \t]*applicant[ \t]*[:\-][ \t]*(.+?)' . $nextLabel . '/i',
-            '/^[ \t]*name[ \t]*[:\-][ \t]*(.+?)' . $nextLabel . '/im',
+            '/name[ \t]*of[ \t]*applicant[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
+            '/^[ \t]*name[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/im',
         ],
+
         'course' => [
-            '/program[ \t]*[:\-][ \t]*([A-Za-z0-9.\-]+)/i',
-            '/course[ \t]*(?:\/[ \t]*college)?[ \t]*[:\-][ \t]*(.+?)' . $nextLabel . '/i',
+            '/program[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
+            '/course[ \t]*(?:\/[ \t]*college)?[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
         ],
         'year_section' => [
-            '/year[ \t]*(?:&|and)?[ \t]*section[ \t]*[:\-][ \t]*(.+?)' . $nextLabel . '/i',
-            '/\bsection[ \t]*[:\-][ \t]*(.+?)' . $nextLabel . '/i',
+            '/year[ \t]*(?:&|and)?[ \t]*section[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
+            '/\bsection[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
         ],
         'sex' => [
-            '/sex[ \t]*[:\-][ \t]*(male|female)/i',
-            '/gender[ \t]*[:\-][ \t]*(male|female)/i',
+            '/sex[ \t]*[:\-][ \t]*\r?\n?[ \t]*(male|female)/i',
+            '/gender[ \t]*[:\-][ \t]*\r?\n?[ \t]*(male|female)/i',
         ],
         'date_of_birth' => [
-            '/date[ \t]*of[ \t]*birth[ \t]*[:\-][ \t]*(.+?)' . $nextLabel . '/i',
+            '/date[ \t]*of[ \t]*birth[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
         ],
         'place_of_birth' => [
-            '/place[ \t]*of[ \t]*birth[ \t]*[:\-][ \t]*(.+?)' . $nextLabel . '/i',
+            '/place[ \t]*of[ \t]*birth[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
         ],
         'mobile_number' => [
-            '/(?:mobile|cellphone|cell)[ \t]*(?:no|number)?\.?[ \t]*[:\-][ \t]*([0-9+\-\s]{7,15})/i',
+            '/(?:mobile|cellphone|cell)[ \t]*(?:no|number)?\.?[ \t]*[:\-][ \t]*\r?\n?[ \t]*([0-9+\-\s]{7,15})/i',
         ],
         'address' => [
-            '/^[ \t]*(?:home[ \t]*)?address[ \t]*[:\-][ \t]*(.+?)' . $nextLabel . '/im',
+            '/^[ \t]*(?:home[ \t]*)?address[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/im',
         ],
     ];
 
@@ -251,7 +581,41 @@ function parseOcrText($text)
     }
 
     if ($fields['year_section'] !== '') {
+        if (preg_match('/^[|lI!\[\]{}()\/\\\\]$/', trim($fields['year_section'], " \t_"))) {
+            $fields['year_section'] = '1';
+        }
         $fields['year_section'] = normalizeYearSection($fields['year_section']);
+        if (!preg_match('/^\d{1,2}-[A-Za-z0-9]{1,3}$/', $fields['year_section'])) {
+            $fields['year_section'] = '';
+        }
+    }
+
+    if ($fields['year_section'] === '') {
+        $ocrLines = preg_split('/\R/', $text);
+        foreach ($ocrLines as $i => $ocrLine) {
+            if (!preg_match('/\bsection[ \t]*[:\-]?[ \t_]*$/i', $ocrLine)) continue;
+            foreach ([$i - 1, $i + 1, $i - 2, $i + 2] as $j) {
+                if (isset($ocrLines[$j]) && preg_match('/^[ \t_]*[|lI!1\[\]{}()\/\\\\][ \t_]*$/', $ocrLines[$j])) {
+                    $fields['year_section'] = '1-1';
+                    break 2;
+                }
+            }
+        }
+    }
+
+    if ($fields['course'] === '') {
+        foreach (preg_split('/\R/', $text) as $line) {
+            $entry = resolveCourse($line, true);
+            if ($entry) {
+                $fields['course'] = $entry['name'];
+                break;
+            }
+        }
+    }
+    if ($fields['course'] === '') {
+        if (preg_match('/^[ \t]*(BS[A-Z]{2,6}|BEED|BPED|BTLED)[ \t]*$/m', $text, $m)) {
+            $fields['course'] = $m[1];
+        }
     }
 
     if (preg_match('/[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}/', $text, $m)) {
@@ -262,42 +626,17 @@ function parseOcrText($text)
         $fields['mobile_number'] = $m[1];
     }
 
-    if ($fields['sex'] === '') {
-        $sexScanText = preg_replace('/\([^)]*\)/', ' ', $text);
-        if (preg_match('/\b(MALE|FEMALE)\b/i', $sexScanText, $m)) {
-            $fields['sex'] = strtoupper($m[1]);
-        }
-    }
-
     if ($fields['student_number'] === '') {
         $dash = '[\-\x{2010}-\x{2015}]';
-        if (preg_match('/\b(\d{4}\s*' . $dash . '\s*\d{4,6}\s*' . $dash . '\s*[A-Z0-9]{1,4}\s*' . $dash . '\s*\d)\b/iu', $text, $m)) {
+        if (preg_match('/\b(\d{4}\s*' . $dash . '\s*\d{4,6}\s*' . $dash . '\s*[A-Z0-9]{1,4}\s*' . $dash . '\s*[0O])\b/iu', $text, $m)) {
             $cleaned = preg_replace('/\s+/', '', $m[1]);
             $cleaned = preg_replace('/' . $dash . '/u', '-', $cleaned);
             $fields['student_number'] = $cleaned;
         }
     }
 
-    if ($fields['course'] === '') {
-        $knownCourses = ['BSIT', 'BSCS', 'BSCPE', 'BSBA', 'BSA', 'BEED', 'BSED', 'BSHM', 'BSTM', 'BSN', 'BSCE', 'BSEE', 'BSME'];
-        if (preg_match('/\b(' . implode('|', $knownCourses) . ')\b/i', $text, $m)) {
-            $fields['course'] = strtoupper($m[1]);
-        }
-    }
-
-    if ($fields['name'] === '') {
-        $months = 'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC';
-        if (preg_match('/([A-Z][A-Z.,\'\-]{4,40}),\s*[A-Z][A-Za-z.\s]{1,30}?\s+(?:' . $months . ')[A-Z]*\s+\d{1,2},?\s+\d{4}/', $text, $m)) {
-            $fields['name'] = trim($m[1]);
-        }
-    }
-
-    $months = 'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC';
-
-    if ($fields['date_of_birth'] === '') {
-        if (preg_match('/\b(?:MALE|FEMALE)\s+((?:' . $months . ')[A-Z]*\s+\d{1,2},?\s*\d{4})/i', $text, $m)) {
-            $fields['date_of_birth'] = trim($m[1]);
-        }
+    if ($fields['date_of_birth'] !== '' && !looksLikeRealDate($fields['date_of_birth'])) {
+        $fields['date_of_birth'] = '';
     }
 
     if ($fields['place_of_birth'] === '') {
@@ -320,11 +659,51 @@ function parseOcrText($text)
         }
     }
 
+    if ($fields['date_of_birth'] !== '' && !looksLikeRealDate($fields['date_of_birth'])) {
+        $fields['date_of_birth'] = '';
+    }
+
+    if ($fields['course'] !== '') {
+        $fields['course'] = normalizeCourseName($fields['course']);
+    }
+
     foreach ($fields as $key => $value) {
         $fields[$key] = stripCommonOcrArtifacts($value);
     }
 
     return $fields;
+}
+
+function looksLikeRealDate($value)
+{
+    $digits = preg_replace('/\D/', '', $value);
+    if ($digits === '' || preg_match('/^0+$/', $digits)) {
+        return false;
+    }
+
+    if (preg_match('/^[\d\s\/\-.,]+$/', $value) && !preg_match('/\b(19|20)\d{2}\b/', $value)) {
+        return false;
+    }
+    return true;
+}
+
+function dateOfBirthForDb($value)
+{
+    $value = trim($value);
+    if ($value === '') {
+        return null;
+    }
+
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) {
+        return $value;
+    }
+
+    $timestamp = strtotime($value);
+    if ($timestamp === false) {
+        return null;
+    }
+
+    return date('Y-m-d', $timestamp);
 }
 
 function normalizeYearSection($raw)
@@ -366,6 +745,9 @@ function looksLikeAnotherLabel($value)
     if (substr(rtrim($value), -1) === ':') {
         return true;
     }
+    if (preg_match('/^(signature|date|processed[ \t]*by|interviewed[ \t]*by|issued[ \t]*by|remarks|program|section|step[ \t]*\d)\b/i', trim($value))) {
+        return true;
+    }
     $labelWords = ['no.', 'number', 'address', 'email', 'sex', 'age', 'course', 'college',
                    'school year', 'civil status', 'blood type', 'name', 'section'];
     if (strlen($value) < 40) {
@@ -403,12 +785,14 @@ function handleDeleteDocument()
 {
     $filePath = $_POST['file_path'] ?? '';
     $imagePath = $_POST['image_path'] ?? '';
-    if ($filePath === '' && $imagePath === '') {
+    $photoPath = $_POST['photo_path'] ?? '';
+    if ($filePath === '' && $imagePath === '' && $photoPath === '') {
         echo json_encode(['success' => false, 'message' => 'No file path provided.']);
         return;
     }
 
     $uploadDir = realpath('../uploads/documents/');
+    $photoDir = realpath('../uploads/photos/');
     if ($uploadDir === false) {
         echo json_encode(['success' => false, 'message' => 'Upload directory not found.']);
         return;
@@ -428,6 +812,15 @@ function handleDeleteDocument()
         }
     }
 
+    if ($photoPath !== '') {
+        $targetPhotoPath = realpath($photoPath);
+        if ($photoDir === false || $targetPhotoPath === false || strpos($targetPhotoPath, $photoDir) !== 0) {
+            $deleted = false;
+        } elseif (file_exists($targetPhotoPath) && !unlink($targetPhotoPath)) {
+            $deleted = false;
+        }
+    }
+
     if ($deleted) {
         echo json_encode(['success' => true, 'message' => 'File deleted.']);
     } else {
@@ -440,15 +833,13 @@ function handleUpdateStatus($conn)
     $studentId = $_POST['student_id'] ?? '';
     $status    = $_POST['status'] ?? '';
 
-    $allowedStatuses = ['active', 'inactive', 'onleave'];
-
     if ($studentId === '' || !ctype_digit((string) $studentId)) {
         echo json_encode(['success' => false, 'message' => 'Invalid student.']);
         return;
     }
 
-    if (!in_array($status, $allowedStatuses, true)) {
-        echo json_encode(['success' => false, 'message' => 'Invalid status value.']);
+    if ($status !== 'active') {
+        echo json_encode(['success' => false, 'message' => 'IN-ACTIVE and ON-LEAVE are set by archiving the student.']);
         return;
     }
 
@@ -457,7 +848,7 @@ function handleUpdateStatus($conn)
     mysqli_stmt_bind_param($stmt, 'si', $status, $studentId);
 
     if (mysqli_stmt_execute($stmt)) {
-        echo json_encode(['success' => true, 'message' => 'Status updated.', 'status' => $status]);
+        echo json_encode(['success' => true, 'message' => 'Status updated.', 'status' => $status, 'archived' => false]);
     } else {
         echo json_encode(['success' => false, 'message' => 'Failed to update status: ' . mysqli_error($conn)]);
     }
@@ -467,7 +858,7 @@ function handleAddStudent($conn)
 {
     $studentNumber = trim($_POST['student_number'] ?? '');
     $name          = trim($_POST['name'] ?? '');
-    $course        = trim($_POST['course'] ?? '');
+    $course        = normalizeCourseName($_POST['course'] ?? '');
     $yearSection   = trim($_POST['year_section'] ?? '');
 
     $missing = [];
@@ -495,25 +886,36 @@ function handleAddStudent($conn)
     }
 
     $sex              = trim($_POST['sex'] ?? '');
-    $sex              = ($sex === '') ? null : $sex;
-    $dob              = trim($_POST['date_of_birth'] ?? '');
-    $dob              = ($dob === '') ? null : $dob;
+    $dob              = dateOfBirthForDb(trim($_POST['date_of_birth'] ?? ''));
     $placeOfBirth     = trim($_POST['place_of_birth'] ?? '');
-    $placeOfBirth     = ($placeOfBirth === '') ? null : $placeOfBirth;
     $address          = trim($_POST['address'] ?? '');
-    $address          = ($address === '') ? null : $address;
     $mobileNumber    = trim($_POST['mobile_number'] ?? '');
-    $mobileNumber    = ($mobileNumber === '') ? null : $mobileNumber;
     $email            = trim($_POST['email'] ?? '');
-    $email            = ($email === '') ? null : $email;
     $status           = 'active';
 
     $photoBinary = null;
+    $photoPathFromOcr = null;
+
     $photoData = $_POST['photo'] ?? '';
     if ($photoData !== '' && str_starts_with($photoData, 'data:image')) {
         $base64 = explode(',', $photoData, 2)[1] ?? '';
         if ($base64 !== '') {
             $photoBinary = base64_decode($base64);
+        }
+    }
+
+    if ($photoBinary === null && isset($_FILES['photo']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
+        $ext = strtolower(pathinfo($_FILES['photo']['name'], PATHINFO_EXTENSION));
+        if (in_array($ext, ['jpg', 'jpeg', 'png'], true)) {
+            $photoBinary = file_get_contents($_FILES['photo']['tmp_name']);
+        }
+    }
+
+    if ($photoBinary === null && $photoData !== '' && !str_starts_with($photoData, 'data:image')) {
+        $realPath = realpath($photoData);
+        $realPhotoDir = realpath('../uploads/photos/');
+        if ($realPath !== false && $realPhotoDir !== false && str_starts_with($realPath, $realPhotoDir)) {
+            $photoPathFromOcr = $photoData;
         }
     }
 
@@ -589,9 +991,20 @@ function handleAddStudent($conn)
             if (!is_dir($photoDir)) {
                 mkdir($photoDir, 0755, true);
             }
-            $photoPath = $photoDir . uniqid('photo_', true) . '.jpg';
+            $photoExt = 'jpg';
+            if (isset($_FILES['photo']['name'])) {
+                $uploadedExt = strtolower(pathinfo($_FILES['photo']['name'], PATHINFO_EXTENSION));
+                if (in_array($uploadedExt, ['jpg', 'jpeg', 'png'], true)) {
+                    $photoExt = $uploadedExt;
+                }
+            }
+            $photoPath = $photoDir . uniqid('photo_', true) . '.' . $photoExt;
             file_put_contents($photoPath, $photoBinary);
+        } elseif ($photoPathFromOcr !== null) {
+            $photoPath = $photoPathFromOcr;
+        }
 
+        if ($photoPath !== null) {
             $updatePhotoSql = "UPDATE students SET photo_path = ? WHERE student_id = ?";
             $updatePhotoStmt = mysqli_prepare($conn, $updatePhotoSql);
             mysqli_stmt_bind_param($updatePhotoStmt, "si", $photoPath, $studentId);
@@ -629,7 +1042,7 @@ $search            = isset($_GET['search']) ? trim($_GET['search']) : '';
 $courseFilter      = isset($_GET['course']) ? trim($_GET['course']) : '';
 $yearSectionFilter = isset($_GET['year_section']) ? trim($_GET['year_section']) : '';
 
-$conditions = [];
+$conditions = ["(status = 'active' OR status IS NULL OR status = '')"];
 $params     = [];
 $types      = '';
 
@@ -642,9 +1055,24 @@ if ($search !== '') {
 }
 
 if ($courseFilter !== '') {
-    $conditions[] = 'course = ?';
-    $params[] = $courseFilter;
-    $types   .= 's';
+    $filterCourse = null;
+    foreach (getCourseCatalog() as $catalogEntry) {
+        if ($catalogEntry['code'] === $courseFilter) {
+            $filterCourse = $catalogEntry;
+            break;
+        }
+    }
+
+    if ($filterCourse !== null) {
+        $conditions[] = 'course IN (?, ?)';
+        $params[] = $filterCourse['code'];
+        $params[] = $filterCourse['name'];
+        $types   .= 'ss';
+    } else {
+        $conditions[] = 'course = ?';
+        $params[] = $courseFilter;
+        $types   .= 's';
+    }
 }
 
 if ($yearSectionFilter !== '') {
@@ -667,21 +1095,13 @@ if (!empty($params)) {
     $result = mysqli_query($conn, $sql);
 }
 
-$courseOptions = [
-    'BS-PSYCH'    => 'BS PSYCH',
-    'BSED-ENGLISH' => 'BSED ENGLISH',
-    'BSED-SS'      => 'BSED SS',
-    'BEED'         => 'BEED',
-    'BSIT'         => 'BSIT',
-    'BSCE'         => 'BSCE',
-    'BSIE'         => 'BSIE',
-    'BSBA-HRM'     => 'BSBA HRM',
-    'DCET'         => 'DCET',
-    'DIT'          => 'DIT',
-];
+$courseOptions = [];
+foreach (getCourseCatalog() as $catalogEntry) {
+    $courseOptions[$catalogEntry['code']] = $catalogEntry['code'];
+}
 
 $yearSectionOptions = [];
-$yearSectionResult = mysqli_query($conn, "SELECT DISTINCT year_section FROM students WHERE year_section IS NOT NULL AND year_section <> '' ORDER BY year_section ASC");
+$yearSectionResult = mysqli_query($conn, "SELECT DISTINCT year_section FROM students WHERE (status = 'active' OR status IS NULL OR status = '') AND year_section IS NOT NULL AND year_section <> '' ORDER BY year_section ASC");
 if ($yearSectionResult) {
     while ($row = mysqli_fetch_assoc($yearSectionResult)) {
         $yearSectionOptions[] = $row['year_section'];
@@ -694,13 +1114,14 @@ include 'navbar.php';
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Student Directory</title>
     <link href="../css/bootstrap.min.css" rel="stylesheet">
     <link href="../css/bootstrap-icons.css" rel="stylesheet">
     <link href="../css/font.css" rel="stylesheet">
     <link href="../css/navbar-admin.css" rel="stylesheet">
     <link href="../css/student-directory-admin.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
 </head>
 
 <body>
@@ -750,6 +1171,7 @@ include 'navbar.php';
     </div>
 
     <!-- table -->
+    <div class="table-scroll-wrapper">
     <table class="student-table">
     <tr>
         <th>Student Number</th>
@@ -785,6 +1207,7 @@ include 'navbar.php';
         </tr>
     <?php endif; ?>
     </table>
+    </div>
 
 
 <!-- add new records modal -->
@@ -800,7 +1223,7 @@ include 'navbar.php';
                         SCAN DOCUMENT
                     </button>
 
-                    <input type="file" id="uploadFileInput" name="document" accept=".jpg,.jpeg,.png,.pdf" hidden>
+                    <input type="file" id="uploadFileInput" name="document" accept=".pdf,application/pdf" hidden>
                     <button type="button" class="btn upload-file-btn" id="uploadFileBtn">
                         UPLOAD FILE
                     </button>
@@ -809,7 +1232,7 @@ include 'navbar.php';
 
             <div id="ocrStatus" class="ocr-status"></div>
 
-            <form method="POST" action="student_directory.php?action=add_student" id="addStudentForm">
+            <form method="POST" action="student_directory.php?action=add_student" id="addStudentForm" enctype="multipart/form-data">
                 <input type="hidden" id="documentsData" name="documents" value="[]">
 
                 <div class="modal-body">
@@ -823,7 +1246,7 @@ include 'navbar.php';
                         <span>Student Photo</span>
                     </div>
                 </div>
-                <input type="file" id="replacePhotoInput" accept=".jpg,.jpeg,.png" hidden>
+                <input type="file" id="replacePhotoInput" name="photo" accept=".jpg,.jpeg,.png" hidden>
                 <button type="button" class="btn btn-sm btn-outline-secondary replace-photo-btn" id="replacePhotoBtn">
                     <i class="bi bi-upload"></i> Upload Photo
                 </button>
@@ -872,7 +1295,7 @@ include 'navbar.php';
                             Full Name:
                         </label>
                         <input type="text" id="name" name="name" class="form-control input-custom" required
-                               pattern="[A-Za-z\s]+">
+                               pattern="[A-Za-z\s.,]+">
                     </div>
 
                     <div class="d-flex align-items-center mb-3">
@@ -1020,12 +1443,12 @@ include 'navbar.php';
     </div>
 </div>
 
-<!-- confirm status modal -->
+<!-- confirm status / archive modal -->
 <div class="modal fade" id="confirmStatusModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">Confirm Status Change</h5>
+                <h5 class="modal-title" id="confirmStatusTitle">Confirm Status Change</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
@@ -1034,12 +1457,34 @@ include 'navbar.php';
                     from <strong id="confirmStatusOldValue"></strong>
                     to <strong id="confirmStatusNewValue"></strong>?
                 </p>
+                <div id="confirmStatusArchiveNote" class="alert alert-warning small mb-0 d-none">
+                    <i class="bi bi-archive"></i>
+                    Their documents will be saved to Google Drive and the record moved to Archive.
+                </div>
+                <div id="confirmStatusError" class="alert alert-danger small mt-3 mb-0 d-none"></div>
             </div>
             <div class="modal-footer">
-                <button type="button" class="btn btn-cancel" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-cancel" id="confirmStatusCancelBtn" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-save" id="confirmStatusChangeBtn">Confirm</button>
             </div>
         </div>
+    </div>
+</div>
+
+<!-- document preview panel -->
+<div id="documentPreviewPanel" class="document-preview-panel" aria-hidden="true">
+    <div id="documentPreviewResizeHandle" class="document-preview-resize-handle" title="Drag to resize"></div>
+    <div class="document-preview-header">
+        <span id="documentPreviewTitle" class="document-preview-title">Document Preview</span>
+        <div class="document-preview-header-actions">
+            <button type="button" id="documentPreviewExpandBtn" class="btn btn-sm btn-outline-secondary" title="Open full size in a new tab">
+                <i class="bi bi-arrows-angle-expand"></i>
+            </button>
+            <button type="button" id="documentPreviewCloseBtn" class="btn-close" aria-label="Close preview"></button>
+        </div>
+    </div>
+    <div class="document-preview-body">
+        <iframe id="documentPreviewFrame" title="Document preview" src="about:blank"></iframe>
     </div>
 </div>
 
