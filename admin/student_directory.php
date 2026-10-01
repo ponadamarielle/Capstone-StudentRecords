@@ -2,6 +2,7 @@
 include '../security_headers.php';
 session_start();
 require_once __DIR__ . '/course_catalog.php';
+require_once __DIR__ . '/document_classifier.php';
 
 function loadEnv($path)
 {
@@ -88,21 +89,211 @@ if ($isAjaxAction) {
     exit();
 }
 
-function detectDocumentTypeFromText($text)
+function detectSarPhotoFrame($pdfPath, $page = 1)
 {
-    if (preg_match('/health\s*information\s*form/i', $text)) {
-        return 'health_information_form';
+    $sx = 1650;
+    $sy = 250;
+    $sw = 896;
+    $sh = 950;
+
+    $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('sarframe_', true);
+    $cmd = escapeshellarg(PDFTOPPM_BIN)
+        . ' -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+        . ' -x ' . $sx . ' -y ' . $sy . ' -W ' . $sw . ' -H ' . $sh
+        . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($tmpBase) . ' 2>&1';
+    exec($cmd, $cmdOut, $cmdCode);
+
+    $ppmFile = $tmpBase . '-1.ppm';
+    if (!file_exists($ppmFile)) {
+        $ppmFile = $tmpBase . '.ppm';
     }
-    if (preg_match('/sar[\s\-]*form|confirmation\s*slip/i', $text)) {
-        return 'sar_form';
+    if (!file_exists($ppmFile)) {
+        return null;
     }
-    return null;
+    $ppm = readPpmPixels($ppmFile);
+    @unlink($ppmFile);
+    if ($ppm === null) {
+        return null;
+    }
+
+    $w = $ppm['width'];
+    $h = $ppm['height'];
+    $data = $ppm['data'];
+    $n = $w * $h;
+    if (strlen($data) < $n * 3) {
+        return null;
+    }
+
+    $mask = str_repeat("\0", $n);
+    for ($i = 0; $i < $n; $i++) {
+        $o = $i * 3;
+        if (ord($data[$o]) + ord($data[$o + 1]) + ord($data[$o + 2]) < 480) {
+            $mask[$i] = "\1";
+        }
+    }
+
+    $minRun = 350;
+    $maxGap = 4;
+    $band   = 8;
+    $longestRun = function ($start, $count, $step, $across, $acrossLeft) use ($mask, $maxGap, $band) {
+        $reach = min($band, $acrossLeft);
+        $best = 0;
+        $run = 0;
+        $gap = 0;
+        for ($k = 0, $i = $start; $k < $count; $k++, $i += $step) {
+            $isDark = false;
+            for ($b = 0, $j = $i; $b < $reach; $b++, $j += $across) {
+                if ($mask[$j] === "\1") {
+                    $isDark = true;
+                    break;
+                }
+            }
+            if ($isDark) {
+                $run += $gap + 1;
+                $gap = 0;
+                if ($run > $best) {
+                    $best = $run;
+                }
+            } elseif ($run > 0 && $gap < $maxGap) {
+                $gap++;
+            } else {
+                $run = 0;
+                $gap = 0;
+            }
+        }
+        return $best;
+    };
+
+    $cols = [];
+    for ($x = 0; $x < $w; $x++) {
+        if ($longestRun($x, $h, $w, 1, $w - $x) >= $minRun) {
+            $cols[] = $x;
+        }
+    }
+    $rows = [];
+    for ($y = 0; $y < $h; $y++) {
+        if ($longestRun($y * $w, $w, 1, $w, $h - $y) >= $minRun) {
+            $rows[] = $y;
+        }
+    }
+    if (count($cols) < 2 || !$rows) {
+        return null;
+    }
+
+    $left  = min($cols) + $band - 1;
+    $right = max($cols);
+    $top   = min($rows) + $band - 1;
+    $width = $right - $left;
+    if ($width < 450 || $width > 750) {
+        return null;
+    }
+    $below  = array_filter($rows, function ($r) use ($top) { return $r > $top + 400; });
+    $bottom = $below ? min($below) + $band - 1 : $top + $width;
+
+    $inset = 9; 
+    return [
+        'x'      => $sx + $left + $inset,
+        'y'      => $sy + $top + $inset,
+        'width'  => $width - 2 * $inset,
+        'height' => ($bottom - $top) - 2 * $inset,
+    ];
 }
 
-function extractIdPhoto($pdfPath, $docType)
+function sarPhotoBox(array $frame)
+{
+    $ZOOM = 0.95;
+
+    $size = (int) round(min($frame['width'], $frame['height']) * $ZOOM);
+    return [
+        'x'      => (int) $frame['x'] + (int) round(($frame['width'] - $size) / 2),
+        'y'      => (int) $frame['y'] + 2,
+        'width'  => $size,
+        'height' => $size,
+    ];
+}
+
+function writePngRgb($path, $width, $height, $rgb)
+{
+    $rowLen = $width * 3;
+    $raw = '';
+    for ($y = 0; $y < $height; $y++) {
+        $raw .= "\0" . substr($rgb, $y * $rowLen, $rowLen);
+    }
+    $chunk = function ($type, $data) {
+        return pack('N', strlen($data)) . $type . $data . pack('N', crc32($type . $data));
+    };
+    $png = "\x89PNG\r\n\x1a\n"
+        . $chunk('IHDR', pack('NNCCCCC', $width, $height, 8, 2, 0, 0, 0))
+        . $chunk('IDAT', gzcompress($raw, 6))
+        . $chunk('IEND', '');
+    return file_put_contents($path, $png) !== false;
+}
+
+function savePhotoWithTopSpace($pdfPath, $page, array $box, $photoBase, $spaceRatio = 0.10)
+{
+    if (!function_exists('gzcompress')) {
+        return null;
+    }
+
+    $size  = (int) $box['width'];
+    $space = (int) round((int) $box['height'] * $spaceRatio);
+    $cropH = max(1, (int) $box['height'] - $space);
+
+    $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('sarphoto_', true);
+    $cmd = escapeshellarg(PDFTOPPM_BIN)
+        . ' -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+        . ' -x ' . (int) $box['x'] . ' -y ' . (int) $box['y']
+        . ' -W ' . $size . ' -H ' . $cropH
+        . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($tmpBase) . ' 2>&1';
+    exec($cmd, $cmdOut, $cmdCode);
+
+    $ppmFile = $tmpBase . '-1.ppm';
+    if (!file_exists($ppmFile)) {
+        $ppmFile = $tmpBase . '.ppm';
+    }
+    if (!file_exists($ppmFile)) {
+        return null;
+    }
+    $ppm = readPpmPixels($ppmFile);
+    @unlink($ppmFile);
+    if ($ppm === null) {
+        return null;
+    }
+
+    $w = $ppm['width'];
+    $h = $ppm['height'];
+    $data = $ppm['data'];
+    if (strlen($data) < $w * $h * 3) {
+        return null;
+    }
+
+    $sum = [0, 0, 0];
+    $count = 0;
+    $rows = min(6, $h);
+    for ($i = 0; $i < $w * $rows; $i++) {
+        $r = ord($data[$i * 3]);
+        $g = ord($data[$i * 3 + 1]);
+        $b = ord($data[$i * 3 + 2]);
+        if ($r + $g + $b > 540) {
+            $sum[0] += $r;
+            $sum[1] += $g;
+            $sum[2] += $b;
+            $count++;
+        }
+    }
+    $bg = $count > 0
+        ? chr((int) ($sum[0] / $count)) . chr((int) ($sum[1] / $count)) . chr((int) ($sum[2] / $count))
+        : "\xFF\xFF\xFF";
+
+    $rgb = str_repeat(str_repeat($bg, $w), $space) . substr($data, 0, $w * $h * 3);
+    $path = $photoBase . '.png';
+    return writePngRgb($path, $w, $h + $space, $rgb) ? $path : null;
+}
+
+function extractIdPhoto($pdfPath, $docType, $page = 1)
 {
     static $idPhotoBoxes = [
-        'sar_form' => ['x' => 1890, 'y' => 390, 'width' => 600, 'height' => 600],
+        'sar_form' => ['x' => 1866, 'y' => 440, 'width' => 577, 'height' => 573],
         'health_information_form' => ['x' => 1845, 'y' => 50, 'width' => 540, 'height' => 580],
     ];
 
@@ -110,6 +301,10 @@ function extractIdPhoto($pdfPath, $docType)
         return null;
     }
     $box = $idPhotoBoxes[$docType];
+    if ($docType === 'sar_form') {
+        $frame = detectSarPhotoFrame($pdfPath, $page) ?? $box;
+        $box = sarPhotoBox($frame);
+    }
 
     $photoDir = '../uploads/photos/';
     if (!is_dir($photoDir)) {
@@ -118,7 +313,7 @@ function extractIdPhoto($pdfPath, $docType)
     $photoBase = $photoDir . uniqid('photo_', true);
 
     $cmd = escapeshellarg(PDFTOPPM_BIN)
-        . ' -jpeg -r 300 -f 1 -l 1'
+        . ' -jpeg -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
         . ' -x ' . escapeshellarg($box['x'])
         . ' -y ' . escapeshellarg($box['y'])
         . ' -W ' . escapeshellarg($box['width'])
@@ -135,12 +330,31 @@ function extractIdPhoto($pdfPath, $docType)
         return null;
     }
 
-    if (!cropLooksLikePersonPhoto($pdfPath, $box)) {
+    if (!cropLooksLikePersonPhoto($pdfPath, $box, 0.04, $page)) {
         @unlink($generated);
         return null;
     }
 
+    if ($docType === 'sar_form') {
+        $withSpace = savePhotoWithTopSpace($pdfPath, $page, $box, $photoBase, 0.075);
+        if ($withSpace !== null) {
+            @unlink($generated);
+            return $withSpace;
+        }
+    }
+
     return $generated;
+}
+
+function requirementsForClient()
+{
+    return array_values(array_map(function ($r) {
+        $text = ($r['label'] ?? '') . ' ' . ($r['code'] ?? '');
+        if (preg_match('/chest[\s_-]*x[\s_-]*-?ray|xray/i', $text)) {
+            $r['required_for'] = [];
+        }
+        return $r;
+    }, getDocumentRequirementsForClient()));
 }
 
 function readPpmPixels($path)
@@ -188,12 +402,12 @@ function readPpmPixels($path)
     return ['width' => $width, 'height' => $height, 'data' => substr($data, $pos)];
 }
 
-function cropLooksLikePersonPhoto($pdfPath, $box, $minSkinRatio = 0.04)
+function cropLooksLikePersonPhoto($pdfPath, $box, $minSkinRatio = 0.04, $page = 1)
 {
     $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('ppmcheck_', true);
 
     $cmd = escapeshellarg(PDFTOPPM_BIN)
-        . ' -r 300 -f 1 -l 1'
+        . ' -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
         . ' -x ' . escapeshellarg($box['x'])
         . ' -y ' . escapeshellarg($box['y'])
         . ' -W ' . escapeshellarg($box['width'])
@@ -253,6 +467,37 @@ function cropLooksLikePersonPhoto($pdfPath, $box, $minSkinRatio = 0.04)
     return ($skinCount / $sampleCount) >= $minSkinRatio;
 }
 
+function shrinkImageForOcr($imagePath, $maxBytes = 3500000)
+{
+    $size = @filesize($imagePath);
+    if ($size === false || $size <= $maxBytes) {
+        return $imagePath;
+    }
+    if (!function_exists('imagecreatefromstring') || !function_exists('imagejpeg')) {
+        error_log('OCR image is ' . round($size / 1048576, 1) . ' MB, over the 4 MB Azure limit. '
+            . 'Enable extension=gd in php.ini so it can be compressed.');
+        return $imagePath;
+    }
+
+    @ini_set('memory_limit', '512M');
+    $img = @imagecreatefromstring((string) @file_get_contents($imagePath));
+    if (!$img) {
+        return $imagePath;
+    }
+
+    $tmp = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('ocr_', true) . '.jpg';
+    foreach ([85, 75, 65, 55] as $quality) {
+        imagejpeg($img, $tmp, $quality);
+        clearstatcache(true, $tmp);
+        if (@filesize($tmp) !== false && filesize($tmp) <= $maxBytes) {
+            break;
+        }
+    }
+    imagedestroy($img);
+
+    return is_file($tmp) ? $tmp : $imagePath;
+}
+
 function callAzureVisionOcr($imagePath)
 {
     $apiKey = getenv('AZURE_VISION_KEY');
@@ -262,7 +507,11 @@ function callAzureVisionOcr($imagePath)
         return null;
     }
 
-    $imageData = @file_get_contents($imagePath);
+    $sendPath  = shrinkImageForOcr($imagePath);
+    $imageData = @file_get_contents($sendPath);
+    if ($sendPath !== $imagePath) {
+        @unlink($sendPath);
+    }
     if ($imageData === false) {
         return null;
     }
@@ -336,10 +585,10 @@ function callAzureVisionOcr($imagePath)
     return null;
 }
 
-function sectionBoxHasStroke($pdfPath)
+function sectionBoxHasStroke($pdfPath, $lineBoxes = null, $page = 1)
 {
     $label = null;
-    foreach ($GLOBALS['azureLineBoxes'] ?? [] as $l) {
+    foreach ($lineBoxes ?? ($GLOBALS['azureLineBoxes'] ?? []) as $l) {
         if (preg_match('/^\s*section\s*:?\s*$/i', $l['text']) && count($l['box']) >= 8) {
             $label = $l['box'];
         }
@@ -356,7 +605,7 @@ function sectionBoxHasStroke($pdfPath)
 
     $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('sectioncheck_', true);
     $cmd = escapeshellarg(PDFTOPPM_BIN)
-        . ' -r 300 -f 1 -l 1'
+        . ' -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
         . ' -x ' . $x . ' -y ' . $y . ' -W ' . $w . ' -H ' . $h
         . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($tmpBase) . ' 2>&1';
     exec($cmd, $cmdOut, $cmdCode);
@@ -394,22 +643,17 @@ function sectionBoxHasStroke($pdfPath)
 
 function handleOcrExtract()
 {
+    @set_time_limit(300);
+
     if (!isset($_FILES['document']) || $_FILES['document']['error'] !== UPLOAD_ERR_OK) {
         echo json_encode(['success' => false, 'message' => 'No file uploaded or an upload error occurred.']);
         return;
     }
 
-    $allowedExt = ['pdf'];
     $originalName = $_FILES['document']['name'];
     $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
 
-    if (!in_array($ext, $allowedExt, true)) {
-        echo json_encode(['success' => false, 'message' => 'Unsupported file type. Only PDF files are allowed.']);
-        return;
-    }
-
-    $mimeType = mime_content_type($_FILES['document']['tmp_name']);
-    if ($mimeType !== 'application/pdf') {
+    if ($ext !== 'pdf' || mime_content_type($_FILES['document']['tmp_name']) !== 'application/pdf') {
         echo json_encode(['success' => false, 'message' => 'Unsupported file type. Only PDF files are allowed.']);
         return;
     }
@@ -419,75 +663,13 @@ function handleOcrExtract()
         mkdir($uploadDir, 0755, true);
     }
 
-    $safeName = uniqid('doc_', true) . '.' . $ext;
-    $destPath = $uploadDir . $safeName;
-
+    $destPath = $uploadDir . uniqid('doc_', true) . '.pdf';
     if (!move_uploaded_file($_FILES['document']['tmp_name'], $destPath)) {
         echo json_encode(['success' => false, 'message' => 'Failed to save the uploaded file.']);
         return;
     }
 
-    $imagePath = $destPath;
-    if ($ext === 'pdf') {
-        $pngBase = $uploadDir . uniqid('pdfpage_', true);
-        $cmd = escapeshellarg(PDFTOPPM_BIN) . ' -png -r 300 -f 1 -l 1 ' . escapeshellarg($destPath) . ' ' . escapeshellarg($pngBase) . ' 2>&1';
-        exec($cmd, $cmdOut, $cmdCode);
-
-        $generated = $pngBase . '-1.png';
-        if (!file_exists($generated)) {
-            $generated = $pngBase . '.png';
-        }
-
-        if (file_exists($generated)) {
-            $imagePath = $generated;
-        } else {
-            echo json_encode([
-                'success'      => false,
-                'message'      => 'Could not convert the PDF to an image for OCR. Make sure poppler-utils (pdftoppm) is installed.',
-                'file_path'    => $destPath,
-                'file_name'    => $originalName,
-            ]);
-            return;
-        }
-    }
-
-    $ocrOutput = callAzureVisionOcr($imagePath);
-    $ocrSource = 'azure_vision';
-
-    if ($ocrOutput === null || trim($ocrOutput) === '') {
-        echo json_encode([
-            'success'      => false,
-            'message'      => 'OCR returned no text from Azure Vision. Check your internet connection, the AZURE_VISION_KEY / AZURE_VISION_ENDPOINT values in .env, and that the scan is legible.',
-            'file_path'    => $destPath,
-            'file_name'    => $originalName,
-        ]);
-        return;
-    }
-
-        $docType = detectDocumentTypeFromText($ocrOutput);
-        $photoPath = extractIdPhoto($destPath, $docType);
-
-        $extracted = parseOcrText($ocrOutput);
-        if ($extracted['year_section'] === '' && sectionBoxHasStroke($destPath)) {
-            $extracted['year_section'] = '1-1';
-        }
-
-        echo json_encode([
-            'success'         => true,
-            'file_path'       => $destPath,
-            'image_path'      => $imagePath,
-            'file_name'       => $originalName,
-            'ocr_text'        => $ocrOutput,
-            'ocr_source'      => $ocrSource,
-            'extracted'       => $extracted,
-            'photo_path'      => $photoPath,
-            'doc_type'        => $docType,
-        ]);
-}
-
-function base64UrlEncode($data)
-{
-    return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+    echo json_encode(processDocumentUpload($destPath, $originalName, $uploadDir));
 }
 
 function stripCommonOcrArtifacts($value)
@@ -585,7 +767,7 @@ function parseOcrText($text)
             $fields['year_section'] = '1';
         }
         $fields['year_section'] = normalizeYearSection($fields['year_section']);
-        if (!preg_match('/^\d{1,2}-[A-Za-z0-9]{1,3}$/', $fields['year_section'])) {
+        if (!preg_match('/^\d-\d$/', $fields['year_section'])) {
             $fields['year_section'] = '';
         }
     }
@@ -875,6 +1057,11 @@ function handleAddStudent($conn)
         return;
     }
 
+    if (!preg_match('/^\d-\d$/', $yearSection)) {
+        echo json_encode(['success' => false, 'message' => 'Year & Section must be one number, a dash, and one number (e.g. 1-1).']);
+        return;
+    }
+
     $checkSql = "SELECT student_id FROM students WHERE student_number = ? LIMIT 1";
     $checkStmt = mysqli_prepare($conn, $checkSql);
     mysqli_stmt_bind_param($checkStmt, "s", $studentNumber);
@@ -892,6 +1079,7 @@ function handleAddStudent($conn)
     $mobileNumber    = trim($_POST['mobile_number'] ?? '');
     $email            = trim($_POST['email'] ?? '');
     $status           = 'active';
+    $admissionTrack   = normalizeAdmissionTrack($_POST['admission_track'] ?? '');
 
     $photoBinary = null;
     $photoPathFromOcr = null;
@@ -919,22 +1107,66 @@ function handleAddStudent($conn)
         }
     }
 
-    $documents = json_decode($_POST['documents'] ?? '[]', true);
-    if (!is_array($documents)) {
-        $documents = [];
+    $submittedDocs = json_decode($_POST['documents'] ?? '[]', true);
+    if (!is_array($submittedDocs)) {
+        $submittedDocs = [];
+    }
+
+    $documents   = [];
+    $byRequirement = [];
+    $byHash        = [];
+    foreach ($submittedDocs as $doc) {
+        $filePath = $doc['file_path'] ?? '';
+        $fileName = $doc['file_name'] ?? basename($filePath);
+        if ($filePath === '' || !is_file($filePath) || !pathIsInside($filePath, '../uploads/documents/')) {
+            echo json_encode(['success' => false, 'message' => 'The file "' . $fileName . '" is missing on the server. Please upload it again.']);
+            return;
+        }
+
+        $code = $doc['requirement_code'] ?? null;
+        if ($code === '') {
+            $code = null;
+        }
+        if ($code !== null && !isStorableRequirement($code)) {
+            echo json_encode(['success' => false, 'message' => 'Unknown document type for "' . $fileName . '".']);
+            return;
+        }
+        if ($code !== null && isset($byRequirement[$code])) {
+            echo json_encode([
+                'success' => false,
+                'duplicate_document' => true,
+                'message' => '"' . $byRequirement[$code] . '" and "' . $fileName . '" are both tagged as '
+                    . requirementLabel($code) . '. Keep only one.',
+            ]);
+            return;
+        }
+
+        $hash = pdfContentFingerprint($filePath);
+        if (isset($byHash[$hash])) {
+            echo json_encode([
+                'success' => false,
+                'duplicate_document' => true,
+                'message' => '"' . $byHash[$hash] . '" and "' . $fileName . '" are the same file. Remove one of them.',
+            ]);
+            return;
+        }
+
+        if ($code !== null) {
+            $byRequirement[$code] = $fileName;
+        }
+        $byHash[$hash] = $fileName;
+        $documents[] = [
+            'file_path'        => $filePath,
+            'file_name'        => $fileName,
+            'requirement_code' => $code,
+            'document_type'    => requirementLabel($code),
+            'file_hash'        => $hash,
+        ];
     }
 
     $cleanupLocalFiles = function () use ($documents) {
         foreach ($documents as $doc) {
-            $path = $doc['file_path'] ?? '';
-            if ($path !== '' && is_file($path)) {
-                @unlink($path);
-            }
-
-            $imagePath = $doc['image_path'] ?? '';
-            if ($imagePath !== '' && $imagePath !== $path && is_file($imagePath)) {
-                @unlink($imagePath);
-            }
+            @unlink($doc['file_path']);
         }
     };
 
@@ -942,20 +1174,19 @@ function handleAddStudent($conn)
     try {
         $sql = "INSERT INTO students
                 (student_number, name, course, year_section, status, sex, date_of_birth,
-                 place_of_birth, address, mobile_number, email)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)";
+                 place_of_birth, address, mobile_number, email, admission_track)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
         $stmt = mysqli_prepare($conn, $sql);
         mysqli_stmt_bind_param(
             $stmt,
-            "sssssssssss",
+            "ssssssssssss",
             $studentNumber, $name, $course, $yearSection, $status,
-            $sex, $dob, $placeOfBirth, $address, $mobileNumber, $email
+            $sex, $dob, $placeOfBirth, $address, $mobileNumber, $email, $admissionTrack
         );
         mysqli_stmt_execute($stmt);
 
         if (mysqli_errno($conn) === 1062) {
             mysqli_rollback($conn);
-            $cleanupLocalFiles();
             echo json_encode(['success' => false, 'duplicate' => true, 'message' => 'That student number already exists.']);
             return;
         }
@@ -964,22 +1195,16 @@ function handleAddStudent($conn)
 
         if (count($documents) > 0) {
             $docSql = "INSERT INTO documents
-                       (student_id, document_type, file_name, file_path, added_by)
-                       VALUES (?, ?, ?, ?, ?)";
+                       (student_id, document_type, requirement_code, file_name, file_path, file_hash, added_by)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)";
             $docStmt = mysqli_prepare($conn, $docSql);
             $addedBy = $_SESSION['name'] ?? '';
 
             foreach ($documents as $doc) {
-                $filePath     = $doc['file_path'] ?? '';
-                $fileName     = $doc['file_name'] ?? basename($filePath);
-                $documentType = $doc['document_type'] ?? 'Uploaded Document';
-                if ($filePath === '') {
-                    continue;
-                }
-
                 mysqli_stmt_bind_param(
-                    $docStmt, "issss",
-                    $studentId, $documentType, $fileName, $filePath, $addedBy
+                    $docStmt, "issssss",
+                    $studentId, $doc['document_type'], $doc['requirement_code'],
+                    $doc['file_name'], $doc['file_path'], $doc['file_hash'], $addedBy
                 );
                 mysqli_stmt_execute($docStmt);
             }
@@ -1013,19 +1238,6 @@ function handleAddStudent($conn)
 
         mysqli_commit($conn);
 
-        foreach ($documents as $doc) {
-            $filePath = $doc['file_path'] ?? '';
-            $imagePath = $doc['image_path'] ?? '';
-
-            if (
-                $imagePath !== '' &&
-                $imagePath !== $filePath &&
-                is_file($imagePath)
-            ) {
-                @unlink($imagePath);
-            }
-        }
-
         echo json_encode([
             'success'    => true,
             'message'    => 'Student record saved successfully.',
@@ -1033,6 +1245,16 @@ function handleAddStudent($conn)
         ]);
     } catch (Exception $e) {
         mysqli_rollback($conn);
+
+        if ($e->getCode() === 1062) {
+            if (stripos($e->getMessage(), 'uq_student_requirement') !== false || stripos($e->getMessage(), 'uq_student_file_hash') !== false) {
+                echo json_encode(['success' => false, 'duplicate_document' => true, 'message' => 'A document for the same requirement was attached twice. Remove the duplicate and save again.']);
+            } else {
+                echo json_encode(['success' => false, 'duplicate' => true, 'message' => 'That student number already exists.']);
+            }
+            return;
+        }
+
         $cleanupLocalFiles();
         echo json_encode(['success' => false, 'message' => 'Failed to save: ' . $e->getMessage()]);
     }
@@ -1064,10 +1286,11 @@ if ($courseFilter !== '') {
     }
 
     if ($filterCourse !== null) {
-        $conditions[] = 'course IN (?, ?)';
+        $conditions[] = 'course IN (?, ?, ?)';
         $params[] = $filterCourse['code'];
         $params[] = $filterCourse['name'];
-        $types   .= 'ss';
+        $params[] = courseDisplayName($filterCourse);
+        $types   .= 'sss';
     } else {
         $conditions[] = 'course = ?';
         $params[] = $courseFilter;
@@ -1121,7 +1344,7 @@ include 'navbar.php';
     <link href="../css/bootstrap-icons.css" rel="stylesheet">
     <link href="../css/font.css" rel="stylesheet">
     <link href="../css/navbar-admin.css" rel="stylesheet">
-    <link href="../css/student-directory-admin.css" rel="stylesheet">
+    <link href="../css/student-directory-admin.css?v=<?= @filemtime(__DIR__ . '/../css/student-directory-admin.css') ?>" rel="stylesheet">
 </head>
 
 <body>
@@ -1219,7 +1442,7 @@ include 'navbar.php';
                 <h5 class="modal-title add-title">Add New Student Record</h5>
 
                 <div class="header-btn-group">
-                    <button type="button" class="btn scan-document-btn">
+                    <button type="button" class="btn scan-document-btn" disabled title="Coming soon">
                         SCAN DOCUMENT
                     </button>
 
@@ -1312,7 +1535,7 @@ include 'navbar.php';
                             Course:
                         </label>
                         <input type="text" id="course" name="course" class="form-control input-custom"
-                               pattern="[A-Za-z\s]+">
+                               pattern="[A-Za-z\s\-]+">
                     </div>
 
                     <div class="d-flex align-items-center mb-3">
@@ -1320,7 +1543,8 @@ include 'navbar.php';
                             Year & Section:
                         </label>
                         <input type="text" id="year_section" name="year_section" class="form-control input-custom"
-                               pattern="[0-9]+-[0-9]+" inputmode="numeric" maxlength="4">
+                               pattern="[0-9]-[0-9]" inputmode="numeric" maxlength="3"
+                               title="One number for the year and one for the section, e.g. 1-1">
                     </div>
 
                     <div class="d-flex align-items-center mb-3">
@@ -1347,6 +1571,17 @@ include 'navbar.php';
                     </div>
 
                     <div class="col-md-6">
+                    <div class="d-flex align-items-center mb-3">
+                        <label for="admission_track" class="form-label form-label-custom">
+                            Admission Type:
+                        </label>
+                        <select id="admission_track" name="admission_track" class="form-select input-custom">
+                            <?php foreach (getAdmissionTracks() as $trackValue => $trackLabel): ?>
+                                <option value="<?= htmlspecialchars($trackValue) ?>"><?= htmlspecialchars($trackLabel) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
                     <div class="d-flex align-items-center mb-3">
                         <label for="mobile_number" class="form-label form-label-custom">
                             Mobile Number:
@@ -1385,9 +1620,10 @@ include 'navbar.php';
                 <template id="documentRowTemplate">
                     <div class="d-flex align-items-center gap-3 border rounded p-2 document-row">
                         <i class="bi bi-file-earmark-text document-row-icon"></i>
-                        <div class="flex-grow-1">
+                        <div class="flex-grow-1 document-row-body">
                             <div class="document-row-title"></div>
                             <small class="text-muted document-row-filename"></small>
+                            <select class="form-select form-select-sm document-type-select" aria-label="Document type"></select>
                         </div>
                         <button type="button" class="btn btn-sm btn-outline-secondary document-view-btn" title="View file">
                             <i class="bi bi-eye"></i>
@@ -1432,7 +1668,9 @@ include 'navbar.php';
                     <tr><th>Name</th><td id="confirmSummaryName"></td></tr>
                     <tr><th>Course</th><td id="confirmSummaryCourse"></td></tr>
                     <tr><th>Year &amp; Section</th><td id="confirmSummarySection"></td></tr>
+                    <tr><th>Admission Type</th><td id="confirmSummaryTrack"></td></tr>
                     <tr><th>Attached Documents</th><td id="confirmSummaryDocs"></td></tr>
+                    <tr><th>Missing Requirements</th><td id="confirmSummaryMissing"></td></tr>
                 </table>
             </div>
             <div class="modal-footer">
@@ -1459,7 +1697,7 @@ include 'navbar.php';
                 </p>
                 <div id="confirmStatusArchiveNote" class="alert alert-warning small mb-0 d-none">
                     <i class="bi bi-archive"></i>
-                    Their documents will be saved to Google Drive and the record moved to Archive.
+                    The record will be moved to Archive and their documents moved to the archive folder.
                 </div>
                 <div id="confirmStatusError" class="alert alert-danger small mt-3 mb-0 d-none"></div>
             </div>
@@ -1488,9 +1726,14 @@ include 'navbar.php';
     </div>
 </div>
 
-<script src="../js/add-student-ocr.js"></script>
-<script src="../js/student-directory-filters.js"></script>
-<script src="../js/student-directory.js"></script>
+<div id="documentPageData" hidden data-json="<?= htmlspecialchars(json_encode([
+    'requirements' => requirementsForClient(),
+    'groups'       => getDocumentRequirementGroups(),
+    'tracks'       => getAdmissionTracks(),
+]), ENT_QUOTES, 'UTF-8') ?>"></div>
+<script src="../js/add-student-ocr.js?v=<?= @filemtime(__DIR__ . '/../js/add-student-ocr.js') ?>"></script>
+<script src="../js/student-directory-filters.js?v=<?= @filemtime(__DIR__ . '/../js/student-directory-filters.js') ?>"></script>
+<script src="../js/student-directory.js?v=<?= @filemtime(__DIR__ . '/../js/student-directory.js') ?>"></script>
     </div>
 </body>
 </html>

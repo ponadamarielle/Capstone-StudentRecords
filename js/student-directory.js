@@ -68,7 +68,7 @@
         if (confirmBtn) {
             confirmBtn.disabled = busy;
             confirmBtn.textContent = busy
-                ? (archiving ? 'Archiving to Google Drive…' : 'Saving…')
+                ? (archiving ? 'Archiving…' : 'Saving…')
                 : (archiving ? 'Archive' : 'Confirm');
         }
         if (cancelBtn) cancelBtn.disabled = busy;
@@ -101,7 +101,7 @@
                 if (data.archived) {
                     removeRowFromTable(select.closest('tr'));
                     if (data.skipped && data.skipped.length) {
-                        alert('Archived, but these files were missing on the server and were not uploaded:\n- '
+                        alert('Archived, but these files were missing on the server and could not be moved:\n- '
                             + data.skipped.join('\n- '));
                     }
                 }
@@ -185,7 +185,7 @@ document.querySelectorAll('.view-btn').forEach((btn) => {
 
         if (digits.length === 0) return '';
         if (digits.length === 1) return isDeleting(e) ? digits : digits + '-';
-        return digits.slice(0, 1) + '-' + digits.slice(1, 3);
+        return digits.slice(0, 1) + '-' + digits.slice(1, 2);
     }
 
     function formatStudentNumber(value, e) {
@@ -243,8 +243,8 @@ document.querySelectorAll('.view-btn').forEach((btn) => {
 
     const bindFilter = (id, transform) => bindFilterEl(document.getElementById(id), transform);
 
-    bindFilter('name', lettersOnly);
-    bindFilter('course', lettersOnly);
+    bindFilter('name', (v) => v.replace(/[^A-Za-z\s.,]/g, ''));
+    bindFilter('course', (v) => v.replace(/[^A-Za-z\s\-]/g, ''));
     bindFilter('sex', lettersOnly);
     bindFilter('mobile_number', (v) => digitsOnly(v).slice(0, 11));
     bindFilter('year_section', formatYearSection);

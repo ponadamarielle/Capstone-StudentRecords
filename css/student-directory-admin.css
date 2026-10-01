@@ -368,6 +368,7 @@
 .ocr-status-loading { color: #6c757d; }
 .ocr-status-success { color: #198754; }
 .ocr-status-error { color: #dc3545; }
+.ocr-status-warning { color: #b45309; }
 #studentNumberFeedback {
     font-size: 0.75rem;
 }
@@ -541,4 +542,182 @@ body.has-document-preview #addRecordsModal.modal {
         width: 100%;
         max-width: none;
     }
+}
+.requirement-checklist {
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #ddd;
+    font-family: "Inter";
+}
+.requirement-checklist:empty {
+    display: none;
+}
+.requirement-checklist-heading {
+    font-weight: 700;
+    font-size: 0.9rem;
+    margin-bottom: 8px;
+}
+.requirement-group {
+    margin-bottom: 8px;
+}
+.requirement-group-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #6c757d;
+    margin-bottom: 4px;
+}
+.requirement-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.requirement-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 9px;
+    border: 1px solid #d0d0d0;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    color: #6c757d;
+    background: #fff;
+}
+.requirement-item.is-required {
+    color: #333;
+    border-color: #b9b9b9;
+}
+.requirement-item.is-attached {
+    color: #146c43;
+    border-color: #a3cfbb;
+    background: #e8f5ee;
+}
+.document-row-body {
+    min-width: 0;
+}
+.document-row-title {
+    font-weight: 600;
+    font-family: "Inter";
+}
+.document-row-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+.document-row-filename {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.document-type-select {
+    margin-top: 6px;
+    max-width: 360px;
+}
+.requirement-view {
+    font-family: "Inter";
+}
+.requirement-summary {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 6px 16px;
+    padding: 10px 12px;
+    margin-bottom: 14px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: #fafafa;
+    font-size: 0.9rem;
+}
+.requirement-view-group {
+    margin-bottom: 14px;
+}
+.requirement-view-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 10px;
+    border: 1px solid #e3e3e3;
+    border-radius: 6px;
+    margin-bottom: 6px;
+    background: #fff;
+}
+.requirement-view-row .req-status {
+    font-size: 1.1rem;
+    flex-shrink: 0;
+}
+.requirement-view-row.is-attached .req-status { color: #198754; }
+.requirement-view-row.is-missing {
+    border-color: #f1c2c7;
+    background: #fff7f8;
+}
+.requirement-view-row.is-missing .req-status { color: #dc3545; }
+.requirement-view-row.is-optional .req-status { color: #adb5bd; }
+.requirement-view-row .req-body {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.requirement-view-row .req-label {
+    font-weight: 600;
+}
+.requirement-view-row .req-ref {
+    margin-left: 6px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #800000;
+    background: #f6e9e9;
+    border-radius: 4px;
+    padding: 1px 6px;
+}
+.requirement-view-row .document-name {
+    font-size: 0.85rem;
+    color: #555;
+    word-break: break-word;
+}
+.requirement-view-row .document-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+.documents-section-label {
+    font-family: "Inter";
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #6c757d;
+    margin: 4px 0 6px;
+}
+#modalDocumentList .document-row,
+#scannedFilePreview .document-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+.requirement-item.is-staged {
+    color: #0a58ca;
+    border-color: #9ec5fe;
+    background: #eef4ff;
+}
+.document-row-reason {
+    display: block;
+    font-size: 0.78rem;
+    font-style: italic;
+    color: #6c757d;
+}
+.change-type-link {
+    display: inline-block;
+    padding: 0;
+    margin-top: 2px;
+    font-size: 0.8rem;
+    color: #800000;
+    text-decoration: underline;
+    border: 0;
+}
+.change-type-link:hover,
+.change-type-link:focus {
+    color: #5a0000;
 }

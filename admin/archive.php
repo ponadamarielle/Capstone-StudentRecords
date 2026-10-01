@@ -6,32 +6,13 @@ require_once __DIR__ . '/course_catalog.php';
 $action = $_GET['action'] ?? $_POST['action'] ?? '';
 $isAjax = in_array($action, ['archive_student', 'restore_student'], true);
 
-function loadEnv($path)
-{
-    if (!file_exists($path)) {
-        error_log('.env file not found at ' . $path . ' — falling back to defaults.');
-        return;
-    }
-    foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
-        $line = trim($line);
-        if ($line === '' || str_starts_with($line, '#')) {
-            continue;
-        }
-        [$key, $value] = array_pad(explode('=', $line, 2), 2, '');
-        $key = trim($key);
-        $value = trim($value);
-        if ($key !== '' && getenv($key) === false) {
-            putenv("$key=$value");
-        }
-    }
-}
-
-loadEnv(__DIR__ . '/../.env');
-
 $DBHost = "localhost";
 $DBUser = "root";
 $DBPass = "";
 $DBName = "db_pup_eRecords";
+
+const DOCUMENTS_DIR = '../uploads/documents/';
+const ARCHIVE_DIR   = '../uploads/archive/';
 
 $conn = mysqli_connect($DBHost, $DBUser, $DBPass, $DBName);
 if (!$conn) {
@@ -41,408 +22,6 @@ if (!$conn) {
         exit();
     }
     die("Connection failed: " . mysqli_connect_error());
-}
-
-class GoogleDriveException extends Exception {}
-
-const GDRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder';
-const GDRIVE_API         = 'https://www.googleapis.com/drive/v3';
-const GDRIVE_UPLOAD_API  = 'https://www.googleapis.com/upload/drive/v3';
-const GDRIVE_ROOT_NAME   = 'Student Records';
-const GDRIVE_SCOPE       = 'https://www.googleapis.com/auth/drive';
-
-function gdriveEnv($key, $fallback = '')
-{
-    $value = getenv($key);
-    if ($value === false) {
-        return $fallback;
-    }
-    $value = trim($value, " \t\"'");
-    return $value === '' ? $fallback : $value;
-}
-
-function gdriveClientId()
-{
-    return gdriveEnv('GOOGLE_DRIVE_CLIENT_ID', gdriveEnv('GOOGLE_OAUTH_CLIENT_ID', gdriveEnv('GOOGLE_CLIENT_ID')));
-}
-
-function gdriveClientSecret()
-{
-    return gdriveEnv('GOOGLE_DRIVE_CLIENT_SECRET', gdriveEnv('GOOGLE_OAUTH_CLIENT_SECRET', gdriveEnv('GOOGLE_CLIENT_SECRET')));
-}
-
-function gdriveIsConfigured()
-{
-    return gdriveClientId() !== ''
-        && gdriveClientSecret() !== ''
-        && gdriveEnv('GOOGLE_REFRESH_TOKEN') !== '';
-}
-
-function gdriveHttp($method, $url, array $headers = [], $body = null)
-{
-    $responseHeaders = [];
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_CUSTOMREQUEST  => $method,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HTTPHEADER     => $headers,
-        CURLOPT_TIMEOUT        => 120,
-        CURLOPT_HEADERFUNCTION => function ($curl, $line) use (&$responseHeaders) {
-            $parts = explode(':', $line, 2);
-            if (count($parts) === 2) {
-                $responseHeaders[strtolower(trim($parts[0]))] = trim($parts[1]);
-            }
-            return strlen($line);
-        },
-    ]);
-    if ($body !== null) {
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
-    }
-
-    $response = curl_exec($ch);
-    $error    = curl_error($ch);
-    $status   = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($response === false) {
-        throw new GoogleDriveException('Could not reach Google: ' . $error);
-    }
-    return [$status, $response, $responseHeaders];
-}
-
-function gdriveAccessToken()
-{
-    static $cache = null;
-    if ($cache !== null && $cache['expires'] > time() + 60) {
-        return $cache['token'];
-    }
-
-    if (!gdriveIsConfigured()) {
-        throw new GoogleDriveException(
-            'Google Drive is not connected yet. Open the Archive page and click "Connect Google Drive".'
-        );
-    }
-
-    [$status, $body] = gdriveHttp(
-        'POST',
-        'https://oauth2.googleapis.com/token',
-        ['Content-Type: application/x-www-form-urlencoded'],
-        http_build_query([
-            'client_id'     => gdriveClientId(),
-            'client_secret' => gdriveClientSecret(),
-            'refresh_token' => gdriveEnv('GOOGLE_REFRESH_TOKEN'),
-            'grant_type'    => 'refresh_token',
-        ])
-    );
-
-    $data = json_decode($body, true);
-    if ($status !== 200 || empty($data['access_token'])) {
-        $message = $data['error_description'] ?? ($data['error'] ?? ('HTTP ' . $status));
-        if (($data['error'] ?? '') === 'invalid_grant') {
-            $message .= ' (the refresh token expired or was revoked; reconnect Google Drive on the Archive page)';
-        }
-        throw new GoogleDriveException('Google sign-in failed: ' . $message);
-    }
-
-    $cache = [
-        'token'   => $data['access_token'],
-        'expires' => time() + (int) ($data['expires_in'] ?? 3600),
-    ];
-    return $cache['token'];
-}
-
-function gdriveApi($method, $url, $payload = null)
-{
-    $headers = ['Authorization: Bearer ' . gdriveAccessToken()];
-    $body = null;
-    if ($payload !== null) {
-        $headers[] = 'Content-Type: application/json; charset=UTF-8';
-        $body = json_encode($payload);
-    }
-
-    [$status, $response] = gdriveHttp($method, $url, $headers, $body);
-    $data = json_decode($response, true);
-
-    if ($status >= 400) {
-        $message = $data['error']['message'] ?? ('HTTP ' . $status);
-        if ($status === 403 && stripos($message, 'insufficient') !== false) {
-            $message .= ' (the saved token has no Drive permission; reconnect Google Drive on the Archive page)';
-        }
-        throw new GoogleDriveException('Google Drive error: ' . $message, $status);
-    }
-    return is_array($data) ? $data : [];
-}
-
-function gdriveEscapeQuery($value)
-{
-    return str_replace(['\\', "'"], ['\\\\', "\\'"], $value);
-}
-
-function gdriveFolderName($value, $fallback)
-{
-    $value = trim(preg_replace('/\s+/', ' ', (string) $value));
-    return $value === '' ? $fallback : $value;
-}
-
-function gdriveFolderUrl($folderId)
-{
-    return 'https://drive.google.com/drive/folders/' . $folderId;
-}
-
-function gdriveFindOrCreateFolder($name, $parentId)
-{
-    $query = sprintf(
-        "name = '%s' and '%s' in parents and mimeType = '%s' and trashed = false",
-        gdriveEscapeQuery($name),
-        gdriveEscapeQuery($parentId),
-        GDRIVE_FOLDER_MIME
-    );
-
-    $found = gdriveApi('GET', GDRIVE_API . '/files?' . http_build_query([
-        'q'                         => $query,
-        'fields'                    => 'files(id,name)',
-        'pageSize'                  => 1,
-        'supportsAllDrives'         => 'true',
-        'includeItemsFromAllDrives' => 'true',
-    ]));
-
-    if (!empty($found['files'][0]['id'])) {
-        return $found['files'][0]['id'];
-    }
-
-    $created = gdriveApi('POST', GDRIVE_API . '/files?fields=id&supportsAllDrives=true', [
-        'name'     => $name,
-        'mimeType' => GDRIVE_FOLDER_MIME,
-        'parents'  => [$parentId],
-    ]);
-
-    if (empty($created['id'])) {
-        throw new GoogleDriveException('Google Drive did not return an ID for folder "' . $name . '".');
-    }
-    return $created['id'];
-}
-
-function gdriveRootFolderId()
-{
-    static $rootId = null;
-    if ($rootId === null) {
-        $configured = gdriveEnv('GOOGLE_DRIVE_FOLDER_ID');
-        $rootId = $configured !== '' ? $configured : gdriveFindOrCreateFolder(GDRIVE_ROOT_NAME, 'root');
-    }
-    return $rootId;
-}
-
-function gdriveSendFile($localPath, $fileName, $parentId, $existingFileId = null)
-{
-    $size = filesize($localPath);
-    $mime = function_exists('mime_content_type') ? (mime_content_type($localPath) ?: 'application/octet-stream') : 'application/octet-stream';
-
-    if ($existingFileId === null) {
-        $method   = 'POST';
-        $url      = GDRIVE_UPLOAD_API . '/files?uploadType=resumable&supportsAllDrives=true&fields=id,webViewLink';
-        $metadata = ['name' => $fileName, 'parents' => [$parentId]];
-    } else {
-        $method   = 'PATCH';
-        $url      = GDRIVE_UPLOAD_API . '/files/' . rawurlencode($existingFileId)
-                  . '?uploadType=resumable&supportsAllDrives=true&fields=id,webViewLink';
-        $metadata = ['name' => $fileName];
-    }
-
-    [$status, $response, $headers] = gdriveHttp(
-        $method,
-        $url,
-        [
-            'Authorization: Bearer ' . gdriveAccessToken(),
-            'Content-Type: application/json; charset=UTF-8',
-            'X-Upload-Content-Type: ' . $mime,
-            'X-Upload-Content-Length: ' . $size,
-        ],
-        json_encode($metadata)
-    );
-
-    if ($status !== 200 || empty($headers['location'])) {
-        $data = json_decode($response, true);
-        $message = $data['error']['message'] ?? ('HTTP ' . $status);
-        throw new GoogleDriveException('Could not start upload of "' . $fileName . '": ' . $message, $status);
-    }
-
-    $contents = file_get_contents($localPath);
-    if ($contents === false) {
-        throw new GoogleDriveException('Could not read "' . $fileName . '" from the server.');
-    }
-
-    [$status, $response] = gdriveHttp(
-        'PUT',
-        $headers['location'],
-        ['Content-Type: ' . $mime, 'Content-Length: ' . strlen($contents)],
-        $contents
-    );
-
-    $data = json_decode($response, true);
-    if (($status !== 200 && $status !== 201) || empty($data['id'])) {
-        $message = $data['error']['message'] ?? ('HTTP ' . $status);
-        throw new GoogleDriveException('Upload of "' . $fileName . '" failed: ' . $message, $status);
-    }
-
-    return [
-        'id'  => $data['id'],
-        'url' => $data['webViewLink'] ?? ('https://drive.google.com/file/d/' . $data['id'] . '/view'),
-    ];
-}
-
-function gdriveUploadFile($localPath, $fileName, $parentId)
-{
-    return gdriveSendFile($localPath, $fileName, $parentId, null);
-}
-
-function driveRedirectUri()
-{
-    $configured = gdriveEnv('GOOGLE_DRIVE_REDIRECT_URI');
-    if ($configured !== '') {
-        return $configured;
-    }
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    return $scheme . '://' . $_SERVER['HTTP_HOST'] . $_SERVER['SCRIPT_NAME'];
-}
-
-function setArchiveFlash($type, $message, $token = '')
-{
-    $_SESSION['archive_flash'] = ['type' => $type, 'message' => $message, 'token' => $token];
-}
-
-function driveBase64Url($data)
-{
-    return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
-}
-
-function driveMakeState()
-{
-    $payload = driveBase64Url(json_encode(['t' => time(), 'n' => bin2hex(random_bytes(8))]));
-    return $payload . '.' . hash_hmac('sha256', $payload, gdriveClientSecret());
-}
-
-function driveStateIsValid($state)
-{
-    [$payload, $signature] = array_pad(explode('.', (string) $state, 2), 2, '');
-    if ($payload === '' || !hash_equals(hash_hmac('sha256', $payload, gdriveClientSecret()), $signature)) {
-        return false;
-    }
-    $data = json_decode(base64_decode(strtr($payload, '-_', '+/')), true);
-    $issued = (int) ($data['t'] ?? 0);
-    return $issued > 0 && time() - $issued <= 900;
-}
-
-function saveRefreshTokenToEnv($token)
-{
-    $path  = __DIR__ . '/../.env';
-    $lines = file_exists($path) ? file($path, FILE_IGNORE_NEW_LINES) : [];
-    if ($lines === false) {
-        return false;
-    }
-
-    $found = false;
-    foreach ($lines as $i => $line) {
-        if (preg_match('/^\s*GOOGLE_REFRESH_TOKEN\s*=/', $line)) {
-            $lines[$i] = 'GOOGLE_REFRESH_TOKEN=' . $token;
-            $found = true;
-        }
-    }
-    if (!$found) {
-        $lines[] = 'GOOGLE_REFRESH_TOKEN=' . $token;
-    }
-
-    return file_put_contents($path, implode(PHP_EOL, $lines) . PHP_EOL, LOCK_EX) !== false;
-}
-
-function startDriveAuth()
-{
-    if (gdriveClientId() === '' || gdriveClientSecret() === '') {
-        setArchiveFlash('danger', 'GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET must be set in .env before connecting Google Drive.');
-        header('Location: archive.php');
-        exit();
-    }
-
-    header('Location: https://accounts.google.com/o/oauth2/v2/auth?' . http_build_query([
-        'client_id'     => gdriveClientId(),
-        'redirect_uri'  => driveRedirectUri(),
-        'response_type' => 'code',
-        'scope'         => GDRIVE_SCOPE,
-        'access_type'   => 'offline',
-        'prompt'        => 'consent',
-        'state'         => driveMakeState(),
-    ]));
-    exit();
-}
-
-function handleDriveAuthCallback()
-{
-    $ok      = false;
-    $message = '';
-    $token   = '';
-
-    if (!driveStateIsValid($_GET['state'] ?? '')) {
-        $message = 'This Google Drive connection link expired or is invalid. Please try again from the Archive page.';
-    } elseif (isset($_GET['error'])) {
-        $message = 'Google returned an error: ' . $_GET['error'];
-    } else {
-        try {
-            [$status, $body] = gdriveHttp(
-                'POST',
-                'https://oauth2.googleapis.com/token',
-                ['Content-Type: application/x-www-form-urlencoded'],
-                http_build_query([
-                    'code'          => $_GET['code'] ?? '',
-                    'client_id'     => gdriveClientId(),
-                    'client_secret' => gdriveClientSecret(),
-                    'redirect_uri'  => driveRedirectUri(),
-                    'grant_type'    => 'authorization_code',
-                ])
-            );
-            $data = json_decode($body, true);
-
-            if ($status !== 200 || empty($data['refresh_token'])) {
-                $message = 'Could not get a refresh token: '
-                    . ($data['error_description'] ?? ($data['error'] ?? ('HTTP ' . $status)));
-            } elseif (saveRefreshTokenToEnv($data['refresh_token'])) {
-                $ok      = true;
-                $message = 'Google Drive is connected. The token was saved to your .env file.';
-            } else {
-                $ok      = true;
-                $token   = $data['refresh_token'];
-                $message = 'Google Drive is connected, but .env could not be updated automatically. Add this line to .env, then restart Apache:';
-            }
-        } catch (Exception $e) {
-            $message = $e->getMessage();
-        }
-    }
-
-    header('Cache-Control: no-store');
-    header('Referrer-Policy: no-referrer');
-    ?>
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Google Drive</title>
-    <link href="../css/bootstrap.min.css" rel="stylesheet">
-    <link href="../css/bootstrap-icons.css" rel="stylesheet">
-    <link href="../css/font.css" rel="stylesheet">
-    <link href="../css/archive-admin.css" rel="stylesheet">
-</head>
-<body class="archive-connect-page">
-    <div class="archive-connect-card">
-        <i class="bi <?= $ok ? 'bi-check-circle-fill text-success' : 'bi-x-circle-fill text-danger' ?> archive-connect-icon"></i>
-        <h5><?= $ok ? 'Google Drive connected' : 'Could not connect Google Drive' ?></h5>
-        <p><?= htmlspecialchars($message) ?></p>
-        <?php if ($token !== ''): ?>
-            <pre class="archive-token">GOOGLE_REFRESH_TOKEN=<?= htmlspecialchars($token) ?></pre>
-        <?php endif; ?>
-        <a href="archive.php" class="btn archive-connect-btn">Go to Archive</a>
-    </div>
-</body>
-</html>
-    <?php
 }
 
 function studentColumns($conn)
@@ -460,106 +39,86 @@ function studentColumns($conn)
     return $names;
 }
 
-function studentDriveFolderColumn($conn)
-{
-    foreach (['drive_folder_link', 'drive_folder_url', 'drive_link'] as $candidate) {
-        if (in_array($candidate, studentColumns($conn), true)) {
-            return $candidate;
-        }
-    }
-    return null;
-}
-
 function studentHasArchivedAt($conn)
 {
     return in_array('archived_at', studentColumns($conn), true);
 }
 
-function archiveStudentToDrive($conn, $studentId)
+function safeName($value, $fallback)
 {
-    $stmt = mysqli_prepare($conn,
-        "SELECT student_id, student_number, name, course, year_section FROM students WHERE student_id = ?");
-    mysqli_stmt_bind_param($stmt, "i", $studentId);
-    mysqli_stmt_execute($stmt);
-    $student = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
-
-    if (!$student) {
-        throw new GoogleDriveException('Student not found.');
+    $value = preg_replace('/[<>:"\/\\\\|?*#%\x00-\x1F]/', ' ', (string) $value);
+    $value = trim(preg_replace('/\s+/', ' ', $value), " .");
+    if ($value === '') {
+        $value = $fallback;
     }
+    return substr($value, 0, 80);
+}
 
-    $rootId          = gdriveRootFolderId();
-    $courseFolderId  = gdriveFindOrCreateFolder(gdriveFolderName($student['course'], 'No Course'), $rootId);
-    $sectionFolderId = gdriveFindOrCreateFolder(gdriveFolderName($student['year_section'], 'No Year & Section'), $courseFolderId);
+function isPathInside($path, $dir)
+{
+    $real = realpath($path);
+    $base = realpath($dir);
+    return $real !== false && $base !== false && strpos($real, $base . DIRECTORY_SEPARATOR) === 0;
+}
 
-    $studentLabel    = trim(($student['student_number'] ?? '') . ' - ' . ($student['name'] ?? ''), " -");
-    $studentFolderId = gdriveFindOrCreateFolder(gdriveFolderName($studentLabel, 'Student ' . $studentId), $sectionFolderId);
-    $folderUrl       = gdriveFolderUrl($studentFolderId);
+function uniqueTarget($dir, $fileName, array &$reserved)
+{
+    $info = pathinfo((string) $fileName);
+    $base = safeName($info['filename'] ?? '', 'document');
+    $ext  = strtolower($info['extension'] ?? '') ?: 'pdf';
 
-    $folderColumn = studentDriveFolderColumn($conn);
-    if ($folderColumn !== null) {
-        $saveStmt = mysqli_prepare($conn, "UPDATE students SET `$folderColumn` = ? WHERE student_id = ?");
-        mysqli_stmt_bind_param($saveStmt, "si", $folderUrl, $studentId);
-        mysqli_stmt_execute($saveStmt);
+    $target = $dir . $base . '.' . $ext;
+    $i = 2;
+    while (file_exists($target) || isset($reserved[strtolower($target)])) {
+        $target = $dir . $base . ' (' . $i++ . ').' . $ext;
     }
+    $reserved[strtolower($target)] = true;
+    return $target;
+}
 
-    $docsStmt = mysqli_prepare($conn,
-        "SELECT document_id, file_name, file_path, drive_file_id FROM documents
-         WHERE student_id = ?
-           AND (drive_file_id IS NULL OR drive_file_id = '' OR drive_link IS NULL OR drive_link = '')
-         ORDER BY document_id ASC");
-    mysqli_stmt_bind_param($docsStmt, "i", $studentId);
-    mysqli_stmt_execute($docsStmt);
-    $documents = mysqli_fetch_all(mysqli_stmt_get_result($docsStmt), MYSQLI_ASSOC);
-
-    $markStmt = mysqli_prepare($conn,
-        "UPDATE documents
-         SET is_archived = 1, drive_file_id = ?, drive_link = ?, archived_at = NOW()
-         WHERE document_id = ?");
-
-    $uploaded = 0;
-    $skipped  = [];
-    foreach ($documents as $doc) {
-        $path = $doc['file_path'] ?? '';
-        $name = ($doc['file_name'] ?? '') !== '' ? $doc['file_name'] : basename($path);
-
-        if ($path === '' || !is_file($path)) {
-            $skipped[] = $name;
-            continue;
+function moveFiles(array $moves)
+{
+    $done = [];
+    foreach ($moves as $move) {
+        if (!@rename($move['from'], $move['to'])) {
+            undoMoves($done);
+            throw new Exception('Could not move "' . basename($move['from']) . '". Check folder permissions.');
         }
-
-        $oldFileId = (string) ($doc['drive_file_id'] ?? '');
-        if ($oldFileId !== '') {
-            try {
-                $file = gdriveSendFile($path, $name, $studentFolderId, $oldFileId);
-            } catch (GoogleDriveException $e) {
-                if ($e->getCode() !== 404) {
-                    throw $e;
-                }
-                $file = gdriveUploadFile($path, $name, $studentFolderId);
-            }
-        } else {
-            $file = gdriveUploadFile($path, $name, $studentFolderId);
-        }
-
-        $documentId = (int) $doc['document_id'];
-        mysqli_stmt_bind_param($markStmt, "ssi", $file['id'], $file['url'], $documentId);
-        mysqli_stmt_execute($markStmt);
-        $uploaded++;
+        $done[] = $move;
     }
+    return $done;
+}
 
-    $remarkStmt = mysqli_prepare($conn,
-        "UPDATE documents SET is_archived = 1, archived_at = NOW()
-         WHERE student_id = ? AND drive_file_id IS NOT NULL AND drive_file_id <> ''
-           AND drive_link IS NOT NULL AND drive_link <> ''
-           AND (is_archived IS NULL OR is_archived = 0)");
-    mysqli_stmt_bind_param($remarkStmt, "i", $studentId);
-    mysqli_stmt_execute($remarkStmt);
+function undoMoves(array $done)
+{
+    foreach (array_reverse($done) as $move) {
+        @rename($move['to'], $move['from']);
+    }
+}
 
-    return [
-        'folder_url' => $folderUrl,
-        'uploaded'   => $uploaded,
-        'skipped'    => $skipped,
-    ];
+function removeEmptyArchiveDirs($dir)
+{
+    $base = realpath(ARCHIVE_DIR);
+    $real = realpath($dir);
+    while ($real !== false && $base !== false && $real !== $base
+        && strpos($real, $base . DIRECTORY_SEPARATOR) === 0) {
+        $entries = @scandir($real);
+        if ($entries === false || count($entries) > 2 || !@rmdir($real)) {
+            break;
+        }
+        $real = dirname($real);
+    }
+}
+
+function courseFolderName($course)
+{
+    $entry = resolveCourse($course);
+    return $entry ? safeName($entry['code'], 'No Course') : safeName($course, 'No Course');
+}
+
+function fileUrl($path)
+{
+    return implode('/', array_map('rawurlencode', explode('/', $path)));
 }
 
 function handleArchiveStudent($conn)
@@ -571,47 +130,111 @@ function handleArchiveStudent($conn)
         echo json_encode(['success' => false, 'message' => 'Invalid student.']);
         return;
     }
-    if ($status !== '' && !in_array($status, ['inactive', 'onleave'], true)) {
+    if (!in_array($status, ['inactive', 'onleave'], true)) {
         echo json_encode(['success' => false, 'message' => 'Only IN-ACTIVE or ON-LEAVE students can be archived.']);
         return;
     }
+    $studentId = (int) $studentId;
 
-    session_write_close();
-    @set_time_limit(300);
-
-    try {
-        $result = archiveStudentToDrive($conn, (int) $studentId);
-    } catch (Exception $e) {
-        error_log('Archive to Google Drive failed for student ' . $studentId . ': ' . $e->getMessage());
-        echo json_encode([
-            'success' => false,
-            'message' => 'Could not upload to Google Drive, so the student was not archived. ' . $e->getMessage(),
-        ]);
+    $stmt = mysqli_prepare($conn,
+        "SELECT student_number, name, course, year_section FROM students WHERE student_id = ?");
+    mysqli_stmt_bind_param($stmt, "i", $studentId);
+    mysqli_stmt_execute($stmt);
+    $student = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    if (!$student) {
+        echo json_encode(['success' => false, 'message' => 'Student not found.']);
         return;
     }
 
-    if ($status !== '') {
-        $stmt = mysqli_prepare($conn, studentHasArchivedAt($conn)
-            ? "UPDATE students SET status = ?, archived_at = NOW() WHERE student_id = ?"
-            : "UPDATE students SET status = ? WHERE student_id = ?");
-        mysqli_stmt_bind_param($stmt, "si", $status, $studentId);
-        if (!mysqli_stmt_execute($stmt)) {
-            echo json_encode([
-                'success' => false,
-                'message' => 'Documents were uploaded to Google Drive, but the status could not be updated: ' . mysqli_error($conn),
-            ]);
-            return;
-        }
+    $studentLabel = trim(($student['student_number'] ?? '') . ' - ' . ($student['name'] ?? ''), " -");
+    $folder = ARCHIVE_DIR
+        . date('Y') . '/'
+        . courseFolderName($student['course']) . '/'
+        . safeName($student['year_section'], 'No Year & Section') . '/'
+        . safeName($studentLabel, 'Student ' . $studentId) . '/';
+
+    if (!is_dir($folder) && !@mkdir($folder, 0755, true)) {
+        echo json_encode(['success' => false, 'message' => 'Could not create the archive folder. Check folder permissions.']);
+        return;
     }
 
+    $docsStmt = mysqli_prepare($conn, "SELECT document_id, file_name, file_path FROM documents WHERE student_id = ?");
+    mysqli_stmt_bind_param($docsStmt, "i", $studentId);
+    mysqli_stmt_execute($docsStmt);
+    $documents = mysqli_fetch_all(mysqli_stmt_get_result($docsStmt), MYSQLI_ASSOC);
+
+    $moves    = [];
+    $missing  = [];
+    $reserved = [];
+    foreach ($documents as $doc) {
+        $path = $doc['file_path'] ?? '';
+        $name = ($doc['file_name'] ?? '') !== '' ? $doc['file_name'] : basename($path);
+
+        if ($path === '' || !is_file($path)) {
+            $missing[] = $name;
+            continue;
+        }
+        if (!isPathInside($path, DOCUMENTS_DIR)) {
+            continue; 
+        }
+        $moves[] = [
+            'document_id' => (int) $doc['document_id'],
+            'from'        => $path,
+            'to'          => uniqueTarget($folder, $name, $reserved),
+        ];
+    }
+
+    try {
+        $done = moveFiles($moves);
+    } catch (Exception $e) {
+        removeEmptyArchiveDirs($folder);
+        echo json_encode(['success' => false, 'message' => 'The student was not archived. ' . $e->getMessage()]);
+        return;
+    }
+
+    mysqli_begin_transaction($conn);
+    try {
+        $studentStmt = mysqli_prepare($conn, studentHasArchivedAt($conn)
+            ? "UPDATE students SET status = ?, archived_at = NOW() WHERE student_id = ?"
+            : "UPDATE students SET status = ? WHERE student_id = ?");
+        mysqli_stmt_bind_param($studentStmt, "si", $status, $studentId);
+        if (!mysqli_stmt_execute($studentStmt)) {
+            throw new Exception(mysqli_error($conn));
+        }
+
+        $pathStmt = mysqli_prepare($conn, "UPDATE documents SET file_path = ? WHERE document_id = ?");
+        foreach ($done as $move) {
+            mysqli_stmt_bind_param($pathStmt, "si", $move['to'], $move['document_id']);
+            if (!mysqli_stmt_execute($pathStmt)) {
+                throw new Exception(mysqli_error($conn));
+            }
+        }
+
+        $markStmt = mysqli_prepare($conn,
+            "UPDATE documents SET is_archived = 1, archived_at = NOW() WHERE student_id = ?");
+        mysqli_stmt_bind_param($markStmt, "i", $studentId);
+        if (!mysqli_stmt_execute($markStmt)) {
+            throw new Exception(mysqli_error($conn));
+        }
+
+        mysqli_commit($conn);
+    } catch (Exception $e) {
+        mysqli_rollback($conn);
+        undoMoves($done);
+        removeEmptyArchiveDirs($folder);
+        echo json_encode(['success' => false, 'message' => 'Could not archive the student: ' . $e->getMessage()]);
+        return;
+    }
+
+    removeEmptyArchiveDirs($folder); 
+
     echo json_encode([
-        'success'    => true,
-        'archived'   => true,
-        'status'     => $status,
-        'message'    => 'Student archived to Google Drive.',
-        'folder_url' => $result['folder_url'],
-        'uploaded'   => $result['uploaded'],
-        'skipped'    => $result['skipped'],
+        'success'   => true,
+        'archived'  => true,
+        'status'    => $status,
+        'message'   => 'Student moved to Archive. ' . count($done) . ' document(s) moved to the archive folder.',
+        'documents' => count($done),
+        'skipped'   => $missing,
     ]);
 }
 
@@ -638,6 +261,37 @@ function handleRestoreStudent($conn)
         return;
     }
 
+    if (!is_dir(DOCUMENTS_DIR) && !@mkdir(DOCUMENTS_DIR, 0755, true)) {
+        echo json_encode(['success' => false, 'message' => 'Could not create the documents folder.']);
+        return;
+    }
+
+    $docsStmt = mysqli_prepare($conn, "SELECT document_id, file_path FROM documents WHERE student_id = ?");
+    mysqli_stmt_bind_param($docsStmt, "i", $studentId);
+    mysqli_stmt_execute($docsStmt);
+    $documents = mysqli_fetch_all(mysqli_stmt_get_result($docsStmt), MYSQLI_ASSOC);
+
+    $moves = [];
+    foreach ($documents as $doc) {
+        $path = $doc['file_path'] ?? '';
+        if ($path === '' || !is_file($path) || !isPathInside($path, ARCHIVE_DIR)) {
+            continue;
+        }
+        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION)) ?: 'pdf';
+        $moves[] = [
+            'document_id' => (int) $doc['document_id'],
+            'from'        => $path,
+            'to'          => DOCUMENTS_DIR . uniqid('doc_', true) . '.' . $ext,
+        ];
+    }
+
+    try {
+        $done = moveFiles($moves);
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'message' => 'The student was not restored. ' . $e->getMessage()]);
+        return;
+    }
+
     mysqli_begin_transaction($conn);
     try {
         $studentStmt = mysqli_prepare($conn, studentHasArchivedAt($conn)
@@ -646,6 +300,14 @@ function handleRestoreStudent($conn)
         mysqli_stmt_bind_param($studentStmt, "i", $studentId);
         if (!mysqli_stmt_execute($studentStmt)) {
             throw new Exception(mysqli_error($conn));
+        }
+
+        $pathStmt = mysqli_prepare($conn, "UPDATE documents SET file_path = ? WHERE document_id = ?");
+        foreach ($done as $move) {
+            mysqli_stmt_bind_param($pathStmt, "si", $move['to'], $move['document_id']);
+            if (!mysqli_stmt_execute($pathStmt)) {
+                throw new Exception(mysqli_error($conn));
+            }
         }
 
         $docsStmt = mysqli_prepare($conn,
@@ -658,16 +320,16 @@ function handleRestoreStudent($conn)
         mysqli_commit($conn);
     } catch (Exception $e) {
         mysqli_rollback($conn);
+        undoMoves($done);
         echo json_encode(['success' => false, 'message' => 'Could not restore the student: ' . $e->getMessage()]);
         return;
     }
 
-    echo json_encode(['success' => true, 'message' => 'Student restored to the Student Directory.', 'status' => 'active']);
-}
+    foreach ($done as $move) {
+        removeEmptyArchiveDirs(dirname($move['from']));
+    }
 
-if (isset($_GET['state']) && (isset($_GET['code']) || isset($_GET['error']))) {
-    handleDriveAuthCallback();
-    exit();
+    echo json_encode(['success' => true, 'message' => 'Student restored to the Student Directory.', 'status' => 'active']);
 }
 
 session_start();
@@ -691,6 +353,8 @@ if (!$isAjax && isset($_SESSION['is_first_login']) && $_SESSION['is_first_login'
 if ($action === 'archive_student') {
     header('Content-Type: application/json');
     ini_set('display_errors', '0');
+    session_write_close();
+    @set_time_limit(300);
     handleArchiveStudent($conn);
     exit();
 }
@@ -698,18 +362,11 @@ if ($action === 'archive_student') {
 if ($action === 'restore_student') {
     header('Content-Type: application/json');
     ini_set('display_errors', '0');
+    session_write_close();
+    @set_time_limit(300);
     handleRestoreStudent($conn);
     exit();
 }
-
-if ($action === 'drive_auth') {
-    startDriveAuth();
-}
-
-$flash = $_SESSION['archive_flash'] ?? null;
-unset($_SESSION['archive_flash']);
-
-$driveReady = gdriveIsConfigured();
 
 $search            = isset($_GET['search']) ? trim($_GET['search']) : '';
 $courseFilter      = isset($_GET['course']) ? trim($_GET['course']) : '';
@@ -737,10 +394,11 @@ if ($courseFilter !== '') {
     }
 
     if ($filterCourse !== null) {
-        $conditions[] = 's.course IN (?, ?)';
+        $conditions[] = 's.course IN (?, ?, ?)';
         $params[] = $filterCourse['code'];
         $params[] = $filterCourse['name'];
-        $types   .= 'ss';
+        $params[] = courseDisplayName($filterCourse);
+        $types   .= 'sss';
     } else {
         $conditions[] = 's.course = ?';
         $params[] = $courseFilter;
@@ -754,13 +412,8 @@ if ($yearSectionFilter !== '') {
     $types   .= 's';
 }
 
-$folderColumn = studentDriveFolderColumn($conn);
-$folderSelect = $folderColumn !== null ? ", s.`$folderColumn` AS drive_folder_link" : ", NULL AS drive_folder_link";
-
-$sql = "SELECT s.student_id, s.student_number, s.name, s.course, s.year_section, s.status
-               $folderSelect,
+$sql = "SELECT s.student_id, s.student_number, s.name, s.course, s.year_section, s.status,
                COUNT(d.document_id) AS doc_count,
-               SUM(CASE WHEN d.is_archived = 1 AND d.drive_link IS NOT NULL AND d.drive_link <> '' THEN 1 ELSE 0 END) AS archived_docs,
                " . (studentHasArchivedAt($conn) ? "COALESCE(s.archived_at, MAX(d.archived_at))" : "MAX(d.archived_at)") . " AS archived_at
         FROM students s
         LEFT JOIN documents d ON d.student_id = s.student_id
@@ -778,17 +431,17 @@ if (!empty($params)) {
 }
 $students = $result ? mysqli_fetch_all($result, MYSQLI_ASSOC) : [];
 
-$driveFiles = [];
+$studentFiles = [];
 $studentIds = array_map('intval', array_column($students, 'student_id'));
 if (!empty($studentIds)) {
     $idList = implode(',', $studentIds);
     $filesResult = mysqli_query($conn,
-        "SELECT student_id, file_name, drive_link FROM documents
-         WHERE student_id IN ($idList) AND is_archived = 1 AND drive_link IS NOT NULL AND drive_link <> ''
+        "SELECT student_id, file_name, file_path FROM documents
+         WHERE student_id IN ($idList)
          ORDER BY document_id ASC");
     if ($filesResult) {
         while ($file = mysqli_fetch_assoc($filesResult)) {
-            $driveFiles[(int) $file['student_id']][] = $file;
+            $studentFiles[(int) $file['student_id']][] = $file;
         }
     }
 }
@@ -830,28 +483,6 @@ include 'navbar.php';
 
 <body>
     <div class="main-container">
-
-    <?php if ($flash): ?>
-        <div class="alert alert-<?= $flash['type'] === 'success' ? 'success' : 'danger' ?> archive-alert" role="alert">
-            <?= htmlspecialchars($flash['message']) ?>
-            <?php if (!empty($flash['token'])): ?>
-                <pre class="archive-token">GOOGLE_REFRESH_TOKEN=<?= htmlspecialchars($flash['token']) ?></pre>
-                <small class="text-muted">Keep this private. Anyone with it can access that Google Drive. It is shown only once.</small>
-            <?php endif; ?>
-        </div>
-    <?php endif; ?>
-
-    <?php if (!$driveReady && empty($flash['token'])): ?>
-        <div class="alert alert-warning archive-alert d-flex align-items-center justify-content-between gap-3" role="alert">
-            <span>
-                <i class="bi bi-exclamation-triangle"></i>
-                Google Drive isn't connected yet, so students can't be archived.
-            </span>
-            <a href="archive.php?action=drive_auth" class="btn btn-sm archive-connect-btn">
-                <i class="bi bi-google"></i> Connect Google Drive
-            </a>
-        </div>
-    <?php endif; ?>
 
     <div class="textNButton-row">
 
@@ -909,10 +540,8 @@ include 'navbar.php';
     <?php if (!empty($students)): ?>
         <?php foreach ($students as $row): ?>
             <?php
-                $sid        = (int) $row['student_id'];
-                $files      = $driveFiles[$sid] ?? [];
-                $pending    = (int) $row['doc_count'] - (int) $row['archived_docs'];
-                $folderLink = $row['drive_folder_link'] ?? '';
+                $sid   = (int) $row['student_id'];
+                $files = $studentFiles[$sid] ?? [];
             ?>
         <tr>
             <td><?= htmlspecialchars($row['student_number']) ?></td>
@@ -935,31 +564,28 @@ include 'navbar.php';
             </td>
             <td>
                 <div class="archive-records">
-                    <?php if (!empty($files) || $folderLink !== ''): ?>
+                    <?php if (!empty($files)): ?>
                         <div class="dropdown">
-                            <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle archive-drive-btn"
-                                    data-bs-toggle="dropdown" aria-expanded="false" title="Open in Google Drive">
-                                <i class="bi bi-google"></i> Drive
+                            <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle archive-files-btn"
+                                    data-bs-toggle="dropdown" aria-expanded="false" title="View archived documents">
+                                <i class="bi bi-folder2-open"></i> Files (<?= count($files) ?>)
                             </button>
                             <ul class="dropdown-menu dropdown-menu-end archive-drive-menu">
-                                <?php if ($folderLink !== ''): ?>
+                                <li><h6 class="dropdown-header">Archived documents</h6></li>
+                                <?php foreach ($files as $file): ?>
+                                    <?php $exists = ($file['file_path'] ?? '') !== '' && is_file($file['file_path']); ?>
                                     <li>
-                                        <a class="dropdown-item" href="<?= htmlspecialchars($folderLink) ?>" target="_blank" rel="noopener">
-                                            <i class="bi bi-folder2-open"></i> Open student folder
-                                        </a>
-                                    </li>
-                                    <?php if (!empty($files)): ?><li><hr class="dropdown-divider"></li><?php endif; ?>
-                                <?php endif; ?>
-                                <?php if (!empty($files)): ?>
-                                    <li><h6 class="dropdown-header">Files on Drive</h6></li>
-                                    <?php foreach ($files as $file): ?>
-                                        <li>
-                                            <a class="dropdown-item" href="<?= htmlspecialchars($file['drive_link']) ?>" target="_blank" rel="noopener">
+                                        <?php if ($exists): ?>
+                                            <a class="dropdown-item" href="<?= htmlspecialchars(fileUrl($file['file_path'])) ?>" target="_blank" rel="noopener">
                                                 <i class="bi bi-file-earmark-pdf"></i> <?= htmlspecialchars($file['file_name']) ?>
                                             </a>
-                                        </li>
-                                    <?php endforeach; ?>
-                                <?php endif; ?>
+                                        <?php else: ?>
+                                            <span class="dropdown-item disabled text-muted" title="File is missing on the server">
+                                                <i class="bi bi-exclamation-triangle"></i> <?= htmlspecialchars($file['file_name']) ?> (missing)
+                                            </span>
+                                        <?php endif; ?>
+                                    </li>
+                                <?php endforeach; ?>
                             </ul>
                         </div>
                     <?php endif; ?>
@@ -969,19 +595,7 @@ include 'navbar.php';
                             title="Move back to the Student Directory as ACTIVE">
                         <i class="bi bi-arrow-counterclockwise"></i> Restore
                     </button>
-
-                    <?php if ($pending > 0): ?>
-                        <button type="button" class="btn btn-sm archive-upload-btn"
-                                data-id="<?= $sid ?>" data-name="<?= htmlspecialchars($row['name']) ?>"
-                                data-pending="<?= $pending ?>" <?= $driveReady ? '' : 'disabled' ?>
-                                title="<?= $pending ?> document(s) not on Google Drive yet">
-                            <i class="bi bi-cloud-arrow-up"></i> Upload
-                        </button>
-                    <?php endif; ?>
                 </div>
-                <?php if ($pending > 0): ?>
-                    <small class="archive-pending"><?= $pending ?> file(s) not on Drive yet</small>
-                <?php endif; ?>
             </td>
         </tr>
         <?php endforeach; ?>
@@ -994,29 +608,6 @@ include 'navbar.php';
     </div>
     </div>
 
-<!-- confirm upload modal -->
-<div class="modal fade" id="archiveUploadModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Confirm Archive Upload</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <p>
-                    Upload <strong id="archiveUploadCount"></strong> remaining document(s) of
-                    <strong id="archiveUploadName"></strong> to Google Drive?
-                </p>
-                <div id="archiveUploadError" class="alert alert-danger small mb-0 d-none"></div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-cancel" id="archiveUploadCancelBtn" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-save" id="archiveUploadConfirmBtn">Upload</button>
-            </div>
-        </div>
-    </div>
-</div>
-
 <!-- confirm restore modal -->
 <div class="modal fade" id="archiveRestoreModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
@@ -1027,8 +618,7 @@ include 'navbar.php';
             </div>
             <div class="modal-body">
                 <p class="mb-0">
-                    Restore <strong id="archiveRestoreName"></strong> to the Student Directory?
-                    Their status will be set to <strong>ACTIVE</strong>.
+                    Are you sure you want to restore <strong id="archiveRestoreName"></strong>?
                 </p>
                 <div id="archiveRestoreError" class="alert alert-danger small mt-3 mb-0 d-none"></div>
             </div>

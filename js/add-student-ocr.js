@@ -127,14 +127,124 @@ document.addEventListener('DOMContentLoaded', function () {
     const documentList       = document.getElementById('documentList');
     const documentEmptyState = document.getElementById('documentEmptyState');
     const documentRowTemplate = document.getElementById('documentRowTemplate');
+    const requirementChecklist = document.getElementById('requirementChecklist');
 
     const studentNumberInput = document.getElementById('student_number');
     const numberFeedback     = document.getElementById('studentNumberFeedback');
 
     let uploadedDocuments = [];
     let numberIsDuplicate = false;
+    let pendingReplaceIndex = null;
+
+    const uploadedSources = new Map();
+
+    const PAGE_DATA = (function () {
+        const el = document.getElementById('documentPageData');
+        try { return el && el.dataset.json ? JSON.parse(el.dataset.json) : {}; } catch (e) { console.error('Bad documentPageData', e); return {}; }
+    })();
+    const REQUIREMENTS = Array.isArray(PAGE_DATA.requirements) ? PAGE_DATA.requirements : [];
+    const REQUIREMENT_GROUPS = PAGE_DATA.groups || {};
+    const requirementByCode = {};
+    REQUIREMENTS.forEach(function (r) { requirementByCode[r.code] = r; });
+
+    const ADMISSION_TRACKS = PAGE_DATA.tracks || {};
+    const trackSelect = document.getElementById('admission_track');
+    let trackTouched = false;
+
+    function currentTrack() {
+        return trackSelect && trackSelect.value ? trackSelect.value : 'shs_current';
+    }
+
+    function isRequiredForTrack(r) {
+        return Array.isArray(r.required_for) && r.required_for.indexOf(currentTrack()) !== -1;
+    }
+
+    function suggestTrackFromDocuments() {
+        if (!trackSelect || trackTouched) return;
+        const groups = uploadedDocuments.map(function (d) {
+            const r = requirementByCode[d.requirement_code];
+            return r ? r.group : null;
+        });
+        let suggested = 'shs_current';
+        if (groups.indexOf('als') !== -1) suggested = 'als';
+        else if (groups.indexOf('past_graduate') !== -1) suggested = 'shs_past';
+        if (trackSelect.value !== suggested && ADMISSION_TRACKS[suggested]) {
+            trackSelect.value = suggested;
+        }
+    }
+
+    if (trackSelect) {
+        trackSelect.addEventListener('change', function () {
+            trackTouched = true;
+            rerenderDocumentList();
+        });
+    }
+
+    function requirementLabel(code) {
+        return code && requirementByCode[code] ? requirementByCode[code].label : 'Unclassified';
+    }
+
+    function findDocByRequirement(code, exceptIndex) {
+        if (!code) return -1;
+        return uploadedDocuments.findIndex(function (d, i) {
+            return i !== exceptIndex && d.requirement_code === code;
+        });
+    }
+
+    function findDocByHash(hash, exceptIndex) {
+        if (!hash) return -1;
+        return uploadedDocuments.findIndex(function (d, i) {
+            return i !== exceptIndex && d.file_hash === hash;
+        });
+    }
+
+    function duplicateReason(doc, exceptIndex) {
+        const sameFile = findDocByHash(doc.file_hash, exceptIndex);
+        if (sameFile !== -1) {
+            return requirementLabel(doc.requirement_code) + ' was already uploaded';
+        }
+        const sameReq = findDocByRequirement(doc.requirement_code, exceptIndex);
+        if (sameReq !== -1) {
+            return requirementLabel(doc.requirement_code) + ' is already attached; use its Replace button to change it';
+        }
+        return null;
+    }
+
+    function forgetSourceIfUnused(sourceHash) {
+        if (!sourceHash) return;
+        const stillUsed = uploadedDocuments.some(function (d) { return d.source_hash === sourceHash; });
+        if (!stillUsed) uploadedSources.delete(sourceHash);
+    }
+
+    async function sha256OfFile(file) {
+        if (!window.crypto || !window.crypto.subtle) return null;
+        try {
+            const digest = await window.crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+            return Array.from(new Uint8Array(digest)).map(function (b) {
+                return b.toString(16).padStart(2, '0');
+            }).join('');
+        } catch (err) {
+            return null;
+        }
+    }
 
     if (!form) return;
+
+    function formatYearSection(value, deleting) {
+        const digits = String(value || '').replace(/\D/g, '').slice(0, 2);
+        if (digits.length === 2) return digits[0] + '-' + digits[1];
+        if (digits.length === 1) return deleting ? digits : digits + '-';
+        return '';
+    }
+
+    const yearSectionInput = form.elements['year_section'];
+    if (yearSectionInput) {
+        yearSectionInput.addEventListener('input', function (e) {
+            const deleting = !!(e.inputType && e.inputType.indexOf('delete') === 0);
+            const formatted = formatYearSection(yearSectionInput.value, deleting);
+            if (formatted !== yearSectionInput.value) yearSectionInput.value = formatted;
+        });
+    }
 
     if (uploadFileBtn) {
         uploadFileBtn.addEventListener('click', function () {
@@ -177,136 +287,204 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    function uploadAndExtract(file) {
-        setStatus('Uploading... please wait.', 'loading');
-        toggleSaveDisabled(true);
-
+    function sendOcrRequest(file) {
         const formData = new FormData();
         formData.append('document', file);
-
-        fetch(ACTIONS_URL + '?action=ocr_extract', {
+        return fetch(ACTIONS_URL + '?action=ocr_extract', {
             method: 'POST',
             body: formData,
-        })
-            .then((res) => res.json())
-            .then((data) => {
-                toggleSaveDisabled(false);
-
-                if (!data.success) {
-                    setStatus(data.message || 'OCR extraction failed.', 'error');
-                    let docIndex = null;
-                    if (data.file_path) {
-                        docIndex = addDocument({
-                            file_name: data.file_name || file.name,
-                            file_path: data.file_path,
-                            image_path: data.image_path || '',
-                            photo_path: data.photo_path || '',
-                            doc_type: data.doc_type || null,
-                            ocr_text: '',
-                        });
-                    }
-                    if (data.photo_path && !studentPhotoSet) {
-                        setStudentPhoto(data.photo_path);
-                        currentPhotoDocIndex = docIndex;
-                    }
-                    return;
-                }
-
-                const docType = data.doc_type || null;
-
-                const docIndex = addDocument({
-                    file_name: data.file_name,
-                    file_path: data.file_path,
-                    image_path: data.image_path || '',
-                    photo_path: data.photo_path || '',
-                    doc_type: docType,
-                    ocr_text: data.ocr_text,
-                });
-
-                uploadedDocuments[docIndex].appliedFields = populateFields(data.extracted);
-                setStatus('Please review both tabs before saving.', 'success');
-
-                if (data.photo_path && !studentPhotoSet) {
-                    setStudentPhoto(data.photo_path);
-                    currentPhotoDocIndex = docIndex;
-                }
-            })
-            .catch((err) => {
-                toggleSaveDisabled(false);
-                setStatus('Upload failed: ' + err.message, 'error');
-            });
+        }).then(function (res) { return res.json(); });
     }
 
-    function replaceDocument(index, file) {
+    async function uploadAndExtract(file) {
+        const localHash = await sha256OfFile(file);
+        if (localHash && uploadedSources.has(localHash)) {
+            setStatus('"' + file.name + '" was already uploaded.', 'error');
+            return;
+        }
+
+        setStatus('Uploading and classifying... please wait.', 'loading');
+        toggleSaveDisabled(true);
+
+        let data;
+        try {
+            data = await sendOcrRequest(file);
+        } catch (err) {
+            toggleSaveDisabled(false);
+            setStatus('Upload failed: ' + err.message, 'error');
+            return;
+        }
+        toggleSaveDisabled(false);
+
+        if (!data.success) {
+            setStatus(data.message || 'OCR extraction failed.', 'error');
+            return;
+        }
+
+        if (uploadedSources.has(data.source_hash)) {
+            (data.documents || []).forEach(deleteFileSet);
+            setStatus('"' + file.name + '" was already uploaded.', 'error');
+            return;
+        }
+
+        const accepted = [];
+        const rejected = [];
+        (data.documents || []).forEach(function (doc) {
+            doc.classified_by = data.classified_by || '';
+            doc.source_hash = data.source_hash;
+            doc.manual = false;
+            doc.needs_manual_type = !doc.requirement_code;
+            const reason = duplicateReason(doc, -1);
+            if (reason) {
+                deleteFileSet(doc);
+                rejected.push(reason);
+                return;
+            }
+            accepted.push(addDocument(doc));
+        });
+
+        if (accepted.length) {
+            uploadedSources.set(data.source_hash, file.name);
+
+            const first = uploadedDocuments[accepted[0]];
+            first.appliedFields = populateFields(data.extracted);
+
+            if (!studentPhotoSet) {
+                const photoIndex = accepted.find(function (i) { return uploadedDocuments[i].photo_path; });
+                if (photoIndex !== undefined) {
+                    setStudentPhoto(uploadedDocuments[photoIndex].photo_path);
+                    currentPhotoDocIndex = photoIndex;
+                }
+            }
+            syncDocumentsHiddenField();
+        }
+
+        const parts = [];
+        const detected = accepted.filter(function (i) { return uploadedDocuments[i].requirement_code; });
+        const unknown = accepted.length - detected.length;
+        if (detected.length) {
+            parts.push((detected.length === 1 ? 'Document detected: ' : 'Documents detected: ')
+                + detected.map(function (i) { return requirementLabel(uploadedDocuments[i].requirement_code); }).join(', ') + '.');
+        }
+        if (unknown) {
+            parts.push(unknown === 1
+                ? 'The document type could not be identified; please choose it in the Documents tab.'
+                : unknown + ' documents could not be identified; please choose their types in the Documents tab.');
+        }
+        if (data.skipped_pages && data.skipped_pages.length) {
+            parts.push('Skipped info pages: ' + data.skipped_pages.map(function (s) { return 'p' + s.page; }).join(', ') + '.');
+        }
+        if (rejected.length) {
+            parts.push('Not added (duplicate): ' + rejected.join('; ') + '.');
+        }
+        (data.warnings || []).forEach(function (w) { parts.push(w); });
+        if (accepted.length) {
+            parts.push('Please review both tabs before saving.');
+        }
+
+        const type = !accepted.length ? 'error'
+            : (rejected.length || (data.warnings && data.warnings.length) || accepted.some(function (i) {
+                const c = uploadedDocuments[i].confidence;
+                return c === 'low' || c === 'none';
+            })) ? 'warning' : 'success';
+        setStatus(parts.join(' '), type);
+    }
+
+    async function replaceDocument(index, file) {
         const oldDoc = uploadedDocuments[index];
         if (!oldDoc) return;
+
+        const localHash = await sha256OfFile(file);
+        if (localHash && uploadedSources.has(localHash) && localHash !== oldDoc.source_hash) {
+            setStatus('"' + file.name + '" was already uploaded.', 'error');
+            return;
+        }
 
         setStatus('Uploading replacement... please wait.', 'loading');
         toggleSaveDisabled(true);
 
-        const formData = new FormData();
-        formData.append('document', file);
+        let data;
+        try {
+            data = await sendOcrRequest(file);
+        } catch (err) {
+            toggleSaveDisabled(false);
+            setStatus('Replace failed: ' + err.message, 'error');
+            return;
+        }
+        toggleSaveDisabled(false);
 
-        fetch(ACTIONS_URL + '?action=ocr_extract', {
-            method: 'POST',
-            body: formData,
-        })
-            .then((res) => res.json())
-            .then((data) => {
-                toggleSaveDisabled(false);
+        if (!data.success || !data.documents || !data.documents.length) {
+            setStatus(data.message || 'OCR extraction failed.', 'error');
+            return;
+        }
 
-                if (!data.success && !data.file_path) {
-                    setStatus(data.message || 'OCR extraction failed.', 'error');
-                    return;
-                }
+        const docs = data.documents;
+        let pick = docs.findIndex(function (d) { return d.requirement_code && d.requirement_code === oldDoc.requirement_code; });
+        if (pick === -1) pick = 0;
+        const newDoc = docs[pick];
+        docs.forEach(function (d, i) { if (i !== pick) deleteFileSet(d); });
 
-                const docType = data.doc_type || null;
-                deleteFileSet(oldDoc);
+        newDoc.source_hash = data.source_hash;
+        newDoc.classified_by = data.classified_by || '';
+        newDoc.manual = false;
+        newDoc.needs_manual_type = !newDoc.requirement_code;
 
-                if (oldDoc.appliedFields && oldDoc.appliedFields.length) {
-                    oldDoc.appliedFields.forEach(function (name) {
-                        const el = form.elements[name];
-                        if (el) el.value = '';
-                    });
-                    if (oldDoc.appliedFields.indexOf('student_number') !== -1) {
-                        numberIsDuplicate = false;
-                        if (numberFeedback) numberFeedback.textContent = '';
-                        if (studentNumberInput) studentNumberInput.classList.remove('is-invalid');
-                    }
-                }
+        if (oldDoc.requirement_code && newDoc.requirement_code !== oldDoc.requirement_code) {
+            deleteFileSet(newDoc);
+            setStatus('Cannot replace: the new file is not the same type of document.', 'error');
+            return;
+        }
 
-                const wasStudentPhotoSource = (currentPhotoDocIndex === index);
+        const reason = duplicateReason(newDoc, index);
+        if (reason) {
+            deleteFileSet(newDoc);
+            setStatus('Replacement not used: ' + reason + '.', 'error');
+            return;
+        }
 
-                const newDoc = {
-                    file_name: data.file_name || file.name,
-                    file_path: data.file_path,
-                    image_path: data.image_path || '',
-                    photo_path: data.photo_path || '',
-                    doc_type: docType,
-                    ocr_text: data.ocr_text || '',
-                };
-                newDoc.appliedFields = data.success ? populateFields(data.extracted) : [];
+        deleteFileSet(oldDoc);
+        clearAppliedFields(oldDoc);
 
-                uploadedDocuments[index] = newDoc;
-                syncDocumentsHiddenField();
-                rerenderDocumentList();
+        const wasStudentPhotoSource = (currentPhotoDocIndex === index);
 
-                if (newDoc.photo_path && (wasStudentPhotoSource || !studentPhotoSet)) {
-                    setStudentPhoto(newDoc.photo_path);
-                    currentPhotoDocIndex = index;
-                } else if (wasStudentPhotoSource && !newDoc.photo_path) {
-                    resetStudentPhoto();
-                }
+        uploadedDocuments[index] = newDoc;
+        newDoc.appliedFields = populateFields(data.extracted);
+        forgetSourceIfUnused(oldDoc.source_hash);
+        uploadedSources.set(data.source_hash, file.name);
+        syncDocumentsHiddenField();
+        rerenderDocumentList();
 
-                setStatus(
-                    data.success ? 'Document replaced. Please review both tabs before saving.' : (data.message || 'Replaced, but OCR could not read the new file.'),
-                    data.success ? 'success' : 'error'
-                );
-            })
-            .catch((err) => {
-                toggleSaveDisabled(false);
-                setStatus('Replace failed: ' + err.message, 'error');
-            });
+        if (newDoc.photo_path && (wasStudentPhotoSource || !studentPhotoSet)) {
+            setStudentPhoto(newDoc.photo_path);
+            currentPhotoDocIndex = index;
+        } else if (wasStudentPhotoSource && !newDoc.photo_path) {
+            resetStudentPhoto();
+        }
+
+        const parts = ['Document replaced.'];
+        if (oldDoc.requirement_code !== newDoc.requirement_code) {
+            parts.push('New file was classified as ' + requirementLabel(newDoc.requirement_code)
+                + ' (was ' + requirementLabel(oldDoc.requirement_code) + ').');
+        }
+        if (docs.length > 1) {
+            parts.push('The PDF contained ' + docs.length + ' documents; only this one was used. Upload the others separately.');
+        }
+        (data.warnings || []).forEach(function (w) { parts.push(w); });
+        parts.push('Please review both tabs before saving.');
+        setStatus(parts.join(' '), parts.length > 2 ? 'warning' : 'success');
+    }
+
+    function clearAppliedFields(doc) {
+        if (!doc.appliedFields || !doc.appliedFields.length) return;
+        doc.appliedFields.forEach(function (name) {
+            const el = form.elements[name];
+            if (el) el.value = '';
+        });
+        if (doc.appliedFields.indexOf('student_number') !== -1) {
+            numberIsDuplicate = false;
+            if (numberFeedback) numberFeedback.textContent = '';
+            if (studentNumberInput) studentNumberInput.classList.remove('is-invalid');
+        }
     }
 
     function populateFields(extracted) {
@@ -314,7 +492,7 @@ document.addEventListener('DOMContentLoaded', function () {
         if (!extracted) return applied;
         Object.keys(extracted).forEach((key) => {
             const value = extracted[key];
-            if (!value) return; 
+            if (!value) return;
             const el = form.elements[key];
             if (el && !el.value) {
                 el.value = value;
@@ -330,18 +508,82 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function addDocument(doc) {
         uploadedDocuments.push(doc);
+        suggestTrackFromDocuments();
         syncDocumentsHiddenField();
-        renderDocumentRow(doc, uploadedDocuments.length - 1);
-        if (documentEmptyState) documentEmptyState.style.display = 'none';
+        rerenderDocumentList();
         return uploadedDocuments.length - 1;
+    }
+
+    function buildTypeSelect(select, doc, index) {
+        select.innerHTML = '';
+
+        const other = document.createElement('option');
+        other.value = '';
+        other.textContent = '— Other / unclassified -';
+        select.appendChild(other);
+
+        Object.keys(REQUIREMENT_GROUPS).forEach(function (groupKey) {
+            const reqs = REQUIREMENTS.filter(function (r) { return r.group === groupKey; });
+            if (!reqs.length) return;
+            const optgroup = document.createElement('optgroup');
+            optgroup.label = REQUIREMENT_GROUPS[groupKey];
+            reqs.forEach(function (r) {
+                const opt = document.createElement('option');
+                opt.value = r.code;
+                const takenBy = findDocByRequirement(r.code, index);
+                opt.textContent = r.label + (takenBy !== -1 ? ' (already attached)' : '');
+                opt.disabled = takenBy !== -1;
+                optgroup.appendChild(opt);
+            });
+            select.appendChild(optgroup);
+        });
+
+        select.value = doc.requirement_code || '';
+
+        select.addEventListener('change', function () {
+            const code = select.value || null;
+            if (code && findDocByRequirement(code, index) !== -1) {
+                setStatus(requirementLabel(code) + ' is already attached. Delete or change that file first.', 'error');
+                select.value = doc.requirement_code || '';
+                return;
+            }
+            doc.requirement_code = code;
+            doc.requirement_label = requirementLabel(code);
+            doc.manual = true;
+            syncDocumentsHiddenField();
+            rerenderDocumentList();
+        });
     }
 
     function renderDocumentRow(doc, index) {
         if (!documentRowTemplate || !documentList) return;
         const node = documentRowTemplate.content.cloneNode(true);
         const row = node.querySelector('.document-row');
-        node.querySelector('.document-row-title').textContent = 'Uploaded Document';
-        node.querySelector('.document-row-filename').textContent = doc.file_name;
+
+        const titleEl = node.querySelector('.document-row-title');
+        titleEl.textContent = doc.requirement_code ? requirementLabel(doc.requirement_code) : 'Unclassified - choose a type below';
+        if (!doc.requirement_code) titleEl.classList.add('text-danger');
+
+        const pagesText = doc.pages && doc.pages.length ? ' · ' + (doc.pages.length === 1 ? '1 page' : doc.pages.length + ' pages') : '';
+        node.querySelector('.document-row-filename').textContent = doc.file_name + pagesText;
+
+
+        const typeSelect = node.querySelector('.document-type-select');
+        if (typeSelect) {
+            if (doc.needs_manual_type) {
+                buildTypeSelect(typeSelect, doc, index);
+            } else {
+                const changeLink = document.createElement('button');
+                changeLink.type = 'button';
+                changeLink.className = 'btn btn-link change-type-link';
+                changeLink.textContent = 'Change type';
+                changeLink.addEventListener('click', function () {
+                    doc.needs_manual_type = true;
+                    rerenderDocumentList();
+                });
+                typeSelect.replaceWith(changeLink);
+            }
+        }
 
         const viewBtn = node.querySelector('.document-view-btn');
         if (viewBtn) {
@@ -370,26 +612,70 @@ document.addEventListener('DOMContentLoaded', function () {
         documentList.appendChild(node);
     }
 
+    function renderRequirementChecklist() {
+        if (!requirementChecklist) return;
+        requirementChecklist.innerHTML = '';
+        if (!REQUIREMENTS.length) return;
+
+        const required = REQUIREMENTS.filter(isRequiredForTrack);
+        const attachedRequired = required.filter(function (r) { return findDocByRequirement(r.code, -1) !== -1; });
+
+        const heading = document.createElement('div');
+        heading.className = 'requirement-checklist-heading';
+        heading.textContent = (ADMISSION_TRACKS[currentTrack()] || 'Requirements') + ': '
+            + attachedRequired.length + ' of ' + required.length + ' required documents attached';
+        requirementChecklist.appendChild(heading);
+
+        Object.keys(REQUIREMENT_GROUPS).forEach(function (groupKey) {
+            const reqs = REQUIREMENTS.filter(function (r) { return r.group === groupKey; });
+            if (!reqs.length) return;
+
+            const relevant = reqs.some(function (r) {
+                return isRequiredForTrack(r) || findDocByRequirement(r.code, -1) !== -1 || r.required_for.length === 0;
+            });
+            if (!relevant) return;
+
+            const groupEl = document.createElement('div');
+            groupEl.className = 'requirement-group';
+
+            const label = document.createElement('div');
+            label.className = 'requirement-group-label';
+            label.textContent = REQUIREMENT_GROUPS[groupKey];
+            groupEl.appendChild(label);
+
+            const items = document.createElement('div');
+            items.className = 'requirement-items';
+            reqs.forEach(function (r) {
+                const done = findDocByRequirement(r.code, -1) !== -1;
+                const required = isRequiredForTrack(r);
+                if (!done && !required && r.required_for.length > 0) return; // required only for other tracks
+                const item = document.createElement('span');
+                item.className = 'requirement-item' + (done ? ' is-attached' : '') + (required ? ' is-required' : '');
+                item.title = (r.ref ? r.ref + ' — ' : '') + (r.note || '')
+                    + (done ? ' (attached)' : required ? ' (required, not yet attached)' : ' (if applicable)');
+                const icon = document.createElement('i');
+                icon.className = 'bi ' + (done ? 'bi-check-circle-fill' : 'bi-circle');
+                item.appendChild(icon);
+                item.appendChild(document.createTextNode(' ' + r.label + (required ? ' *' : '')));
+                items.appendChild(item);
+            });
+            groupEl.appendChild(items);
+            requirementChecklist.appendChild(groupEl);
+        });
+    }
+
+    function missingRequiredLabels() {
+        return REQUIREMENTS
+            .filter(function (r) { return isRequiredForTrack(r) && findDocByRequirement(r.code, -1) === -1; })
+            .map(function (r) { return r.label; });
+    }
+
     function deleteDocument(index) {
         const doc = uploadedDocuments[index];
         if (!doc) return;
 
         setStatus('', '');
-
-        if (doc.file_path || doc.image_path || doc.photo_path) {
-            const formData = new FormData();
-            if (doc.file_path) formData.append('file_path', doc.file_path);
-            if (doc.image_path && doc.image_path !== doc.file_path) {
-                formData.append('image_path', doc.image_path);
-            }
-            if (doc.photo_path) formData.append('photo_path', doc.photo_path);
-            fetch(ACTIONS_URL + '?action=delete_document', {
-                method: 'POST',
-                body: formData,
-            }).catch(function (err) {
-                console.error('Failed to delete file:', err);
-            });
-        }
+        deleteFileSet(doc);
 
         if (index === currentPhotoDocIndex) {
             resetStudentPhoto();
@@ -397,42 +683,33 @@ document.addEventListener('DOMContentLoaded', function () {
             currentPhotoDocIndex -= 1;
         }
 
-        if (doc.appliedFields && doc.appliedFields.length) {
-            doc.appliedFields.forEach(function (name) {
-                const el = form.elements[name];
-                if (el) el.value = '';
-            });
-
-            if (doc.appliedFields.indexOf('student_number') !== -1) {
-                numberIsDuplicate = false;
-                if (numberFeedback) numberFeedback.textContent = '';
-                if (studentNumberInput) studentNumberInput.classList.remove('is-invalid');
-            }
-        }
+        clearAppliedFields(doc);
 
         uploadedDocuments.splice(index, 1);
+        forgetSourceIfUnused(doc.source_hash);
         syncDocumentsHiddenField();
         rerenderDocumentList();
     }
 
     function rerenderDocumentList() {
+        renderRequirementChecklist();
         if (!documentList) return;
         documentList.innerHTML = '';
-        uploadedDocuments.forEach(function (doc, i) {
-            renderDocumentRow(doc, i);
-        });
+        for (let i = uploadedDocuments.length - 1; i >= 0; i--) {
+            renderDocumentRow(uploadedDocuments[i], i);
+        }
         if (documentEmptyState) {
             documentEmptyState.style.display = uploadedDocuments.length === 0 ? '' : 'none';
         }
     }
-
-    let pendingReplaceIndex = null;
 
     function syncDocumentsHiddenField() {
         if (documentsDataInput) {
             documentsDataInput.value = JSON.stringify(uploadedDocuments);
         }
     }
+
+    rerenderDocumentList();
 
     if (studentNumberInput) {
         studentNumberInput.addEventListener('blur', function () {
@@ -556,6 +833,14 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById('confirmSummaryCourse').textContent = summary.course || '—';
         document.getElementById('confirmSummarySection').textContent = summary.yearSection || '—';
         document.getElementById('confirmSummaryDocs').textContent = summary.docCount + ' document(s)';
+        const trackEl = document.getElementById('confirmSummaryTrack');
+        if (trackEl) trackEl.textContent = ADMISSION_TRACKS[currentTrack()] || '—';
+        const missingEl = document.getElementById('confirmSummaryMissing');
+        if (missingEl) {
+            const missing = missingRequiredLabels();
+            missingEl.textContent = missing.length ? missing.join(', ') : 'None';
+            missingEl.classList.toggle('text-danger', missing.length > 0);
+        }
 
         const bsModal = bootstrap.Modal.getOrCreateInstance(modalEl);
         bsModal.show();
@@ -588,6 +873,10 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (data.duplicate) {
                         numberIsDuplicate = true;
                         studentNumberInput.classList.add('is-invalid');
+                    }
+                    if (data.duplicate_document) {
+                        const documentsTab = document.getElementById('documents-tab');
+                        if (documentsTab) bootstrap.Tab.getOrCreateInstance(documentsTab).show();
                     }
                     return;
                 }
@@ -644,10 +933,14 @@ document.addEventListener('DOMContentLoaded', function () {
             if (!recordSaved) {
                 uploadedDocuments.forEach(deleteFileSet);
                 uploadedDocuments = [];
+                uploadedSources.clear();
+                pendingReplaceIndex = null;
+                trackTouched = false;
                 syncDocumentsHiddenField();
                 rerenderDocumentList();
                 resetStudentPhoto();
                 form.reset();
+                rerenderDocumentList();
                 clearRequiredFieldErrors();
                 numberIsDuplicate = false;
                 if (numberFeedback) numberFeedback.textContent = '';

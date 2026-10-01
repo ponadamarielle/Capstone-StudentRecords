@@ -70,6 +70,11 @@ function courseKey($value)
     return strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string) $value));
 }
 
+function courseDisplayName(array $entry)
+{
+    return $entry['code'] . ' - ' . $entry['name'];
+}
+
 function resolveCourse($raw, $acronymOnly = false)
 {
     static $fullIndex = null, $acronymIndex = null;
@@ -83,6 +88,7 @@ function resolveCourse($raw, $acronymOnly = false)
                 $fullIndex[courseKey($a)]    = $entry;
             }
             $fullIndex[courseKey($entry['name'])] = $entry;
+            $fullIndex[courseKey(courseDisplayName($entry))] = $entry;
         }
     }
 
@@ -118,5 +124,5 @@ function resolveCourse($raw, $acronymOnly = false)
 function normalizeCourseName($raw)
 {
     $entry = resolveCourse($raw);
-    return $entry ? $entry['name'] : trim((string) $raw);
+    return $entry ? courseDisplayName($entry) : trim((string) $raw);
 }

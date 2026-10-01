@@ -2,6 +2,7 @@
 include '../security_headers.php';
 session_start();
 require_once __DIR__ . '/course_catalog.php';
+require_once __DIR__ . '/document_classifier.php';
 
 if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] !== 'Admin') {
     header("Location: ../signin.php");
@@ -54,7 +55,7 @@ if ($action !== '') {
 
     switch ($action) {
         case 'ocr_extract':
-            handleOcrExtract();
+            handleOcrExtract($conn);
             break;
         case 'delete_document_record':
             handleDeleteDocumentRecord($conn);
@@ -65,8 +66,11 @@ if ($action !== '') {
         case 'replace_document':
             handleReplaceDocument($conn);
             break;
-        case 'add_document':
-            handleAddDocument($conn);
+        case 'add_documents':
+            handleAddDocuments($conn);
+            break;
+        case 'set_document_type':
+            handleSetDocumentType($conn);
             break;
         case 'update_student_info':
             handleUpdateStudentInfo($conn);
@@ -100,28 +104,247 @@ function isPathInsideUploads($path)
     return $uploadDir !== false && $target !== false && strpos($target, $uploadDir) === 0;
 }
 
-function detectDocumentTypeFromText($text)
+function isArchivedStatus($status)
 {
-    if (preg_match('/health\s*information\s*form/i', $text)) {
-        return 'health_information_form';
-    }
-    if (preg_match('/sar[\s\-]*form|confirmation\s*slip/i', $text)) {
-        return 'sar_form';
-    }
-    return null;
+    return in_array($status, ['inactive', 'onleave'], true);
 }
 
-function extractIdPhoto($pdfPath, $docType)
+function isArchivedStudent($conn, $studentId)
+{
+    $id   = (int) $studentId;
+    $stmt = mysqli_prepare($conn, 'SELECT status FROM students WHERE student_id = ?');
+    mysqli_stmt_bind_param($stmt, 'i', $id);
+    mysqli_stmt_execute($stmt);
+    $row = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    return $row && isArchivedStatus($row['status']);
+}
+
+function rejectIfArchived($conn, $studentId)
+{
+    if (!isArchivedStudent($conn, $studentId)) {
+        return false;
+    }
+    echo json_encode(['success' => false, 'message' => 'This student is archived. Archived records can no longer be edited.']);
+    return true;
+}
+
+function detectSarPhotoFrame($pdfPath, $page = 1)
+{
+    $sx = 1650;
+    $sy = 250;
+    $sw = 896;
+    $sh = 950;
+
+    $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('sarframe_', true);
+    $cmd = escapeshellarg(PDFTOPPM_BIN)
+        . ' -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+        . ' -x ' . $sx . ' -y ' . $sy . ' -W ' . $sw . ' -H ' . $sh
+        . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($tmpBase) . ' 2>&1';
+    exec($cmd, $cmdOut, $cmdCode);
+
+    $ppmFile = $tmpBase . '-1.ppm';
+    if (!file_exists($ppmFile)) {
+        $ppmFile = $tmpBase . '.ppm';
+    }
+    if (!file_exists($ppmFile)) {
+        return null;
+    }
+    $ppm = readPpmPixels($ppmFile);
+    @unlink($ppmFile);
+    if ($ppm === null) {
+        return null;
+    }
+
+    $w = $ppm['width'];
+    $h = $ppm['height'];
+    $data = $ppm['data'];
+    $n = $w * $h;
+    if (strlen($data) < $n * 3) {
+        return null;
+    }
+
+    $mask = str_repeat("\0", $n);
+    for ($i = 0; $i < $n; $i++) {
+        $o = $i * 3;
+        if (ord($data[$o]) + ord($data[$o + 1]) + ord($data[$o + 2]) < 480) {
+            $mask[$i] = "\1";
+        }
+    }
+
+    $minRun = 350;
+    $maxGap = 4;
+    $band   = 8;
+    $longestRun = function ($start, $count, $step, $across, $acrossLeft) use ($mask, $maxGap, $band) {
+        $reach = min($band, $acrossLeft);
+        $best = 0;
+        $run = 0;
+        $gap = 0;
+        for ($k = 0, $i = $start; $k < $count; $k++, $i += $step) {
+            $isDark = false;
+            for ($b = 0, $j = $i; $b < $reach; $b++, $j += $across) {
+                if ($mask[$j] === "\1") {
+                    $isDark = true;
+                    break;
+                }
+            }
+            if ($isDark) {
+                $run += $gap + 1;
+                $gap = 0;
+                if ($run > $best) {
+                    $best = $run;
+                }
+            } elseif ($run > 0 && $gap < $maxGap) {
+                $gap++;
+            } else {
+                $run = 0;
+                $gap = 0;
+            }
+        }
+        return $best;
+    };
+
+    $cols = [];
+    for ($x = 0; $x < $w; $x++) {
+        if ($longestRun($x, $h, $w, 1, $w - $x) >= $minRun) {
+            $cols[] = $x;
+        }
+    }
+    $rows = [];
+    for ($y = 0; $y < $h; $y++) {
+        if ($longestRun($y * $w, $w, 1, $w, $h - $y) >= $minRun) {
+            $rows[] = $y;
+        }
+    }
+    if (count($cols) < 2 || !$rows) {
+        return null;
+    }
+
+    $left  = min($cols) + $band - 1;
+    $right = max($cols);
+    $top   = min($rows) + $band - 1;
+    $width = $right - $left;
+    if ($width < 450 || $width > 750) {
+        return null;
+    }
+    $below  = array_filter($rows, function ($r) use ($top) { return $r > $top + 400; });
+    $bottom = $below ? min($below) + $band - 1 : $top + $width;
+
+    $inset = 9; 
+    return [
+        'x'      => $sx + $left + $inset,
+        'y'      => $sy + $top + $inset,
+        'width'  => $width - 2 * $inset,
+        'height' => ($bottom - $top) - 2 * $inset,
+    ];
+}
+
+function sarPhotoBox(array $frame)
+{
+    $ZOOM = 0.95;
+
+    $size = (int) round(min($frame['width'], $frame['height']) * $ZOOM);
+    return [
+        'x'      => (int) $frame['x'] + (int) round(($frame['width'] - $size) / 2),
+        'y'      => (int) $frame['y'] + 2,
+        'width'  => $size,
+        'height' => $size,
+    ];
+}
+
+function writePngRgb($path, $width, $height, $rgb)
+{
+    $rowLen = $width * 3;
+    $raw = '';
+    for ($y = 0; $y < $height; $y++) {
+        $raw .= "\0" . substr($rgb, $y * $rowLen, $rowLen);
+    }
+    $chunk = function ($type, $data) {
+        return pack('N', strlen($data)) . $type . $data . pack('N', crc32($type . $data));
+    };
+    $png = "\x89PNG\r\n\x1a\n"
+        . $chunk('IHDR', pack('NNCCCCC', $width, $height, 8, 2, 0, 0, 0))
+        . $chunk('IDAT', gzcompress($raw, 6))
+        . $chunk('IEND', '');
+    return file_put_contents($path, $png) !== false;
+}
+
+function savePhotoWithTopSpace($pdfPath, $page, array $box, $photoBase, $spaceRatio = 0.10)
+{
+    if (!function_exists('gzcompress')) {
+        return null;
+    }
+
+    $size  = (int) $box['width'];
+    $space = (int) round((int) $box['height'] * $spaceRatio);
+    $cropH = max(1, (int) $box['height'] - $space);
+
+    $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('sarphoto_', true);
+    $cmd = escapeshellarg(PDFTOPPM_BIN)
+        . ' -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+        . ' -x ' . (int) $box['x'] . ' -y ' . (int) $box['y']
+        . ' -W ' . $size . ' -H ' . $cropH
+        . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($tmpBase) . ' 2>&1';
+    exec($cmd, $cmdOut, $cmdCode);
+
+    $ppmFile = $tmpBase . '-1.ppm';
+    if (!file_exists($ppmFile)) {
+        $ppmFile = $tmpBase . '.ppm';
+    }
+    if (!file_exists($ppmFile)) {
+        return null;
+    }
+    $ppm = readPpmPixels($ppmFile);
+    @unlink($ppmFile);
+    if ($ppm === null) {
+        return null;
+    }
+
+    $w = $ppm['width'];
+    $h = $ppm['height'];
+    $data = $ppm['data'];
+    if (strlen($data) < $w * $h * 3) {
+        return null;
+    }
+
+    $sum = [0, 0, 0];
+    $count = 0;
+    $rows = min(6, $h);
+    for ($i = 0; $i < $w * $rows; $i++) {
+        $r = ord($data[$i * 3]);
+        $g = ord($data[$i * 3 + 1]);
+        $b = ord($data[$i * 3 + 2]);
+        if ($r + $g + $b > 540) {
+            $sum[0] += $r;
+            $sum[1] += $g;
+            $sum[2] += $b;
+            $count++;
+        }
+    }
+    $bg = $count > 0
+        ? chr((int) ($sum[0] / $count)) . chr((int) ($sum[1] / $count)) . chr((int) ($sum[2] / $count))
+        : "\xFF\xFF\xFF";
+
+    $rgb = str_repeat(str_repeat($bg, $w), $space) . substr($data, 0, $w * $h * 3);
+    $path = $photoBase . '.png';
+    return writePngRgb($path, $w, $h + $space, $rgb) ? $path : null;
+}
+
+function extractIdPhoto($pdfPath, $docType, $page = 1)
 {
     static $idPhotoBoxes = [
-        'sar_form' => ['x' => 1890, 'y' => 390, 'width' => 600, 'height' => 600],
-        'health_information_form' => ['x' => 1845, 'y' => 50, 'width' => 540, 'height' => 580],
+        'sar_form' => ['x' => 1866, 'y' => 440, 'width' => 577, 'height' => 573],
+        'health_information_form' => ['x' => 1845, 'y' => 50, 'width' => 540, 'height' => 735],
     ];
 
     if (!isset($idPhotoBoxes[$docType])) {
         return null;
     }
     $box = $idPhotoBoxes[$docType];
+    $isSar = $docType === 'sar_form';
+    if ($isSar) {
+        $frame = detectSarPhotoFrame($pdfPath, $page) ?? $box;
+        $box = sarPhotoBox($frame);
+    }
 
     $photoDir = '../uploads/photos/';
     if (!is_dir($photoDir)) {
@@ -130,7 +353,7 @@ function extractIdPhoto($pdfPath, $docType)
     $photoBase = $photoDir . uniqid('photo_', true);
 
     $cmd = escapeshellarg(PDFTOPPM_BIN)
-        . ' -jpeg -r 300 -f 1 -l 1'
+        . ' -jpeg -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
         . ' -x ' . escapeshellarg($box['x'])
         . ' -y ' . escapeshellarg($box['y'])
         . ' -W ' . escapeshellarg($box['width'])
@@ -147,12 +370,39 @@ function extractIdPhoto($pdfPath, $docType)
         return null;
     }
 
-    if (!cropLooksLikePersonPhoto($pdfPath, $box)) {
+    if (!cropLooksLikePersonPhoto($pdfPath, $box, 0.04, $page)) {
         @unlink($generated);
         return null;
     }
 
+    if ($isSar) {
+        $withSpace = savePhotoWithTopSpace($pdfPath, $page, $box, $photoBase, 0.075);
+        if ($withSpace !== null) {
+            @unlink($generated);
+            return $withSpace;
+        }
+    }
+
+    if (!$isSar && function_exists('savePaddedPhoto') && function_exists('gzcompress')) {
+        $padded = savePaddedPhoto($pdfPath, $page, $box, $photoBase, 0.06, 480, 0.5, 2.0);
+        if ($padded !== null) {
+            @unlink($generated);
+            return $padded;
+        }
+    }
+
     return $generated;
+}
+
+function requirementsForClient()
+{
+    return array_values(array_map(function ($r) {
+        $text = ($r['label'] ?? '') . ' ' . ($r['code'] ?? '');
+        if (preg_match('/chest[\s_-]*x[\s_-]*-?ray|xray/i', $text)) {
+            $r['required_for'] = [];
+        }
+        return $r;
+    }, getDocumentRequirementsForClient()));
 }
 
 function readPpmPixels($path)
@@ -200,12 +450,12 @@ function readPpmPixels($path)
     return ['width' => $width, 'height' => $height, 'data' => substr($data, $pos)];
 }
 
-function cropLooksLikePersonPhoto($pdfPath, $box, $minSkinRatio = 0.04)
+function cropLooksLikePersonPhoto($pdfPath, $box, $minSkinRatio = 0.04, $page = 1)
 {
     $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('ppmcheck_', true);
 
     $cmd = escapeshellarg(PDFTOPPM_BIN)
-        . ' -r 300 -f 1 -l 1'
+        . ' -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
         . ' -x ' . escapeshellarg($box['x'])
         . ' -y ' . escapeshellarg($box['y'])
         . ' -W ' . escapeshellarg($box['width'])
@@ -265,6 +515,37 @@ function cropLooksLikePersonPhoto($pdfPath, $box, $minSkinRatio = 0.04)
     return ($skinCount / $sampleCount) >= $minSkinRatio;
 }
 
+function shrinkImageForOcr($imagePath, $maxBytes = 3500000)
+{
+    $size = @filesize($imagePath);
+    if ($size === false || $size <= $maxBytes) {
+        return $imagePath;
+    }
+    if (!function_exists('imagecreatefromstring') || !function_exists('imagejpeg')) {
+        error_log('OCR image is ' . round($size / 1048576, 1) . ' MB, over the 4 MB Azure limit. '
+            . 'Enable extension=gd in php.ini so it can be compressed.');
+        return $imagePath;
+    }
+
+    @ini_set('memory_limit', '512M');
+    $img = @imagecreatefromstring((string) @file_get_contents($imagePath));
+    if (!$img) {
+        return $imagePath;
+    }
+
+    $tmp = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('ocr_', true) . '.jpg';
+    foreach ([85, 75, 65, 55] as $quality) {
+        imagejpeg($img, $tmp, $quality);
+        clearstatcache(true, $tmp);
+        if (@filesize($tmp) !== false && filesize($tmp) <= $maxBytes) {
+            break;
+        }
+    }
+    imagedestroy($img);
+
+    return is_file($tmp) ? $tmp : $imagePath;
+}
+
 function callAzureVisionOcr($imagePath)
 {
     $apiKey = getenv('AZURE_VISION_KEY');
@@ -274,7 +555,11 @@ function callAzureVisionOcr($imagePath)
         return null;
     }
 
-    $imageData = @file_get_contents($imagePath);
+    $sendPath  = shrinkImageForOcr($imagePath);
+    $imageData = @file_get_contents($sendPath);
+    if ($sendPath !== $imagePath) {
+        @unlink($sendPath);
+    }
     if ($imageData === false) {
         return null;
     }
@@ -328,9 +613,11 @@ function callAzureVisionOcr($imagePath)
 
         if ($status === 'succeeded') {
             $lines = [];
+            $GLOBALS['azureLineBoxes'] = [];
             foreach ($result['analyzeResult']['readResults'] ?? [] as $page) {
                 foreach ($page['lines'] ?? [] as $line) {
                     $lines[] = $line['text'];
+                    $GLOBALS['azureLineBoxes'][] = ['text' => $line['text'], 'box' => $line['boundingBox'] ?? []];
                 }
             }
             return implode("\n", $lines);
@@ -346,97 +633,70 @@ function callAzureVisionOcr($imagePath)
     return null;
 }
 
-function handleOcrExtract()
+function saveUploadedPdf($field, $uploadDir)
 {
-    if (!isset($_FILES['document']) || $_FILES['document']['error'] !== UPLOAD_ERR_OK) {
-        echo json_encode(['success' => false, 'message' => 'No file uploaded or an upload error occurred.']);
-        return;
+    if (!isset($_FILES[$field]) || $_FILES[$field]['error'] !== UPLOAD_ERR_OK) {
+        return 'No file uploaded or an upload error occurred.';
     }
-
-    $allowedExt = ['pdf'];
-    $originalName = $_FILES['document']['name'];
+    $originalName = $_FILES[$field]['name'];
     $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+    if ($ext !== 'pdf' || mime_content_type($_FILES[$field]['tmp_name']) !== 'application/pdf') {
+        return 'Unsupported file type. Only PDF files are allowed.';
+    }
+    if (!is_dir($uploadDir)) {
+        mkdir($uploadDir, 0755, true);
+    }
+    $destPath = $uploadDir . uniqid('doc_', true) . '.pdf';
+    if (!move_uploaded_file($_FILES[$field]['tmp_name'], $destPath)) {
+        return 'Failed to save the uploaded file.';
+    }
+    return [$destPath, $originalName];
+}
 
-    if (!in_array($ext, $allowedExt, true)) {
-        echo json_encode(['success' => false, 'message' => 'Unsupported file type. Only PDF files are allowed.']);
+function handleOcrExtract($conn)
+{
+    @set_time_limit(300);
+
+    $studentId = $_POST['student_id'] ?? '';
+    if ($studentId === '' || !ctype_digit((string) $studentId)) {
+        echo json_encode(['success' => false, 'message' => 'Invalid student.']);
         return;
     }
-
-    $mimeType = mime_content_type($_FILES['document']['tmp_name']);
-    if ($mimeType !== 'application/pdf') {
-        echo json_encode(['success' => false, 'message' => 'Unsupported file type. Only PDF files are allowed.']);
+    if (rejectIfArchived($conn, $studentId)) {
         return;
     }
 
     $uploadDir = '../uploads/documents/';
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0755, true);
-    }
-
-    $safeName = uniqid('doc_', true) . '.' . $ext;
-    $destPath = $uploadDir . $safeName;
-
-    if (!move_uploaded_file($_FILES['document']['tmp_name'], $destPath)) {
-        echo json_encode(['success' => false, 'message' => 'Failed to save the uploaded file.']);
+    $saved = saveUploadedPdf('document', $uploadDir);
+    if (is_string($saved)) {
+        echo json_encode(['success' => false, 'message' => $saved]);
         return;
     }
+    [$destPath, $originalName] = $saved;
 
-    $imagePath = $destPath;
-    if ($ext === 'pdf') {
-        $pngBase = $uploadDir . uniqid('pdfpage_', true);
-        $cmd = escapeshellarg(PDFTOPPM_BIN) . ' -png -r 300 -f 1 -l 1 ' . escapeshellarg($destPath) . ' ' . escapeshellarg($pngBase) . ' 2>&1';
-        exec($cmd, $cmdOut, $cmdCode);
+    $result = processDocumentUpload($destPath, $originalName, $uploadDir, ['preview_image' => true]);
 
-        $generated = $pngBase . '-1.png';
-        if (!file_exists($generated)) {
-            $generated = $pngBase . '.png';
+    if (!empty($result['documents'])) {
+        foreach ($result['documents'] as &$doc) {
+            $doc['duplicate_of'] = null;
+            $doc['on_file']      = null;
+
+            $sameFile = findStoredFileHash($conn, (int) $studentId, $doc['file_hash']);
+            if ($sameFile) {
+                $doc['duplicate_of'] = $sameFile['file_name'] . ' (' . $sameFile['document_type'] . ')';
+                continue;
+            }
+            if ($doc['requirement_code'] !== null) {
+                $existing = findStoredRequirement($conn, (int) $studentId, $doc['requirement_code']);
+                if ($existing) {
+                    $doc['on_file'] = ['document_id' => (int) $existing['document_id'], 'file_name' => $existing['file_name']];
+                }
+            }
         }
-
-        if (file_exists($generated)) {
-            $imagePath = $generated;
-        } else {
-            echo json_encode([
-                'success'      => false,
-                'message'      => 'Could not convert the PDF to an image for OCR. Make sure poppler-utils (pdftoppm) is installed.',
-                'file_path'    => $destPath,
-                'file_name'    => $originalName,
-            ]);
-            return;
-        }
+        unset($doc);
     }
 
-    $ocrOutput = callAzureVisionOcr($imagePath);
-    $ocrSource = 'azure_vision';
-
-    if ($ocrOutput === null || trim($ocrOutput) === '') {
-        echo json_encode([
-            'success'      => false,
-            'message'      => 'OCR returned no text from Azure Vision. Check your internet connection, the AZURE_VISION_KEY / AZURE_VISION_ENDPOINT values in .env, and that the scan is legible.',
-            'file_path'    => $destPath,
-            'file_name'    => $originalName,
-        ]);
-        return;
-    }
-
-    $docType   = detectDocumentTypeFromText($ocrOutput);
-    $photoPath = extractIdPhoto($destPath, $docType);
-
-    echo json_encode([
-        'success'    => true,
-        'file_path'  => $destPath,
-        'image_path' => $imagePath,
-        'file_name'  => $originalName,
-        'ocr_text'   => $ocrOutput,
-        'ocr_source' => $ocrSource,
-        'extracted'  => parseOcrText($ocrOutput),
-        'photo_path' => $photoPath,
-        'doc_type'   => $docType,
-    ]);
-}
-
-function base64UrlEncode($data)
-{
-    return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+    echo json_encode($result);
 }
 
 function stripCommonOcrArtifacts($value)
@@ -531,7 +791,7 @@ function parseOcrText($text)
 
     if ($fields['year_section'] !== '') {
         $fields['year_section'] = normalizeYearSection($fields['year_section']);
-        if (!preg_match('/^\d{1,2}-[A-Za-z0-9]{1,3}$/', $fields['year_section'])) {
+        if (!preg_match('/^\d-\d$/', $fields['year_section'])) {
             $fields['year_section'] = '';
         }
     }
@@ -701,17 +961,25 @@ function handleUpdateStudentInfo($conn)
         echo json_encode(['success' => false, 'message' => 'Invalid student.']);
         return;
     }
+    if (rejectIfArchived($conn, $studentId)) {
+        return;
+    }
 
     $name        = trim($_POST['name'] ?? '');
     $studentNum  = trim($_POST['student_number'] ?? '');
     $course      = normalizeCourseName($_POST['course'] ?? '');
     $yearSection = trim($_POST['year_section'] ?? '');
+    if ($yearSection !== '' && !preg_match('/^\d-\d$/', $yearSection)) {
+        echo json_encode(['success' => false, 'message' => 'Year & Section must be one number, a dash, and one number (e.g. 1-1).']);
+        return;
+    }
     $sex         = trim($_POST['sex'] ?? '');
     $dob         = dateOfBirthForDb(trim($_POST['date_of_birth'] ?? ''));
     $pob         = trim($_POST['place_of_birth'] ?? '');
     $mobile      = trim($_POST['mobile_number'] ?? '');
     $email       = trim($_POST['email'] ?? '');
     $address     = trim($_POST['address'] ?? '');
+    $track       = normalizeAdmissionTrack($_POST['admission_track'] ?? '');
 
     if ($studentNum !== '') {
         $dupSql  = "SELECT student_id FROM students WHERE student_number = ? AND student_id != ? LIMIT 1";
@@ -789,24 +1057,25 @@ function handleUpdateStudentInfo($conn)
         $sql  = "UPDATE students
                  SET name = ?, student_number = ?, course = ?, year_section = ?, sex = ?,
                      date_of_birth = ?, place_of_birth = ?, mobile_number = ?, email = ?, address = ?,
-                     photo_path = ?
+                     admission_track = ?, photo_path = ?
+                 WHERE student_id = ?";
+        $stmt = mysqli_prepare($conn, $sql);
+        mysqli_stmt_bind_param(
+            $stmt,
+            "ssssssssssssi",
+            $name, $studentNum, $course, $yearSection, $sex, $dob, $pob, $mobile, $email, $address, $track, $newPhotoPath, $studentId
+        );
+    } else {
+        $sql  = "UPDATE students
+                 SET name = ?, student_number = ?, course = ?, year_section = ?, sex = ?,
+                     date_of_birth = ?, place_of_birth = ?, mobile_number = ?, email = ?, address = ?,
+                     admission_track = ?
                  WHERE student_id = ?";
         $stmt = mysqli_prepare($conn, $sql);
         mysqli_stmt_bind_param(
             $stmt,
             "sssssssssssi",
-            $name, $studentNum, $course, $yearSection, $sex, $dob, $pob, $mobile, $email, $address, $newPhotoPath, $studentId
-        );
-    } else {
-        $sql  = "UPDATE students
-                 SET name = ?, student_number = ?, course = ?, year_section = ?, sex = ?,
-                     date_of_birth = ?, place_of_birth = ?, mobile_number = ?, email = ?, address = ?
-                 WHERE student_id = ?";
-        $stmt = mysqli_prepare($conn, $sql);
-        mysqli_stmt_bind_param(
-            $stmt,
-            "ssssssssssi",
-            $name, $studentNum, $course, $yearSection, $sex, $dob, $pob, $mobile, $email, $address, $studentId
+            $name, $studentNum, $course, $yearSection, $sex, $dob, $pob, $mobile, $email, $address, $track, $studentId
         );
     }
 
@@ -880,7 +1149,7 @@ function handleDeleteDocumentRecord($conn)
         return;
     }
 
-    $sql  = "SELECT file_path FROM documents WHERE document_id = ?";
+    $sql  = "SELECT student_id, file_path FROM documents WHERE document_id = ?";
     $stmt = mysqli_prepare($conn, $sql);
     mysqli_stmt_bind_param($stmt, "i", $documentId);
     mysqli_stmt_execute($stmt);
@@ -888,6 +1157,9 @@ function handleDeleteDocumentRecord($conn)
 
     if (!$row) {
         echo json_encode(['success' => false, 'message' => 'Document not found.']);
+        return;
+    }
+    if (rejectIfArchived($conn, $row['student_id'])) {
         return;
     }
 
@@ -905,151 +1177,246 @@ function handleDeleteDocumentRecord($conn)
     }
 }
 
+function discardUploadResult(array $result)
+{
+    foreach ($result['documents'] ?? [] as $doc) {
+        if (!empty($doc['file_path']) && isPathInsideUploads($doc['file_path'])) @unlink($doc['file_path']);
+    }
+    foreach ([$result['photo_path'] ?? null, $result['image_path'] ?? null] as $extra) {
+        if ($extra && is_file($extra) && (strpos($extra, '../uploads/photos/') === 0 || isPathInsideUploads($extra))) {
+            @unlink($extra);
+        }
+    }
+}
+
+function fetchDocumentRow($conn, $documentId)
+{
+    $stmt = mysqli_prepare($conn, 'SELECT document_id, student_id, requirement_code, file_path, file_name FROM documents WHERE document_id = ?');
+    mysqli_stmt_bind_param($stmt, 'i', $documentId);
+    mysqli_stmt_execute($stmt);
+    return mysqli_fetch_assoc(mysqli_stmt_get_result($stmt)) ?: null;
+}
+
 function handleReplaceDocument($conn)
+{
+    @set_time_limit(300);
+
+    $documentId = $_POST['document_id'] ?? '';
+    if ($documentId === '' || !ctype_digit((string) $documentId)) {
+        echo json_encode(['success' => false, 'message' => 'Invalid document.']);
+        return;
+    }
+    $row = fetchDocumentRow($conn, (int) $documentId);
+    if (!$row) {
+        echo json_encode(['success' => false, 'message' => 'Document not found.']);
+        return;
+    }
+    if (rejectIfArchived($conn, $row['student_id'])) {
+        return;
+    }
+
+    $uploadDir = '../uploads/documents/';
+    $saved = saveUploadedPdf('document', $uploadDir);
+    if (is_string($saved)) {
+        echo json_encode(['success' => false, 'message' => $saved]);
+        return;
+    }
+    [$destPath, $originalName] = $saved;
+
+    $result = processDocumentUpload($destPath, $originalName, $uploadDir);
+    if (empty($result['success'])) {
+        echo json_encode(['success' => false, 'message' => $result['message'] ?? 'Could not read the file.']);
+        return;
+    }
+    if (count($result['documents']) !== 1) {
+        discardUploadResult($result);
+        echo json_encode(['success' => false, 'message' => 'This PDF contains ' . count($result['documents'])
+            . ' different documents. Use UPLOAD FILE instead, so each one goes to its own requirement.']);
+        return;
+    }
+    if (!empty($result['photo_path']) && is_file($result['photo_path'])) @unlink($result['photo_path']);
+
+    $new = $result['documents'][0];
+    $studentId = (int) $row['student_id'];
+
+    if ($row['requirement_code'] !== null && $new['requirement_code'] !== $row['requirement_code']) {
+        @unlink($new['file_path']);
+        echo json_encode(['success' => false, 'message' => 'Cannot replace: the new file is not the same type of document.']);
+        return;
+    }
+
+    $sameFile = findStoredFileHash($conn, $studentId, $new['file_hash']);
+    if ($sameFile && (int) $sameFile['document_id'] !== (int) $row['document_id']) {
+        @unlink($new['file_path']);
+        echo json_encode(['success' => false, 'message' => 'This exact file is already on record as ' . $sameFile['document_type'] . ' (' . $sameFile['file_name'] . ').']);
+        return;
+    }
+
+    $warning = '';
+    $code = $row['requirement_code'];
+    if ($code === null && $new['requirement_code'] !== null) {
+        $taken = findStoredRequirement($conn, $studentId, $new['requirement_code']);
+        if (!$taken || (int) $taken['document_id'] === (int) $row['document_id']) {
+            $code = $new['requirement_code'];
+        } else {
+            $warning = 'The new file looks like ' . requirementLabel($new['requirement_code']) . ', which is already on file, so it was kept as "Other".';
+        }
+    }
+
+    $label = requirementLabel($code);
+    $updateSql  = "UPDATE documents
+                   SET file_name = ?, file_path = ?, file_hash = ?, requirement_code = ?, document_type = ?,
+                       uploaded_at = NOW()
+                   WHERE document_id = ?";
+    $updateStmt = mysqli_prepare($conn, $updateSql);
+    mysqli_stmt_bind_param($updateStmt, "sssssi", $originalName, $new['file_path'], $new['file_hash'], $code, $label, $documentId);
+
+    try {
+        mysqli_stmt_execute($updateStmt);
+    } catch (Exception $e) {
+        @unlink($new['file_path']);
+        echo json_encode(['success' => false, 'message' => 'Failed to update: ' . $e->getMessage()]);
+        return;
+    }
+
+    if ($row['file_path'] !== '' && isPathInsideUploads($row['file_path']) && is_file($row['file_path'])) {
+        @unlink($row['file_path']);
+    }
+    echo json_encode([
+        'success'          => true,
+        'message'          => 'Document replaced.',
+        'warning'          => $warning,
+        'file_name'        => $originalName,
+        'file_path'        => $new['file_path'],
+        'requirement_code' => $code,
+        'document_type'    => $label,
+    ]);
+}
+
+function handleSetDocumentType($conn)
 {
     $documentId = $_POST['document_id'] ?? '';
     if ($documentId === '' || !ctype_digit((string) $documentId)) {
         echo json_encode(['success' => false, 'message' => 'Invalid document.']);
         return;
     }
-
-    if (!isset($_FILES['document']) || $_FILES['document']['error'] !== UPLOAD_ERR_OK) {
-        echo json_encode(['success' => false, 'message' => 'No file uploaded or an upload error occurred.']);
+    $row = fetchDocumentRow($conn, (int) $documentId);
+    if (!$row) {
+        echo json_encode(['success' => false, 'message' => 'Document not found.']);
+        return;
+    }
+    if (rejectIfArchived($conn, $row['student_id'])) {
         return;
     }
 
-    $allowedExt   = ['pdf'];
-    $originalName = $_FILES['document']['name'];
-    $ext          = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
-
-    if (!in_array($ext, $allowedExt, true)) {
-        echo json_encode(['success' => false, 'message' => 'Unsupported file type. Only PDF files are allowed.']);
+    $code = trim($_POST['requirement_code'] ?? '');
+    $code = $code === '' ? null : $code;
+    if ($code !== null && !isStorableRequirement($code)) {
+        echo json_encode(['success' => false, 'message' => 'Unknown document type.']);
         return;
     }
-
-    $mimeType = mime_content_type($_FILES['document']['tmp_name']);
-    if ($mimeType !== 'application/pdf') {
-        echo json_encode(['success' => false, 'message' => 'Unsupported file type. Only PDF files are allowed.']);
-        return;
-    }
-
-    $uploadDir = '../uploads/documents/';
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0755, true);
-    }
-
-    $safeName = uniqid('doc_', true) . '.' . $ext;
-    $destPath = $uploadDir . $safeName;
-
-    if (!move_uploaded_file($_FILES['document']['tmp_name'], $destPath)) {
-        echo json_encode(['success' => false, 'message' => 'Failed to save the uploaded file.']);
-        return;
-    }
-
-    $sql  = "SELECT file_path FROM documents WHERE document_id = ?";
-    $stmt = mysqli_prepare($conn, $sql);
-    mysqli_stmt_bind_param($stmt, "i", $documentId);
-    mysqli_stmt_execute($stmt);
-    $row     = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
-    $oldPath = $row['file_path'] ?? '';
-
-    $updateSql  = "UPDATE documents
-                   SET file_name = ?, file_path = ?, drive_link = NULL
-                   WHERE document_id = ?";
-    $updateStmt = mysqli_prepare($conn, $updateSql);
-    mysqli_stmt_bind_param($updateStmt, "ssi", $originalName, $destPath, $documentId);
-
-    if (mysqli_stmt_execute($updateStmt)) {
-        if ($oldPath !== '' && isPathInsideUploads($oldPath) && is_file($oldPath)) {
-            @unlink($oldPath);
+    if ($code !== null) {
+        $taken = findStoredRequirement($conn, (int) $row['student_id'], $code);
+        if ($taken && (int) $taken['document_id'] !== (int) $row['document_id']) {
+            echo json_encode(['success' => false, 'message' => requirementLabel($code) . ' is already on file (' . $taken['file_name'] . '). Delete or retag that one first.']);
+            return;
         }
-        echo json_encode([
-            'success'   => true,
-            'message'   => 'Document replaced.',
-            'file_name' => $originalName,
-            'file_path' => $destPath,
-        ]);
-    } else {
-        @unlink($destPath);
-        echo json_encode(['success' => false, 'message' => 'Failed to update: ' . mysqli_error($conn)]);
     }
+
+    $label = requirementLabel($code);
+    $stmt = mysqli_prepare($conn, 'UPDATE documents SET requirement_code = ?, document_type = ? WHERE document_id = ?');
+    mysqli_stmt_bind_param($stmt, 'ssi', $code, $label, $documentId);
+    try {
+        mysqli_stmt_execute($stmt);
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'message' => 'Failed to update: ' . $e->getMessage()]);
+        return;
+    }
+    echo json_encode(['success' => true, 'requirement_code' => $code, 'document_type' => $label]);
 }
 
-function handleAddDocument($conn)
+function handleAddDocuments($conn)
 {
     $studentId = $_POST['student_id'] ?? '';
     if ($studentId === '' || !ctype_digit((string) $studentId)) {
         echo json_encode(['success' => false, 'message' => 'Invalid student.']);
         return;
     }
-
-    $stagedPath = $_POST['document_file_path'] ?? '';
-    $stagedName = $_POST['document_file_name'] ?? '';
-
-    if ($stagedPath !== '') {
-        if (!isPathInsideUploads($stagedPath) || !is_file($stagedPath)) {
-            echo json_encode(['success' => false, 'message' => 'Scanned file not found. Please upload again.']);
-            return;
-        }
-        $destPath     = $stagedPath;
-        $originalName = $stagedName !== '' ? $stagedName : basename($stagedPath);
-    } else {
-        if (!isset($_FILES['document']) || $_FILES['document']['error'] !== UPLOAD_ERR_OK) {
-            echo json_encode(['success' => false, 'message' => 'No file uploaded or an upload error occurred.']);
-            return;
-        }
-
-        $allowedExt   = ['pdf'];
-        $originalName = $_FILES['document']['name'];
-        $ext          = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
-
-        if (!in_array($ext, $allowedExt, true)) {
-            echo json_encode(['success' => false, 'message' => 'Unsupported file type. Only PDF files are allowed.']);
-            return;
-        }
-
-        $mimeType = mime_content_type($_FILES['document']['tmp_name']);
-        if ($mimeType !== 'application/pdf') {
-            echo json_encode(['success' => false, 'message' => 'Unsupported file type. Only PDF files are allowed.']);
-            return;
-        }
-
-        $uploadDir = '../uploads/documents/';
-        if (!is_dir($uploadDir)) {
-            mkdir($uploadDir, 0755, true);
-        }
-
-        $safeName = uniqid('doc_', true) . '.' . $ext;
-        $destPath = $uploadDir . $safeName;
-
-        if (!move_uploaded_file($_FILES['document']['tmp_name'], $destPath)) {
-            echo json_encode(['success' => false, 'message' => 'Failed to save the uploaded file.']);
-            return;
-        }
+    $studentId = (int) $studentId;
+    if (rejectIfArchived($conn, $studentId)) {
+        return;
     }
 
-    $documentType = $_POST['document_type'] ?? 'Uploaded Document';
-    $addedBy      = $_SESSION['name'] ?? '';
-
-    $sql  = "INSERT INTO documents (student_id, document_type, file_name, file_path, added_by)
-             VALUES (?, ?, ?, ?, ?)";
-    $stmt = mysqli_prepare($conn, $sql);
-    mysqli_stmt_bind_param($stmt, "issss", $studentId, $documentType, $originalName, $destPath, $addedBy);
-
-    if (mysqli_stmt_execute($stmt)) {
-        echo json_encode([
-            'success'     => true,
-            'message'     => 'Document uploaded.',
-            'document_id' => mysqli_insert_id($conn),
-            'file_name'   => $originalName,
-            'file_path'   => $destPath,
-        ]);
-    } else {
-        if ($stagedPath === '') {
-            @unlink($destPath);
-        }
-        echo json_encode(['success' => false, 'message' => 'Failed to save: ' . mysqli_error($conn)]);
+    $submitted = json_decode($_POST['documents'] ?? '[]', true);
+    if (!is_array($submitted) || !$submitted) {
+        echo json_encode(['success' => false, 'message' => 'No documents to save.']);
+        return;
     }
+
+    $clean = [];
+    $byRequirement = [];
+    $byHash = [];
+    foreach ($submitted as $doc) {
+        $filePath = $doc['file_path'] ?? '';
+        $fileName = trim($doc['file_name'] ?? '') ?: basename($filePath);
+        if ($filePath === '' || !is_file($filePath) || !isPathInsideUploads($filePath)) {
+            echo json_encode(['success' => false, 'message' => 'The file "' . $fileName . '" is missing on the server. Please upload it again.']);
+            return;
+        }
+        $code = $doc['requirement_code'] ?? null;
+        $code = ($code === '' ? null : $code);
+        if ($code !== null && !isStorableRequirement($code)) {
+            echo json_encode(['success' => false, 'message' => 'Unknown document type for "' . $fileName . '".']);
+            return;
+        }
+        if ($code !== null && isset($byRequirement[$code])) {
+            echo json_encode(['success' => false, 'message' => '"' . $byRequirement[$code] . '" and "' . $fileName . '" are both tagged as ' . requirementLabel($code) . '. Keep only one.']);
+            return;
+        }
+        $hash = pdfContentFingerprint($filePath);
+        if (isset($byHash[$hash])) {
+            echo json_encode(['success' => false, 'message' => '"' . $byHash[$hash] . '" and "' . $fileName . '" are the same file.']);
+            return;
+        }
+
+        $sameFile = findStoredFileHash($conn, $studentId, $hash);
+        if ($sameFile) {
+            echo json_encode(['success' => false, 'message' => '"' . $fileName . '" is already on record as ' . $sameFile['document_type'] . ' (' . $sameFile['file_name'] . ').']);
+            return;
+        }
+        $existing = $code !== null ? findStoredRequirement($conn, $studentId, $code) : null;
+        if ($existing) {
+            echo json_encode(['success' => false, 'message' => requirementLabel($code) . ' is already on file (' . $existing['file_name'] . '). Use the Replace button on that document to change it.']);
+            return;
+        }
+
+        if ($code !== null) $byRequirement[$code] = $fileName;
+        $byHash[$hash] = $fileName;
+        $clean[] = ['file_path' => $filePath, 'file_name' => $fileName, 'code' => $code,
+                    'label' => requirementLabel($code), 'hash' => $hash];
+    }
+
+    $addedBy = $_SESSION['name'] ?? '';
+    mysqli_begin_transaction($conn);
+    try {
+        $stmt = mysqli_prepare($conn, "INSERT INTO documents
+                (student_id, document_type, requirement_code, file_name, file_path, file_hash, added_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)");
+        foreach ($clean as $d) {
+            mysqli_stmt_bind_param($stmt, 'issssss', $studentId, $d['label'], $d['code'], $d['file_name'], $d['file_path'], $d['hash'], $addedBy);
+            mysqli_stmt_execute($stmt);
+        }
+        mysqli_commit($conn);
+    } catch (Exception $e) {
+        mysqli_rollback($conn);
+        $msg = $e->getCode() === 1062
+            ? 'A document for the same requirement is already on file. Reload the page and try again.'
+            : 'Failed to save documents: ' . $e->getMessage();
+        echo json_encode(['success' => false, 'message' => $msg]);
+        return;
+    }
+
+    echo json_encode(['success' => true, 'message' => count($clean) . ' document(s) saved.']);
 }
 
 $studentId = $_GET['id'] ?? '';
@@ -1069,13 +1436,28 @@ if (!$student) {
     exit();
 }
 
-$docsSql  = "SELECT document_id, document_type, file_name, file_path
-             FROM documents WHERE student_id = ? ORDER BY document_id ASC";
+if (isArchivedStatus($student['status'] ?? '')) {
+    header("Location: archive.php");
+    exit();
+}
+
+$docsSql  = "SELECT document_id, document_type, requirement_code, file_name, file_path, uploaded_at
+             FROM documents WHERE student_id = ? ORDER BY uploaded_at DESC, document_id DESC";
 $docsStmt = mysqli_prepare($conn, $docsSql);
 mysqli_stmt_bind_param($docsStmt, "i", $studentId);
 mysqli_stmt_execute($docsStmt);
 $documents = mysqli_stmt_get_result($docsStmt);
 $documentRows = $documents ? mysqli_fetch_all($documents, MYSQLI_ASSOC) : [];
+
+$admissionTrack = normalizeAdmissionTrack($student['admission_track'] ?? '');
+$orderedDocs = $documentRows;
+
+$clientDocuments = array_map(fn($d) => [
+    'document_id'      => (int) $d['document_id'],
+    'requirement_code' => $d['requirement_code'],
+    'file_name'        => $d['file_name'],
+    'file_path'        => $d['file_path'],
+], $documentRows);
 
 $issuedSql  = "SELECT uploaded_at, added_by FROM documents
                WHERE student_id = ? ORDER BY uploaded_at DESC LIMIT 1";
@@ -1116,8 +1498,8 @@ include 'navbar.php';
     <link href="../css/bootstrap-icons.css" rel="stylesheet">
     <link href="../css/font.css" rel="stylesheet">
     <link href="../css/navbar-admin.css" rel="stylesheet">
-    <link href="../css/student-directory-admin.css" rel="stylesheet">
-    <link href="../css/view-student.css" rel="stylesheet">
+    <link href="../css/student-directory-admin.css?v=<?= @filemtime(__DIR__ . '/../css/student-directory-admin.css') ?>" rel="stylesheet">
+    <link href="../css/view-student.css?v=<?= @filemtime(__DIR__ . '/../css/view-student.css') ?>" rel="stylesheet">
 </head>
 <body data-student-id="<?= (int) $studentId ?>">
     <div class="view-container">
@@ -1171,7 +1553,7 @@ include 'navbar.php';
                             </div>
                             <div class="col-md-6">
                                 <p><strong>Date Issued:</strong> <?= htmlspecialchars($dateIssued) ?></p>
-                                <p><strong>Issued by:</strong> <?= htmlspecialchars($issuedBy) ?></p>
+                                <p><strong>Checked by:</strong> <?= htmlspecialchars($issuedBy) ?></p>
                                 <p><strong>Status:</strong> <?= htmlspecialchars($statusLabel) ?></p>
                             </div>
                         </div>
@@ -1179,11 +1561,19 @@ include 'navbar.php';
 
                     <div class="tab-pane fade" id="view-docs" role="tabpanel">
                         <div id="documentList" class="d-flex flex-column gap-2">
-                            <?php if (!empty($documentRows)): ?>
-                                <?php foreach ($documentRows as $doc): ?>
-                                    <div class="document-row" data-document-id="<?= (int) $doc['document_id'] ?>"
+                            <?php if (!empty($orderedDocs)): ?>
+                                <?php foreach ($orderedDocs as $doc): ?>
+                                    <div class="document-row requirement-view-row"
+                                         data-document-id="<?= (int) $doc['document_id'] ?>"
                                          data-file-path="<?= htmlspecialchars($doc['file_path']) ?>">
-                                        <span class="document-name"><?= htmlspecialchars($doc['file_name']) ?></span>
+                                        <i class="bi bi-file-earmark-text req-status"></i>
+                                        <div class="req-body">
+                                            <div class="req-label"><?= htmlspecialchars(isStorableRequirement($doc['requirement_code'] ?? null) ? requirementLabel($doc['requirement_code']) : ($doc['document_type'] ?: 'Other Document')) ?></div>
+                                            <span class="document-name"><?= htmlspecialchars($doc['file_name']) ?></span>
+                                            <?php if (!empty($doc['uploaded_at'])): ?>
+                                                <small class="text-muted"> · <?= htmlspecialchars(date('M j, Y', strtotime($doc['uploaded_at']))) ?></small>
+                                            <?php endif; ?>
+                                        </div>
                                         <div class="document-actions">
                                             <button type="button" class="btn btn-sm btn-outline-secondary document-view-btn" title="Preview file">
                                                 <i class="bi bi-eye"></i>
@@ -1216,7 +1606,7 @@ include 'navbar.php';
                     <h5 class="modal-title add-title">Update Student Record</h5>
 
                     <div class="header-btn-group">
-                        <button type="button" class="btn scan-document-btn">
+                        <button type="button" class="btn scan-document-btn" disabled title="Coming soon">
                             SCAN DOCUMENT
                         </button>
 
@@ -1231,8 +1621,6 @@ include 'navbar.php';
 
                 <form method="POST" id="updateRecordForm">
                     <input type="hidden" name="student_id" value="<?= (int) $studentId ?>">
-                    <input type="hidden" id="stagedFilePath" name="document_file_path" value="">
-                    <input type="hidden" id="stagedFileName" name="document_file_name" value="">
                     <input type="hidden" id="stagedPhotoPath" name="photo_path" value="">
 
                     <div class="modal-body">
@@ -1273,23 +1661,23 @@ include 'navbar.php';
                                             <div class="col-md-6">
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_name" class="form-label form-label-custom">Full Name:</label>
-                                                    <input type="text" id="edit_name" name="name" class="form-control input-custom" pattern="[A-Za-z\s.,]+"
+                                                    <input type="text" id="edit_name" name="name" class="form-control input-custom" required pattern="[A-Za-z\s.,]+"
                                                            value="<?= htmlspecialchars($student['name'] ?? '') ?>">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_student_number" class="form-label form-label-custom">Student Number:</label>
-                                                    <input type="text" id="edit_student_number" name="student_number" class="form-control input-custom"
+                                                    <input type="text" id="edit_student_number" name="student_number" class="form-control input-custom" required
                                                            value="<?= htmlspecialchars($student['student_number'] ?? '') ?>" maxlength="15">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_course" class="form-label form-label-custom">Course:</label>
                                                     <input type="text" id="edit_course" name="course" class="form-control input-custom"
-                                                           value="<?= htmlspecialchars($student['course'] ?? '') ?>" pattern="[A-Za-z\s]+">
+                                                           value="<?= htmlspecialchars($student['course'] ?? '') ?>" pattern="[A-Za-z\s\-]+">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_year_section" class="form-label form-label-custom">Year &amp; Section:</label>
                                                     <input type="text" id="edit_year_section" name="year_section" class="form-control input-custom"
-                                                           value="<?= htmlspecialchars($student['year_section'] ?? '') ?>" pattern="[0-9]+-[0-9]+" inputmode="numeric" maxlength="3">
+                                                           value="<?= htmlspecialchars($student['year_section'] ?? '') ?>" pattern="[0-9]-[0-9]" inputmode="numeric" maxlength="3" title="One number for the year and one for the section, e.g. 1-1">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_sex" class="form-label form-label-custom">Gender:</label>
@@ -1309,6 +1697,14 @@ include 'navbar.php';
                                             </div>
                                             <div class="col-md-6">
                                                 <div class="d-flex align-items-center mb-3">
+                                                    <label for="edit_admission_track" class="form-label form-label-custom">Admission Type:</label>
+                                                    <select id="edit_admission_track" name="admission_track" class="form-select input-custom">
+                                                        <?php foreach (getAdmissionTracks() as $trackValue => $trackLabel): ?>
+                                                            <option value="<?= htmlspecialchars($trackValue) ?>" <?= $trackValue === $admissionTrack ? 'selected' : '' ?>><?= htmlspecialchars($trackLabel) ?></option>
+                                                        <?php endforeach; ?>
+                                                    </select>
+                                                </div>
+                                                <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_mobile_number" class="form-label form-label-custom">Mobile Number:</label>
                                                     <input type="text" id="edit_mobile_number" name="mobile_number" class="form-control input-custom"
                                                            value="<?= htmlspecialchars($student['mobile_number'] ?? '') ?>" pattern="[0-9]{11}" maxlength="11" inputmode="numeric">
@@ -1318,6 +1714,7 @@ include 'navbar.php';
                                                     <input type="email" id="edit_email" name="email" class="form-control input-custom"
                                                            value="<?= htmlspecialchars($student['email'] ?? '') ?>" pattern="[^@\s]+@[^@\s]+\.[^@\s]+" title="Enter a valid email address">
                                                 </div>
+                                                <small id="editEmailFeedback" class="text-danger d-block mb-3"></small>
                                                 <div class="d-flex align-items-start mb-3">
                                                     <label for="edit_address" class="form-label form-label-custom">Home Address:</label>
                                                     <textarea id="edit_address" name="address" class="form-control input-custom" rows="3"><?= htmlspecialchars($student['address'] ?? '') ?></textarea>
@@ -1329,12 +1726,18 @@ include 'navbar.php';
                                     <div class="tab-pane fade" id="edit-docs" role="tabpanel">
                                         <div class="documents-tab-layout">
                                             <div class="documents-list-col">
+                                                <div class="documents-section-label">On file</div>
                                                 <div id="modalDocumentList" class="d-flex flex-column gap-2 mb-3">
                                                     <?php if (!empty($documentRows)): ?>
                                                         <?php foreach ($documentRows as $doc): ?>
                                                             <div class="document-row" data-document-id="<?= (int) $doc['document_id'] ?>"
-                                                                 data-file-path="<?= htmlspecialchars($doc['file_path']) ?>">
-                                                                <span class="document-name"><?= htmlspecialchars($doc['file_name']) ?></span>
+                                                                 data-file-path="<?= htmlspecialchars($doc['file_path']) ?>"
+                                                                 data-requirement-code="<?= htmlspecialchars($doc['requirement_code'] ?? '') ?>">
+                                                                <div class="document-row-body flex-grow-1">
+                                                                    <span class="document-row-title"><?= htmlspecialchars(requirementLabel($doc['requirement_code'] ?? null)) ?></span>
+                                                                    <span class="document-name d-block text-muted small"><?= htmlspecialchars($doc['file_name']) ?></span>
+                                                                    <select class="form-select form-select-sm document-type-select" aria-label="Document type"></select>
+                                                                </div>
                                                                 <div class="document-actions">
                                                                     <button type="button" class="btn btn-sm btn-outline-secondary document-view-btn" title="Preview file">
                                                                         <i class="bi bi-eye"></i>
@@ -1355,7 +1758,8 @@ include 'navbar.php';
 
                                                 <input type="file" id="replaceDocumentInput" accept=".pdf" hidden>
 
-                                                <div id="scannedFilePreview" class="mb-3">
+                                                <div class="documents-section-label">New uploads (saved when you click UPDATE)</div>
+                                                <div id="scannedFilePreview" class="d-flex flex-column gap-2 mb-3">
                                                     <div class="text-muted document-empty-state">No new file attached yet.</div>
                                                 </div>
                                                 <small id="addDocumentFeedback" class="text-danger d-block mb-3"></small>
@@ -1363,7 +1767,6 @@ include 'navbar.php';
 
                                         </div>
                                     </div>
-
 
                                 </div>
                             </div>
@@ -1396,7 +1799,9 @@ include 'navbar.php';
                         <tr><th>Name</th><td id="confirmSummaryName"></td></tr>
                         <tr><th>Course</th><td id="confirmSummaryCourse"></td></tr>
                         <tr><th>Year &amp; Section</th><td id="confirmSummarySection"></td></tr>
+                        <tr><th>Admission Type</th><td id="confirmSummaryTrack"></td></tr>
                         <tr><th>Attached Documents</th><td id="confirmSummaryDocs"></td></tr>
+                        <tr><th>Missing Requirements</th><td id="confirmSummaryMissing"></td></tr>
                     </table>
                 </div>
                 <div class="modal-footer">
@@ -1445,6 +1850,12 @@ include 'navbar.php';
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
-    <script src="../js/view-student.js"></script>
+    <div id="documentPageData" hidden data-json="<?= htmlspecialchars(json_encode([
+        'requirements' => requirementsForClient(),
+        'groups'       => getDocumentRequirementGroups(),
+        'tracks'       => getAdmissionTracks(),
+        'documents'    => $clientDocuments,
+    ]), ENT_QUOTES, 'UTF-8') ?>"></div>
+    <script src="../js/view-student.js?v=<?= @filemtime(__DIR__ . '/../js/view-student.js') ?>"></script>
 </body>
 </html>

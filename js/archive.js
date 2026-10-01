@@ -1,8 +1,6 @@
 (function () {
     'use strict';
 
-    const ARCHIVE_URL = 'archive.php?action=archive_student';
-
     const isDeleting = (e) => !!(e && e.inputType && e.inputType.indexOf('delete') === 0);
 
     function formatStudentNumber(value, e) {
@@ -63,46 +61,11 @@
     });
 
     if (window.bootstrap && bootstrap.Dropdown) {
-        document.querySelectorAll('.archive-drive-btn').forEach((btn) => {
+        document.querySelectorAll('.archive-files-btn').forEach((btn) => {
             bootstrap.Dropdown.getOrCreateInstance(btn, {
                 popperConfig: (defaultConfig) => Object.assign({}, defaultConfig, { strategy: 'fixed' }),
             });
         });
-    }
-
-    const modalEl    = document.getElementById('archiveUploadModal');
-    const modal      = modalEl && window.bootstrap ? bootstrap.Modal.getOrCreateInstance(modalEl) : null;
-    const nameEl     = document.getElementById('archiveUploadName');
-    const countEl    = document.getElementById('archiveUploadCount');
-    const errorEl    = document.getElementById('archiveUploadError');
-    const cancelBtn  = document.getElementById('archiveUploadCancelBtn');
-    const confirmBtn = document.getElementById('archiveUploadConfirmBtn');
-
-    let pendingId = null;
-    let inFlight  = false;
-
-    function showError(message) {
-        if (!errorEl) {
-            alert(message);
-            return;
-        }
-        errorEl.textContent = message;
-        errorEl.classList.remove('d-none');
-    }
-
-    function clearError() {
-        if (!errorEl) return;
-        errorEl.textContent = '';
-        errorEl.classList.add('d-none');
-    }
-
-    function setBusy(busy) {
-        inFlight = busy;
-        if (confirmBtn) {
-            confirmBtn.disabled = busy;
-            confirmBtn.textContent = busy ? 'Uploading to Google Drive…' : 'Upload';
-        }
-        if (cancelBtn) cancelBtn.disabled = busy;
     }
 
     async function readJson(res) {
@@ -114,62 +77,6 @@
             throw new Error('The server returned an unexpected response (HTTP ' + res.status + ').');
         }
     }
-
-    async function uploadPending() {
-        if (!pendingId || inFlight) return;
-
-        clearError();
-        setBusy(true);
-
-        const formData = new FormData();
-        formData.append('student_id', pendingId);
-
-        try {
-            const res  = await fetch(ARCHIVE_URL, { method: 'POST', body: formData });
-            const data = await readJson(res);
-
-            if (!data.success) {
-                showError(data.message || 'Upload failed.');
-                setBusy(false);
-                return;
-            }
-
-            if (data.skipped && data.skipped.length) {
-                alert('These files were missing on the server and were not uploaded:\n- ' + data.skipped.join('\n- '));
-            }
-            window.location.reload();
-        } catch (err) {
-            showError(err.message || 'Upload failed.');
-            setBusy(false);
-        }
-    }
-
-    document.querySelectorAll('.archive-upload-btn').forEach((btn) => {
-        btn.addEventListener('click', () => {
-            pendingId = btn.dataset.id;
-            if (nameEl)  nameEl.textContent  = btn.dataset.name || 'this student';
-            if (countEl) countEl.textContent = btn.dataset.pending || '';
-            clearError();
-
-            if (modal) {
-                modal.show();
-            } else if (window.confirm('Upload the remaining documents to Google Drive?')) {
-                uploadPending();
-            }
-        });
-    });
-
-    if (modalEl) {
-        modalEl.addEventListener('hide.bs.modal', (e) => {
-            if (inFlight) e.preventDefault();
-        });
-        modalEl.addEventListener('hidden.bs.modal', () => {
-            pendingId = null;
-            clearError();
-        });
-    }
-
-    if (confirmBtn) confirmBtn.addEventListener('click', uploadPending);
 
     const RESTORE_URL       = 'archive.php?action=restore_student';
     const restoreModalEl    = document.getElementById('archiveRestoreModal');
