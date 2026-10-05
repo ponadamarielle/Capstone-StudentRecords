@@ -3,6 +3,9 @@ include '../security_headers.php';
 session_start();
 require_once __DIR__ . '/course_catalog.php';
 require_once __DIR__ . '/document_classifier.php';
+require_once __DIR__ . '/ai_extraction.php';
+require_once __DIR__ . '/archive.php';
+require_once __DIR__ . '/requirement_status.php';
 
 if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] !== 'Admin') {
     header("Location: ../signin.php");
@@ -106,7 +109,7 @@ function isPathInsideUploads($path)
 
 function isArchivedStatus($status)
 {
-    return in_array($status, ['inactive', 'onleave'], true);
+    return in_array($status, ARCHIVED_STATUSES, true);
 }
 
 function isArchivedStudent($conn, $studentId)
@@ -400,6 +403,7 @@ function requirementsForClient()
         $text = ($r['label'] ?? '') . ' ' . ($r['code'] ?? '');
         if (preg_match('/chest[\s_-]*x[\s_-]*-?ray|xray/i', $text)) {
             $r['required_for'] = [];
+            $r['clinic_only']  = true;  
         }
         return $r;
     }, getDocumentRequirementsForClient()));
@@ -515,124 +519,6 @@ function cropLooksLikePersonPhoto($pdfPath, $box, $minSkinRatio = 0.04, $page = 
     return ($skinCount / $sampleCount) >= $minSkinRatio;
 }
 
-function shrinkImageForOcr($imagePath, $maxBytes = 3500000)
-{
-    $size = @filesize($imagePath);
-    if ($size === false || $size <= $maxBytes) {
-        return $imagePath;
-    }
-    if (!function_exists('imagecreatefromstring') || !function_exists('imagejpeg')) {
-        error_log('OCR image is ' . round($size / 1048576, 1) . ' MB, over the 4 MB Azure limit. '
-            . 'Enable extension=gd in php.ini so it can be compressed.');
-        return $imagePath;
-    }
-
-    @ini_set('memory_limit', '512M');
-    $img = @imagecreatefromstring((string) @file_get_contents($imagePath));
-    if (!$img) {
-        return $imagePath;
-    }
-
-    $tmp = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('ocr_', true) . '.jpg';
-    foreach ([85, 75, 65, 55] as $quality) {
-        imagejpeg($img, $tmp, $quality);
-        clearstatcache(true, $tmp);
-        if (@filesize($tmp) !== false && filesize($tmp) <= $maxBytes) {
-            break;
-        }
-    }
-    imagedestroy($img);
-
-    return is_file($tmp) ? $tmp : $imagePath;
-}
-
-function callAzureVisionOcr($imagePath)
-{
-    $apiKey = getenv('AZURE_VISION_KEY');
-    $endpoint = rtrim(getenv('AZURE_VISION_ENDPOINT') ?: '', '/');
-    if (!$apiKey || !$endpoint) {
-        error_log('AZURE_VISION_KEY or AZURE_VISION_ENDPOINT not set in .env — skipping Azure OCR.');
-        return null;
-    }
-
-    $sendPath  = shrinkImageForOcr($imagePath);
-    $imageData = @file_get_contents($sendPath);
-    if ($sendPath !== $imagePath) {
-        @unlink($sendPath);
-    }
-    if ($imageData === false) {
-        return null;
-    }
-
-    $submitUrl = $endpoint . '/vision/v3.2/read/analyze';
-    $ch = curl_init($submitUrl);
-    curl_setopt_array($ch, [
-        CURLOPT_POST           => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HEADER         => true,
-        CURLOPT_HTTPHEADER     => [
-            'Content-Type: application/octet-stream',
-            'Ocp-Apim-Subscription-Key: ' . $apiKey,
-        ],
-        CURLOPT_POSTFIELDS => $imageData,
-        CURLOPT_TIMEOUT    => 30,
-    ]);
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($response === false || $httpCode !== 202) {
-        error_log('Azure Read API submit failed, HTTP ' . $httpCode . ': ' . $response);
-        return null;
-    }
-
-    if (!preg_match('/Operation-Location:\s*(\S+)/i', $response, $m)) {
-        error_log('Azure Read API: no Operation-Location header returned.');
-        return null;
-    }
-    $operationUrl = trim($m[1]);
-
-    for ($attempt = 0; $attempt < 15; $attempt++) {
-        sleep(1);
-
-        $ch = curl_init($operationUrl);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER     => ['Ocp-Apim-Subscription-Key: ' . $apiKey],
-            CURLOPT_TIMEOUT        => 15,
-        ]);
-        $pollResponse = curl_exec($ch);
-        curl_close($ch);
-
-        if ($pollResponse === false) {
-            continue;
-        }
-
-        $result = json_decode($pollResponse, true);
-        $status = $result['status'] ?? '';
-
-        if ($status === 'succeeded') {
-            $lines = [];
-            $GLOBALS['azureLineBoxes'] = [];
-            foreach ($result['analyzeResult']['readResults'] ?? [] as $page) {
-                foreach ($page['lines'] ?? [] as $line) {
-                    $lines[] = $line['text'];
-                    $GLOBALS['azureLineBoxes'][] = ['text' => $line['text'], 'box' => $line['boundingBox'] ?? []];
-                }
-            }
-            return implode("\n", $lines);
-        }
-
-        if ($status === 'failed') {
-            error_log('Azure Read API analysis failed: ' . $pollResponse);
-            return null;
-        }
-    }
-
-    error_log('Azure Read API: timed out waiting for result.');
-    return null;
-}
-
 function saveUploadedPdf($field, $uploadDir)
 {
     if (!isset($_FILES[$field]) || $_FILES[$field]['error'] !== UPLOAD_ERR_OK) {
@@ -696,188 +582,7 @@ function handleOcrExtract($conn)
         unset($doc);
     }
 
-    echo json_encode($result);
-}
-
-function stripCommonOcrArtifacts($value)
-{
-    if ($value === '') return $value;
-    $value = str_replace('|', ' ', $value);
-    $value = preg_replace('/\s+/', ' ', $value);
-    return trim($value);
-}
-
-function stripStrayOcrTokens($value)
-{
-    if ($value === '') return $value;
-    $value = preg_replace('/\b[A-Za-z]\b/', ' ', $value);
-    $value = preg_replace('/\b\d{1,2}\b/', ' ', $value);
-    $value = preg_replace('/\s+/', ' ', $value);
-    return trim($value);
-}
-
-function parseOcrText($text)
-{
-    $text = preg_replace('/_{2,}/', ' ', $text);
-
-    $stampMonths = 'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC';
-    $text = preg_replace(
-        '/\b[A-Z]{2,6}(?:-[A-Z0-9]+){2,}\b[ \t]*\r?\n?[ \t]*Rev\.?\s*\d+[ \t]*\r?\n?[ \t]*(?:' . $stampMonths . ')[A-Za-z]*\.?\s+\d{1,2},?\s*(?:19|20)\d{2}/i',
-        ' ',
-        $text
-    );
-
-    $fields = [
-        'student_number'    => '',
-        'name'              => '',
-        'course'            => '',
-        'year_section'      => '',
-        'sex'               => '',
-        'date_of_birth'     => '',
-        'place_of_birth'    => '',
-        'address'           => '',
-        'mobile_number'     => '',
-        'email'             => '',
-    ];
-
-    $nextLabel = '(?=[ \t]*(?:pup[ \t]*)?(?:student[ \t]*(?:no|number|#)?[ \t]*\.?|school[ \t]*year|course(?:[ \t]*\/[ \t]*college)?|program|address|sex|gender|civil[ \t]*status|blood[ \t]*type|email(?:[ \t]*address)?|parent|guardian|spouse|landline|cellphone|mobile|age|section|year|date[ \t]*of[ \t]*birth|place[ \t]*of[ \t]*birth)[ \t]*[:\-]|[ \t]*(?:\r?\n|$))';
-
-    $patternGroups = [
-        'student_number' => [
-            '/(?:pup[ \t]*)?student[ \t]*(?:no|number|#)?[ \t]*\.?[ \t]*[:\-][ \t]*\r?\n?[ \t]*([0-9][0-9A-Za-z\-]{4,20})/i',
-        ],
-        'name' => [
-            '/name[ \t]*of[ \t]*applicant[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
-            '/^[ \t]*name[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/im',
-        ],
-
-        'course' => [
-            '/program[ \t]*[:\-][ \t]*\r?\n?[ \t]*([A-Za-z0-9.\-]+)/i',
-            '/course[ \t]*(?:\/[ \t]*college)?[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
-        ],
-        'year_section' => [
-            '/year[ \t]*(?:&|and)?[ \t]*section[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
-            '/\bsection[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
-        ],
-        'sex' => [
-            '/sex[ \t]*[:\-][ \t]*\r?\n?[ \t]*(male|female)/i',
-            '/gender[ \t]*[:\-][ \t]*\r?\n?[ \t]*(male|female)/i',
-        ],
-        'date_of_birth' => [
-            '/date[ \t]*of[ \t]*birth[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
-        ],
-        'place_of_birth' => [
-            '/place[ \t]*of[ \t]*birth[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
-        ],
-        'mobile_number' => [
-            '/(?:mobile|cellphone|cell)[ \t]*(?:no|number)?\.?[ \t]*[:\-][ \t]*\r?\n?[ \t]*([0-9+\-\s]{7,15})/i',
-        ],
-        'address' => [
-            '/^[ \t]*(?:home[ \t]*)?address[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/im',
-        ],
-    ];
-
-    foreach ($patternGroups as $key => $patterns) {
-        foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $text, $m)) {
-                $candidate = trim(end($m));
-                if ($candidate !== '' && !looksLikeAnotherLabel($candidate)) {
-                    $fields[$key] = $candidate;
-                    break;
-                }
-            }
-        }
-    }
-
-    if ($fields['year_section'] !== '') {
-        $fields['year_section'] = normalizeYearSection($fields['year_section']);
-        if (!preg_match('/^\d-\d$/', $fields['year_section'])) {
-            $fields['year_section'] = '';
-        }
-    }
-
-    if ($fields['course'] === '') {
-        foreach (preg_split('/\R/', $text) as $line) {
-            $entry = resolveCourse($line, true);
-            if ($entry) {
-                $fields['course'] = $entry['name'];
-                break;
-            }
-        }
-    }
-    if ($fields['course'] === '') {
-        if (preg_match('/^[ \t]*(BS[A-Z]{2,6}|BEED|BPED|BTLED)[ \t]*$/m', $text, $m)) {
-            $fields['course'] = $m[1];
-        }
-    }
-
-    if (preg_match('/[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}/', $text, $m)) {
-        $fields['email'] = $m[0];
-    }
-
-    if ($fields['mobile_number'] === '' && preg_match('/\b(09\d{9}|\+?639\d{9})\b/', $text, $m)) {
-        $fields['mobile_number'] = $m[1];
-    }
-
-    if ($fields['student_number'] === '') {
-        $dash = '[\-\x{2010}-\x{2015}]';
-        if (preg_match('/\b(\d{4}\s*' . $dash . '\s*\d{4,6}\s*' . $dash . '\s*[A-Z0-9]{1,4}\s*' . $dash . '\s*[0O])\b/iu', $text, $m)) {
-            $cleaned = preg_replace('/\s+/', '', $m[1]);
-            $cleaned = preg_replace('/' . $dash . '/u', '-', $cleaned);
-            $fields['student_number'] = $cleaned;
-        }
-    }
-
-    if ($fields['date_of_birth'] !== '' && !looksLikeRealDate($fields['date_of_birth'])) {
-        $fields['date_of_birth'] = '';
-    }
-
-    if ($fields['place_of_birth'] === '') {
-        if (preg_match('/place[ \t]*of[ \t]*birth.*?\n(.*?)(?=type\s*of\s*birth)/is', $text, $m)) {
-            $lines = array_filter(array_map('trim', explode("\n", $m[1])), function ($line) {
-                if ($line === '' || $line[0] === '(') return false;
-
-                if (!preg_match('/[A-Za-z]{3,}/', $line)) return false;
-                if (preg_match('/^\d{1,2}[a-c]?[.,]?$/', $line)) return false;
-                return true;
-            });
-
-            $lines = array_map('stripStrayOcrTokens', $lines);
-            $lines = array_filter($lines, function ($line) { return $line !== ''; });
-
-            $lines = array_values(array_unique($lines));
-            if (!empty($lines)) {
-                $fields['place_of_birth'] = implode(', ', $lines);
-            }
-        }
-    }
-
-    if ($fields['date_of_birth'] !== '' && !looksLikeRealDate($fields['date_of_birth'])) {
-        $fields['date_of_birth'] = '';
-    }
-
-    if ($fields['course'] !== '') {
-        $fields['course'] = normalizeCourseName($fields['course']);
-    }
-
-    foreach ($fields as $key => $value) {
-        $fields[$key] = stripCommonOcrArtifacts($value);
-    }
-
-    return $fields;
-}
-
-function looksLikeRealDate($value)
-{
-    $digits = preg_replace('/\D/', '', $value);
-    if ($digits === '' || preg_match('/^0+$/', $digits)) {
-        return false;
-    }
-
-    if (preg_match('/^[\d\s\/\-.,]+$/', $value) && !preg_match('/\b(19|20)\d{2}\b/', $value)) {
-        return false;
-    }
-    return true;
+    echo json_encode(attachAiStatus($result));
 }
 
 function dateOfBirthForDb($value)
@@ -899,59 +604,33 @@ function dateOfBirthForDb($value)
     return date('Y-m-d', $timestamp);
 }
 
-function normalizeYearSection($raw)
+function buildFullName($lastName, $firstName, $middleName)
 {
-    $raw = trim($raw);
-
-    if (preg_match('/^(\d{1,2})\s*-\s*([A-Za-z0-9]{1,3})$/', $raw, $m)) {
-        return $m[1] . '-' . $m[2];
+    $given = trim($firstName . ' ' . $middleName);
+    if ($lastName === '') {
+        return $given;
     }
-
-    $year = null;
-    $section = null;
-    if (preg_match('/(\d)(?:st|nd|rd|th)?\s*year/i', $raw, $m)) {
-        $year = $m[1];
-    } elseif (preg_match('/year[ \t]*[:\-]?[ \t]*(\d)/i', $raw, $m)) {
-        $year = $m[1];
-    }
-    if (preg_match('/section[ \t]*[:\-]?[ \t]*([A-Za-z0-9]{1,3})/i', $raw, $m)) {
-        $section = $m[1];
-    }
-
-    if ($year === null && $section === null && preg_match('/^[A-Za-z0-9]{1,3}$/', $raw)) {
-        $section = $raw;
-    }
-
-    if ($year === null && $section !== null) {
-        $year = '1';
-    }
-
-    if ($year !== null && $section !== null) {
-        return $year . '-' . $section;
-    }
-
-    return $raw;
+    return $given === '' ? $lastName : $lastName . ', ' . $given;
 }
 
-function looksLikeAnotherLabel($value)
+function splitFullName($name)
 {
-    if (substr(rtrim($value), -1) === ':') {
-        return true;
+    $name = trim((string) $name);
+    if (strpos($name, ',') === false) {
+        return ['', $name, ''];
     }
-    if (preg_match('/^(signature|date|processed[ \t]*by|interviewed[ \t]*by|issued[ \t]*by|remarks|program|section|step[ \t]*\d)\b/i', trim($value))) {
-        return true;
+    [$last, $given] = array_map('trim', explode(',', $name, 2));
+    $middle = '';
+    if (preg_match('/^(.*\S)\s+([A-Za-zÑñ]\.?)$/u', $given, $m)) {
+        $given  = $m[1];
+        $middle = $m[2];
     }
-    $labelWords = ['no.', 'number', 'address', 'email', 'sex', 'age', 'course', 'college',
-                   'school year', 'civil status', 'blood type', 'name', 'section'];
-    if (strlen($value) < 40) {
-        $lower = strtolower($value);
-        foreach ($labelWords as $word) {
-            if (strpos($lower, $word) !== false) {
-                return true;
-            }
-        }
-    }
-    return false;
+    return [$last, $given, $middle];
+}
+
+function minimumBirthDate()
+{
+    return date('Y-m-d', strtotime('-17 years'));
 }
 
 function handleUpdateStudentInfo($conn)
@@ -965,7 +644,14 @@ function handleUpdateStudentInfo($conn)
         return;
     }
 
-    $name        = trim($_POST['name'] ?? '');
+    $lastName    = trim($_POST['last_name'] ?? '');
+    $firstName   = trim($_POST['first_name'] ?? '');
+    $middleName  = trim($_POST['middle_name'] ?? '');
+    if ($lastName === '' || $firstName === '') {
+        echo json_encode(['success' => false, 'message' => 'Please fill in the Last Name and First Name.']);
+        return;
+    }
+    $name        = buildFullName($lastName, $firstName, $middleName);
     $studentNum  = trim($_POST['student_number'] ?? '');
     $course      = normalizeCourseName($_POST['course'] ?? '');
     $yearSection = trim($_POST['year_section'] ?? '');
@@ -975,6 +661,10 @@ function handleUpdateStudentInfo($conn)
     }
     $sex         = trim($_POST['sex'] ?? '');
     $dob         = dateOfBirthForDb(trim($_POST['date_of_birth'] ?? ''));
+    if ($dob !== null && $dob > minimumBirthDate()) {
+        echo json_encode(['success' => false, 'message' => 'Date of Birth is too recent. The student must be at least 17 years old.']);
+        return;
+    }
     $pob         = trim($_POST['place_of_birth'] ?? '');
     $mobile      = trim($_POST['mobile_number'] ?? '');
     $email       = trim($_POST['email'] ?? '');
@@ -1055,31 +745,38 @@ function handleUpdateStudentInfo($conn)
 
     if ($newPhotoPath !== null) {
         $sql  = "UPDATE students
-                 SET name = ?, student_number = ?, course = ?, year_section = ?, sex = ?,
+                 SET name = ?, last_name = ?, first_name = ?, middle_name = ?, student_number = ?, course = ?, year_section = ?, sex = ?,
                      date_of_birth = ?, place_of_birth = ?, mobile_number = ?, email = ?, address = ?,
                      admission_track = ?, photo_path = ?
                  WHERE student_id = ?";
         $stmt = mysqli_prepare($conn, $sql);
         mysqli_stmt_bind_param(
             $stmt,
-            "ssssssssssssi",
-            $name, $studentNum, $course, $yearSection, $sex, $dob, $pob, $mobile, $email, $address, $track, $newPhotoPath, $studentId
+            "sssssssssssssssi",
+            $name, $lastName, $firstName, $middleName, $studentNum, $course, $yearSection, $sex, $dob, $pob, $mobile, $email, $address, $track, $newPhotoPath, $studentId
         );
     } else {
         $sql  = "UPDATE students
-                 SET name = ?, student_number = ?, course = ?, year_section = ?, sex = ?,
+                 SET name = ?, last_name = ?, first_name = ?, middle_name = ?, student_number = ?, course = ?, year_section = ?, sex = ?,
                      date_of_birth = ?, place_of_birth = ?, mobile_number = ?, email = ?, address = ?,
                      admission_track = ?
                  WHERE student_id = ?";
         $stmt = mysqli_prepare($conn, $sql);
         mysqli_stmt_bind_param(
             $stmt,
-            "sssssssssssi",
-            $name, $studentNum, $course, $yearSection, $sex, $dob, $pob, $mobile, $email, $address, $track, $studentId
+            "sssssssssssssssi",
+            $name, $lastName, $firstName, $middleName, $studentNum, $course, $yearSection, $sex, $dob, $pob, $mobile, $email, $address, $track, $studentId
         );
     }
 
     if (mysqli_stmt_execute($stmt)) {
+        if (in_array('graduation_year', studentColumns($conn), true)) {
+            $gradInput = trim($_POST['graduation_year'] ?? '');
+            $gradYear  = ctype_digit($gradInput) ? (int) $gradInput : null;
+            $gradStmt  = mysqli_prepare($conn, "UPDATE students SET graduation_year = ? WHERE student_id = ?");
+            mysqli_stmt_bind_param($gradStmt, "ii", $gradYear, $studentId);
+            mysqli_stmt_execute($gradStmt);
+        }
         if ($newPhotoPath !== null && $oldPhotoPath && $oldPhotoPath !== $newPhotoPath
             && strpos($oldPhotoPath, '../uploads/photos/') === 0 && is_file($oldPhotoPath)) {
             @unlink($oldPhotoPath);
@@ -1450,7 +1147,16 @@ $documents = mysqli_stmt_get_result($docsStmt);
 $documentRows = $documents ? mysqli_fetch_all($documents, MYSQLI_ASSOC) : [];
 
 $admissionTrack = normalizeAdmissionTrack($student['admission_track'] ?? '');
+[$editLastName, $editFirstName, $editMiddleName] = (trim($student['last_name'] ?? '') !== '' || trim($student['first_name'] ?? '') !== '')
+    ? [$student['last_name'] ?? '', $student['first_name'] ?? '', $student['middle_name'] ?? '']
+    : splitFullName($student['name'] ?? '');
 $orderedDocs = $documentRows;
+
+$completion = requirementCompletion(
+    requirementsForClient(),
+    $admissionTrack,
+    array_column($documentRows, 'requirement_code')
+);
 
 $clientDocuments = array_map(fn($d) => [
     'document_id'      => (int) $d['document_id'],
@@ -1472,7 +1178,14 @@ if (!empty($issuedInfo['uploaded_at'])) {
 }
 $issuedBy = $issuedInfo['added_by'] ?? '';
 
-$statusLabels = ['active' => 'Active', 'inactive' => 'In-active', 'onleave' => 'On-leave'];
+$statusLabels = ['active' => 'Enrollee', 'graduated' => 'Graduate', 'inactive' => 'In-active', 'onleave' => 'On-leave'];
+$savedGradYear    = !empty($student['graduation_year']) ? (int) $student['graduation_year'] : null;
+$expectedGradYear = expectedGraduationYear($student);
+$gradYearOptions  = range(currentSchoolYearEndYear() - 1, currentSchoolYearEndYear() + 6);
+if ($savedGradYear !== null && !in_array($savedGradYear, $gradYearOptions, true)) {
+    $gradYearOptions[] = $savedGradYear;
+    sort($gradYearOptions);
+}
 $statusLabel  = $statusLabels[$student['status']] ?? ucfirst($student['status'] ?? '');
 
 $defaultAvatarSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
@@ -1541,25 +1254,56 @@ include 'navbar.php';
                 <div class="tab-content border border-top-0 p-3 pt-4 ps-4">
 
                     <div class="tab-pane fade show active" id="view-info" role="tabpanel">
+                        <?php
+                        $dobDisplay = !empty($student['date_of_birth']) && strtotime($student['date_of_birth'])
+                            ? date('F j, Y', strtotime($student['date_of_birth'])) : '';
+                        $infoLeft = [
+                            'Year & Section' => $student['year_section'] ?? '',
+                            'Gender'         => $student['sex'] ?? '',
+                            'Date of Birth'  => $dobDisplay,
+                            'Place of Birth' => $student['place_of_birth'] ?? '',
+                            'Mobile Number'  => $student['mobile_number'] ?? '',
+                            'Email Address'  => $student['email'] ?? '',
+                        ];
+                        $infoRight = [
+                            'Date Issued'         => $dateIssued,
+                            'Checked by'          => $issuedBy,
+                            'Status'              => $statusLabel,
+                            'Expected Graduation' => $expectedGradYear !== null ? schoolYearLabel($expectedGradYear) : '',
+                        ];
+                        $renderInfoField = function ($label, $value) {
+                            $id = 'view_' . preg_replace('/[^a-z0-9]+/', '_', strtolower($label));
+                            echo '<div class="d-flex align-items-center mb-3 view-info-field">'
+                                . '<label for="' . $id . '" class="form-label form-label-custom">' . htmlspecialchars($label) . ':</label>'
+                                . '<input type="text" id="' . $id . '" class="form-control input-custom view-readonly" readonly tabindex="-1" value="'
+                                . htmlspecialchars((string) $value) . '">'
+                                . '</div>';
+                        };
+                        ?>
                         <div class="row">
                             <div class="col-md-6">
-                                <p><strong>Year &amp; Section:</strong> <?= htmlspecialchars($student['year_section'] ?? '') ?></p>
-                                <p><strong>Gender:</strong> <?= htmlspecialchars($student['sex'] ?? '') ?></p>
-                                <p><strong>Date of Birth:</strong> <?= htmlspecialchars($student['date_of_birth'] ?? '') ?></p>
-                                <p><strong>Place of Birth:</strong> <?= htmlspecialchars($student['place_of_birth'] ?? '') ?></p>
-                                <p><strong>Mobile Number:</strong> <?= htmlspecialchars($student['mobile_number'] ?? '') ?></p>
-                                <p><strong>Email Address:</strong> <?= htmlspecialchars($student['email'] ?? '') ?></p>
-                                <p><strong>Address:</strong> <?= htmlspecialchars($student['address'] ?? '') ?></p>
+                                <?php foreach ($infoLeft as $label => $value) { $renderInfoField($label, $value); } ?>
+                                <div class="d-flex align-items-start mb-3 view-info-field">
+                                    <label for="view_address" class="form-label form-label-custom">Address:</label>
+                                    <textarea id="view_address" class="form-control input-custom view-readonly" rows="3" readonly tabindex="-1"><?= htmlspecialchars($student['address'] ?? '') ?></textarea>
+                                </div>
                             </div>
                             <div class="col-md-6">
-                                <p><strong>Date Issued:</strong> <?= htmlspecialchars($dateIssued) ?></p>
-                                <p><strong>Checked by:</strong> <?= htmlspecialchars($issuedBy) ?></p>
-                                <p><strong>Status:</strong> <?= htmlspecialchars($statusLabel) ?></p>
+                                <?php foreach ($infoRight as $label => $value) { $renderInfoField($label, $value); } ?>
                             </div>
                         </div>
                     </div>
 
                     <div class="tab-pane fade" id="view-docs" role="tabpanel">
+                        <div class="requirement-summary">
+                            <div class="requirement-summary-head">
+                                <strong class="requirement-summary-title">REQUIREMENT STATUS</strong>
+                                <span data-requirement-badge><?= requirementStatusBadge($completion) ?></span>
+                            </div>
+                            <small class="requirement-status-detail text-muted" data-requirement-detail>
+                                <?= (int) $completion['fulfilled'] ?> of <?= (int) $completion['total'] ?> required documents<?= $completion['missing'] ? ' · Missing: ' . htmlspecialchars(implode(', ', $completion['missing'])) : '' ?>
+                            </small>
+                        </div>
                         <div id="documentList" class="d-flex flex-column gap-2">
                             <?php if (!empty($orderedDocs)): ?>
                                 <?php foreach ($orderedDocs as $doc): ?>
@@ -1660,39 +1404,39 @@ include 'navbar.php';
                                         <div class="row">
                                             <div class="col-md-6">
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_name" class="form-label form-label-custom">Full Name:</label>
-                                                    <input type="text" id="edit_name" name="name" class="form-control input-custom" required pattern="[A-Za-z\s.,]+"
-                                                           value="<?= htmlspecialchars($student['name'] ?? '') ?>">
+                                                    <label for="edit_last_name" class="form-label form-label-custom">Last Name:</label>
+                                                    <input type="text" id="edit_last_name" name="last_name" class="form-control input-custom" required pattern="[A-Za-zÑñ\s.,'\-]+"
+                                                           value="<?= htmlspecialchars($editLastName) ?>">
+                                                </div>
+                                                <div class="d-flex align-items-center mb-3">
+                                                    <label for="edit_first_name" class="form-label form-label-custom">First Name:</label>
+                                                    <input type="text" id="edit_first_name" name="first_name" class="form-control input-custom" required pattern="[A-Za-zÑñ\s.,'\-]+"
+                                                           value="<?= htmlspecialchars($editFirstName) ?>">
+                                                </div>
+                                                <div class="d-flex align-items-center mb-3">
+                                                    <label for="edit_middle_name" class="form-label form-label-custom">Middle Name:</label>
+                                                    <input type="text" id="edit_middle_name" name="middle_name" class="form-control input-custom" pattern="[A-Za-zÑñ\s.,'\-]+"
+                                                           value="<?= htmlspecialchars($editMiddleName) ?>" placeholder="(optional)">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_student_number" class="form-label form-label-custom">Student Number:</label>
                                                     <input type="text" id="edit_student_number" name="student_number" class="form-control input-custom" required
-                                                           value="<?= htmlspecialchars($student['student_number'] ?? '') ?>" maxlength="15">
+                                                           value="<?= htmlspecialchars($student['student_number'] ?? '') ?>" maxlength="15" placeholder="0000-00000-BN-0">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_course" class="form-label form-label-custom">Course:</label>
                                                     <input type="text" id="edit_course" name="course" class="form-control input-custom"
-                                                           value="<?= htmlspecialchars($student['course'] ?? '') ?>" pattern="[A-Za-z\s\-]+">
+                                                           value="<?= htmlspecialchars($student['course'] ?? '') ?>" pattern="[A-Za-z\s\-]+" placeholder="BSIT">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_year_section" class="form-label form-label-custom">Year &amp; Section:</label>
                                                     <input type="text" id="edit_year_section" name="year_section" class="form-control input-custom"
-                                                           value="<?= htmlspecialchars($student['year_section'] ?? '') ?>" pattern="[0-9]-[0-9]" inputmode="numeric" maxlength="3" title="One number for the year and one for the section, e.g. 1-1">
+                                                           value="<?= htmlspecialchars($student['year_section'] ?? '') ?>" pattern="[0-9]-[0-9]" inputmode="numeric" maxlength="3" title="One number for the year and one for the section, e.g. 1-1" placeholder="1-1">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_sex" class="form-label form-label-custom">Gender:</label>
                                                     <input type="text" id="edit_sex" name="sex" class="form-control input-custom"
-                                                           value="<?= htmlspecialchars($student['sex'] ?? '') ?>" pattern="[A-Za-z\s]+">
-                                                </div>
-                                                <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_date_of_birth" class="form-label form-label-custom">Date of Birth:</label>
-                                                    <input type="text" id="edit_date_of_birth" name="date_of_birth" class="form-control input-custom"
-                                                           value="<?= htmlspecialchars($student['date_of_birth'] ?? '') ?>">
-                                                </div>
-                                                <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_place_of_birth" class="form-label form-label-custom">Place of Birth:</label>
-                                                    <input type="text" id="edit_place_of_birth" name="place_of_birth" class="form-control input-custom"
-                                                           value="<?= htmlspecialchars($student['place_of_birth'] ?? '') ?>">
+                                                           value="<?= htmlspecialchars($student['sex'] ?? '') ?>" pattern="[A-Za-z\s]+" placeholder="Female/Male">
                                                 </div>
                                             </div>
                                             <div class="col-md-6">
@@ -1705,19 +1449,43 @@ include 'navbar.php';
                                                     </select>
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
+                                                    <label for="edit_date_of_birth" class="form-label form-label-custom">Date of Birth:</label>
+                                                    <input type="date" id="edit_date_of_birth" name="date_of_birth" class="form-control input-custom"
+                                                           value="<?= htmlspecialchars($student['date_of_birth'] ?? '') ?>" min="1900-01-01" max="<?= minimumBirthDate() ?>"
+                                                           title="The student must be at least 17 years old">
+                                                </div>
+                                                <div class="d-flex align-items-center mb-3">
+                                                    <label for="edit_place_of_birth" class="form-label form-label-custom">Place of Birth:</label>
+                                                    <input type="text" id="edit_place_of_birth" name="place_of_birth" class="form-control input-custom"
+                                                           value="<?= htmlspecialchars($student['place_of_birth'] ?? '') ?>" placeholder="City/Municipality, Province">
+                                                </div>
+                                                <div class="d-flex align-items-center mb-3">
+                                                    <label for="edit_graduation_year" class="form-label form-label-custom">Graduation SY:</label>
+                                                    <select id="edit_graduation_year" name="graduation_year" class="form-select input-custom"
+                                                            title="The student is moved to Archive as GRADUATE after July 31 at the end of this school year">
+                                                        <?php $autoYear = entryYearFromStudentNumber($student['student_number'] ?? ''); ?>
+                                                        <option value="" <?= $savedGradYear === null ? 'selected' : '' ?>>
+                                                            Auto<?= $autoYear !== null ? ' (' . htmlspecialchars(schoolYearLabel($autoYear + PROGRAM_LENGTH_YEARS)) . ')' : '' ?>
+                                                        </option>
+                                                        <?php foreach ($gradYearOptions as $gradOption): ?>
+                                                            <option value="<?= (int) $gradOption ?>" <?= $savedGradYear === $gradOption ? 'selected' : '' ?>><?= htmlspecialchars(schoolYearLabel($gradOption)) ?></option>
+                                                        <?php endforeach; ?>
+                                                    </select>
+                                                </div>
+                                                <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_mobile_number" class="form-label form-label-custom">Mobile Number:</label>
                                                     <input type="text" id="edit_mobile_number" name="mobile_number" class="form-control input-custom"
-                                                           value="<?= htmlspecialchars($student['mobile_number'] ?? '') ?>" pattern="[0-9]{11}" maxlength="11" inputmode="numeric">
+                                                           value="<?= htmlspecialchars($student['mobile_number'] ?? '') ?>" pattern="[0-9]{11}" maxlength="11" inputmode="numeric" placeholder="09XXXXXXXXX">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_email" class="form-label form-label-custom">Email Address:</label>
                                                     <input type="email" id="edit_email" name="email" class="form-control input-custom"
-                                                           value="<?= htmlspecialchars($student['email'] ?? '') ?>" pattern="[^@\s]+@[^@\s]+\.[^@\s]+" title="Enter a valid email address">
+                                                           value="<?= htmlspecialchars($student['email'] ?? '') ?>" pattern="[^@\s]+@[^@\s]+\.[^@\s]+" title="Enter a valid email address" placeholder="name@example.com">
                                                 </div>
                                                 <small id="editEmailFeedback" class="text-danger d-block mb-3"></small>
                                                 <div class="d-flex align-items-start mb-3">
                                                     <label for="edit_address" class="form-label form-label-custom">Home Address:</label>
-                                                    <textarea id="edit_address" name="address" class="form-control input-custom" rows="3"><?= htmlspecialchars($student['address'] ?? '') ?></textarea>
+                                                    <textarea id="edit_address" name="address" class="form-control input-custom" rows="3" placeholder="House/Unit No., Street Name, Barangay, City/Municipality, Province"><?= htmlspecialchars($student['address'] ?? '') ?></textarea>
                                                 </div>
                                             </div>
                                         </div>
@@ -1726,6 +1494,7 @@ include 'navbar.php';
                                     <div class="tab-pane fade" id="edit-docs" role="tabpanel">
                                         <div class="documents-tab-layout">
                                             <div class="documents-list-col">
+                                                <div id="requirementChecklist" class="requirement-checklist"></div>
                                                 <div class="documents-section-label">On file</div>
                                                 <div id="modalDocumentList" class="d-flex flex-column gap-2 mb-3">
                                                     <?php if (!empty($documentRows)): ?>
@@ -1801,6 +1570,7 @@ include 'navbar.php';
                         <tr><th>Year &amp; Section</th><td id="confirmSummarySection"></td></tr>
                         <tr><th>Admission Type</th><td id="confirmSummaryTrack"></td></tr>
                         <tr><th>Attached Documents</th><td id="confirmSummaryDocs"></td></tr>
+                        <tr><th>Requirements Status</th><td id="confirmSummaryCompletion"></td></tr>
                         <tr><th>Missing Requirements</th><td id="confirmSummaryMissing"></td></tr>
                     </table>
                 </div>

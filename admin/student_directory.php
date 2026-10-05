@@ -3,6 +3,9 @@ include '../security_headers.php';
 session_start();
 require_once __DIR__ . '/course_catalog.php';
 require_once __DIR__ . '/document_classifier.php';
+require_once __DIR__ . '/ai_extraction.php';
+require_once __DIR__ . '/archive.php';
+require_once __DIR__ . '/requirement_status.php';
 
 function loadEnv($path)
 {
@@ -352,6 +355,7 @@ function requirementsForClient()
         $text = ($r['label'] ?? '') . ' ' . ($r['code'] ?? '');
         if (preg_match('/chest[\s_-]*x[\s_-]*-?ray|xray/i', $text)) {
             $r['required_for'] = [];
+            $r['clinic_only']  = true;   // handled by the clinic: hidden from the registrar checklist
         }
         return $r;
     }, getDocumentRequirementsForClient()));
@@ -467,180 +471,6 @@ function cropLooksLikePersonPhoto($pdfPath, $box, $minSkinRatio = 0.04, $page = 
     return ($skinCount / $sampleCount) >= $minSkinRatio;
 }
 
-function shrinkImageForOcr($imagePath, $maxBytes = 3500000)
-{
-    $size = @filesize($imagePath);
-    if ($size === false || $size <= $maxBytes) {
-        return $imagePath;
-    }
-    if (!function_exists('imagecreatefromstring') || !function_exists('imagejpeg')) {
-        error_log('OCR image is ' . round($size / 1048576, 1) . ' MB, over the 4 MB Azure limit. '
-            . 'Enable extension=gd in php.ini so it can be compressed.');
-        return $imagePath;
-    }
-
-    @ini_set('memory_limit', '512M');
-    $img = @imagecreatefromstring((string) @file_get_contents($imagePath));
-    if (!$img) {
-        return $imagePath;
-    }
-
-    $tmp = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('ocr_', true) . '.jpg';
-    foreach ([85, 75, 65, 55] as $quality) {
-        imagejpeg($img, $tmp, $quality);
-        clearstatcache(true, $tmp);
-        if (@filesize($tmp) !== false && filesize($tmp) <= $maxBytes) {
-            break;
-        }
-    }
-    imagedestroy($img);
-
-    return is_file($tmp) ? $tmp : $imagePath;
-}
-
-function callAzureVisionOcr($imagePath)
-{
-    $apiKey = getenv('AZURE_VISION_KEY');
-    $endpoint = rtrim(getenv('AZURE_VISION_ENDPOINT') ?: '', '/');
-    if (!$apiKey || !$endpoint) {
-        error_log('AZURE_VISION_KEY or AZURE_VISION_ENDPOINT not set in .env — skipping Azure OCR.');
-        return null;
-    }
-
-    $sendPath  = shrinkImageForOcr($imagePath);
-    $imageData = @file_get_contents($sendPath);
-    if ($sendPath !== $imagePath) {
-        @unlink($sendPath);
-    }
-    if ($imageData === false) {
-        return null;
-    }
-
-    $submitUrl = $endpoint . '/vision/v3.2/read/analyze';
-    $ch = curl_init($submitUrl);
-    curl_setopt_array($ch, [
-        CURLOPT_POST           => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HEADER         => true,
-        CURLOPT_HTTPHEADER     => [
-            'Content-Type: application/octet-stream',
-            'Ocp-Apim-Subscription-Key: ' . $apiKey,
-        ],
-        CURLOPT_POSTFIELDS => $imageData,
-        CURLOPT_TIMEOUT    => 30,
-    ]);
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($response === false || $httpCode !== 202) {
-        error_log('Azure Read API submit failed, HTTP ' . $httpCode . ': ' . $response);
-        return null;
-    }
-
-    if (!preg_match('/Operation-Location:\s*(\S+)/i', $response, $m)) {
-        error_log('Azure Read API: no Operation-Location header returned.');
-        return null;
-    }
-    $operationUrl = trim($m[1]);
-
-    for ($attempt = 0; $attempt < 15; $attempt++) {
-        sleep(1);
-
-        $ch = curl_init($operationUrl);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER     => ['Ocp-Apim-Subscription-Key: ' . $apiKey],
-            CURLOPT_TIMEOUT        => 15,
-        ]);
-        $pollResponse = curl_exec($ch);
-        curl_close($ch);
-
-        if ($pollResponse === false) {
-            continue;
-        }
-
-        $result = json_decode($pollResponse, true);
-        $status = $result['status'] ?? '';
-
-        if ($status === 'succeeded') {
-            $lines = [];
-            $GLOBALS['azureLineBoxes'] = [];
-            foreach ($result['analyzeResult']['readResults'] ?? [] as $page) {
-                foreach ($page['lines'] ?? [] as $line) {
-                    $lines[] = $line['text'];
-                    $GLOBALS['azureLineBoxes'][] = ['text' => $line['text'], 'box' => $line['boundingBox'] ?? []];
-                }
-            }
-            return implode("\n", $lines);
-        }
-
-        if ($status === 'failed') {
-            error_log('Azure Read API analysis failed: ' . $pollResponse);
-            return null;
-        }
-    }
-
-    error_log('Azure Read API: timed out waiting for result.');
-    return null;
-}
-
-function sectionBoxHasStroke($pdfPath, $lineBoxes = null, $page = 1)
-{
-    $label = null;
-    foreach ($lineBoxes ?? ($GLOBALS['azureLineBoxes'] ?? []) as $l) {
-        if (preg_match('/^\s*section\s*:?\s*$/i', $l['text']) && count($l['box']) >= 8) {
-            $label = $l['box'];
-        }
-    }
-    if ($label === null) {
-        return false;
-    }
-
-    $ys = [$label[1], $label[3], $label[5], $label[7]];
-    $x = (int) (max($label[0], $label[2], $label[4], $label[6]) + 15);
-    $y = (int) min($ys);
-    $w = 200;
-    $h = max(20, (int) (max($ys) - min($ys)) - 12);
-
-    $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('sectioncheck_', true);
-    $cmd = escapeshellarg(PDFTOPPM_BIN)
-        . ' -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
-        . ' -x ' . $x . ' -y ' . $y . ' -W ' . $w . ' -H ' . $h
-        . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($tmpBase) . ' 2>&1';
-    exec($cmd, $cmdOut, $cmdCode);
-
-    $generated = $tmpBase . '-1.ppm';
-    if (!file_exists($generated)) {
-        $generated = $tmpBase . '.ppm';
-    }
-    if (!file_exists($generated)) {
-        return false;
-    }
-    $ppm = readPpmPixels($generated);
-    @unlink($generated);
-    if ($ppm === null) {
-        return false;
-    }
-
-    $width = $ppm['width'];
-    $height = $ppm['height'];
-    $bytes = $ppm['data'];
-    $columnInk = array_fill(0, $width, 0);
-    for ($row = 0; $row < $height; $row++) {
-        for ($col = 0; $col < $width; $col++) {
-            $i = ($row * $width + $col) * 3;
-            if ($i + 2 >= strlen($bytes)) {
-                break 2;
-            }
-            if ((ord($bytes[$i]) + ord($bytes[$i + 1]) + ord($bytes[$i + 2])) / 3 < 140) {
-                $columnInk[$col]++;
-            }
-        }
-    }
-    return max($columnInk) >= max(12, (int) ($height * 0.4));
-}
-
 function handleOcrExtract()
 {
     @set_time_limit(300);
@@ -669,204 +499,7 @@ function handleOcrExtract()
         return;
     }
 
-    echo json_encode(processDocumentUpload($destPath, $originalName, $uploadDir));
-}
-
-function stripCommonOcrArtifacts($value)
-{
-    if ($value === '') return $value;
-    $value = str_replace('|', ' ', $value);
-    $value = preg_replace('/\s+/', ' ', $value);
-    return trim($value);
-}
-
-function stripStrayOcrTokens($value)
-{
-    if ($value === '') return $value;
-    $value = preg_replace('/\b[A-Za-z]\b/', ' ', $value);
-    $value = preg_replace('/\b\d{1,2}\b/', ' ', $value);
-    $value = preg_replace('/\s+/', ' ', $value);
-    return trim($value);
-}
-
-function parseOcrText($text)
-{
-    $text = preg_replace('/_{2,}/', ' ', $text);
-
-    $stampMonths = 'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC';
-    $text = preg_replace(
-        '/\b[A-Z]{2,6}(?:-[A-Z0-9]+){2,}\b[ \t]*\r?\n?[ \t]*Rev\.?\s*\d+[ \t]*\r?\n?[ \t]*(?:' . $stampMonths . ')[A-Za-z]*\.?\s+\d{1,2},?\s*(?:19|20)\d{2}/i',
-        ' ',
-        $text
-    );
-
-    $fields = [
-        'student_number'    => '',
-        'name'              => '',
-        'course'            => '',
-        'year_section'      => '',
-        'sex'               => '',
-        'date_of_birth'     => '',
-        'place_of_birth'    => '',
-        'address'           => '',
-        'mobile_number'     => '',
-        'email'             => '',
-    ];
-
-    $nextLabel = '(?=[ \t]*(?:pup[ \t]*)?(?:student[ \t]*(?:no|number|#)?[ \t]*\.?|school[ \t]*year|course(?:[ \t]*\/[ \t]*college)?|program|address|sex|gender|civil[ \t]*status|blood[ \t]*type|email(?:[ \t]*address)?|parent|guardian|spouse|landline|cellphone|mobile|age|section|year|date[ \t]*of[ \t]*birth|place[ \t]*of[ \t]*birth)[ \t]*[:\-]|[ \t]*(?:\r?\n|$))';
-
-    $patternGroups = [
-        'student_number' => [
-            '/(?:pup[ \t]*)?student[ \t]*(?:no|number|#)?[ \t]*\.?[ \t]*[:\-][ \t]*\r?\n?[ \t]*([0-9][0-9A-Za-z\-]{4,20})/i',
-        ],
-        'name' => [
-            '/name[ \t]*of[ \t]*applicant[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
-            '/^[ \t]*name[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/im',
-        ],
-
-        'course' => [
-            '/program[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
-            '/course[ \t]*(?:\/[ \t]*college)?[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
-        ],
-        'year_section' => [
-            '/year[ \t]*(?:&|and)?[ \t]*section[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
-            '/\bsection[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
-        ],
-        'sex' => [
-            '/sex[ \t]*[:\-][ \t]*\r?\n?[ \t]*(male|female)/i',
-            '/gender[ \t]*[:\-][ \t]*\r?\n?[ \t]*(male|female)/i',
-        ],
-        'date_of_birth' => [
-            '/date[ \t]*of[ \t]*birth[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
-        ],
-        'place_of_birth' => [
-            '/place[ \t]*of[ \t]*birth[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/i',
-        ],
-        'mobile_number' => [
-            '/(?:mobile|cellphone|cell)[ \t]*(?:no|number)?\.?[ \t]*[:\-][ \t]*\r?\n?[ \t]*([0-9+\-\s]{7,15})/i',
-        ],
-        'address' => [
-            '/^[ \t]*(?:home[ \t]*)?address[ \t]*[:\-][ \t]*\r?\n?[ \t]*(.+?)' . $nextLabel . '/im',
-        ],
-    ];
-
-    foreach ($patternGroups as $key => $patterns) {
-        foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $text, $m)) {
-                $candidate = trim(end($m));
-                if ($candidate !== '' && !looksLikeAnotherLabel($candidate)) {
-                    $fields[$key] = $candidate;
-                    break;
-                }
-            }
-        }
-    }
-
-    if ($fields['year_section'] !== '') {
-        if (preg_match('/^[|lI!\[\]{}()\/\\\\]$/', trim($fields['year_section'], " \t_"))) {
-            $fields['year_section'] = '1';
-        }
-        $fields['year_section'] = normalizeYearSection($fields['year_section']);
-        if (!preg_match('/^\d-\d$/', $fields['year_section'])) {
-            $fields['year_section'] = '';
-        }
-    }
-
-    if ($fields['year_section'] === '') {
-        $ocrLines = preg_split('/\R/', $text);
-        foreach ($ocrLines as $i => $ocrLine) {
-            if (!preg_match('/\bsection[ \t]*[:\-]?[ \t_]*$/i', $ocrLine)) continue;
-            foreach ([$i - 1, $i + 1, $i - 2, $i + 2] as $j) {
-                if (isset($ocrLines[$j]) && preg_match('/^[ \t_]*[|lI!1\[\]{}()\/\\\\][ \t_]*$/', $ocrLines[$j])) {
-                    $fields['year_section'] = '1-1';
-                    break 2;
-                }
-            }
-        }
-    }
-
-    if ($fields['course'] === '') {
-        foreach (preg_split('/\R/', $text) as $line) {
-            $entry = resolveCourse($line, true);
-            if ($entry) {
-                $fields['course'] = $entry['name'];
-                break;
-            }
-        }
-    }
-    if ($fields['course'] === '') {
-        if (preg_match('/^[ \t]*(BS[A-Z]{2,6}|BEED|BPED|BTLED)[ \t]*$/m', $text, $m)) {
-            $fields['course'] = $m[1];
-        }
-    }
-
-    if (preg_match('/[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}/', $text, $m)) {
-        $fields['email'] = $m[0];
-    }
-
-    if ($fields['mobile_number'] === '' && preg_match('/\b(09\d{9}|\+?639\d{9})\b/', $text, $m)) {
-        $fields['mobile_number'] = $m[1];
-    }
-
-    if ($fields['student_number'] === '') {
-        $dash = '[\-\x{2010}-\x{2015}]';
-        if (preg_match('/\b(\d{4}\s*' . $dash . '\s*\d{4,6}\s*' . $dash . '\s*[A-Z0-9]{1,4}\s*' . $dash . '\s*[0O])\b/iu', $text, $m)) {
-            $cleaned = preg_replace('/\s+/', '', $m[1]);
-            $cleaned = preg_replace('/' . $dash . '/u', '-', $cleaned);
-            $fields['student_number'] = $cleaned;
-        }
-    }
-
-    if ($fields['date_of_birth'] !== '' && !looksLikeRealDate($fields['date_of_birth'])) {
-        $fields['date_of_birth'] = '';
-    }
-
-    if ($fields['place_of_birth'] === '') {
-        if (preg_match('/place[ \t]*of[ \t]*birth.*?\n(.*?)(?=type\s*of\s*birth)/is', $text, $m)) {
-            $lines = array_filter(array_map('trim', explode("\n", $m[1])), function ($line) {
-                if ($line === '' || $line[0] === '(') return false;
-
-                if (!preg_match('/[A-Za-z]{3,}/', $line)) return false;
-                if (preg_match('/^\d{1,2}[a-c]?[.,]?$/', $line)) return false;
-                return true;
-            });
-
-            $lines = array_map('stripStrayOcrTokens', $lines);
-            $lines = array_filter($lines, function ($line) { return $line !== ''; });
-
-            $lines = array_values(array_unique($lines));
-            if (!empty($lines)) {
-                $fields['place_of_birth'] = implode(', ', $lines);
-            }
-        }
-    }
-
-    if ($fields['date_of_birth'] !== '' && !looksLikeRealDate($fields['date_of_birth'])) {
-        $fields['date_of_birth'] = '';
-    }
-
-    if ($fields['course'] !== '') {
-        $fields['course'] = normalizeCourseName($fields['course']);
-    }
-
-    foreach ($fields as $key => $value) {
-        $fields[$key] = stripCommonOcrArtifacts($value);
-    }
-
-    return $fields;
-}
-
-function looksLikeRealDate($value)
-{
-    $digits = preg_replace('/\D/', '', $value);
-    if ($digits === '' || preg_match('/^0+$/', $digits)) {
-        return false;
-    }
-
-    if (preg_match('/^[\d\s\/\-.,]+$/', $value) && !preg_match('/\b(19|20)\d{2}\b/', $value)) {
-        return false;
-    }
-    return true;
+    echo json_encode(attachAiStatus(processDocumentUpload($destPath, $originalName, $uploadDir)));
 }
 
 function dateOfBirthForDb($value)
@@ -886,61 +519,6 @@ function dateOfBirthForDb($value)
     }
 
     return date('Y-m-d', $timestamp);
-}
-
-function normalizeYearSection($raw)
-{
-    $raw = trim($raw);
-
-    if (preg_match('/^(\d{1,2})\s*-\s*([A-Za-z0-9]{1,3})$/', $raw, $m)) {
-        return $m[1] . '-' . $m[2];
-    }
-
-    $year = null;
-    $section = null;
-    if (preg_match('/(\d)(?:st|nd|rd|th)?\s*year/i', $raw, $m)) {
-        $year = $m[1];
-    } elseif (preg_match('/year[ \t]*[:\-]?[ \t]*(\d)/i', $raw, $m)) {
-        $year = $m[1];
-    }
-    if (preg_match('/section[ \t]*[:\-]?[ \t]*([A-Za-z0-9]{1,3})/i', $raw, $m)) {
-        $section = $m[1];
-    }
-
-    if ($year === null && $section === null && preg_match('/^[A-Za-z0-9]{1,3}$/', $raw)) {
-        $section = $raw;
-    }
-
-    if ($year === null && $section !== null) {
-        $year = '1';
-    }
-
-    if ($year !== null && $section !== null) {
-        return $year . '-' . $section;
-    }
-
-    return $raw;
-}
-
-function looksLikeAnotherLabel($value)
-{
-    if (substr(rtrim($value), -1) === ':') {
-        return true;
-    }
-    if (preg_match('/^(signature|date|processed[ \t]*by|interviewed[ \t]*by|issued[ \t]*by|remarks|program|section|step[ \t]*\d)\b/i', trim($value))) {
-        return true;
-    }
-    $labelWords = ['no.', 'number', 'address', 'email', 'sex', 'age', 'course', 'college',
-                   'school year', 'civil status', 'blood type', 'name', 'section'];
-    if (strlen($value) < 40) {
-        $lower = strtolower($value);
-        foreach ($labelWords as $word) {
-            if (strpos($lower, $word) !== false) {
-                return true;
-            }
-        }
-    }
-    return false;
 }
 
 function handleCheckStudentNumber($conn)
@@ -1021,7 +599,7 @@ function handleUpdateStatus($conn)
     }
 
     if ($status !== 'active') {
-        echo json_encode(['success' => false, 'message' => 'IN-ACTIVE and ON-LEAVE are set by archiving the student.']);
+        echo json_encode(['success' => false, 'message' => 'GRADUATE is set by archiving the student.']);
         return;
     }
 
@@ -1036,16 +614,34 @@ function handleUpdateStatus($conn)
     }
 }
 
+function buildFullName($lastName, $firstName, $middleName)
+{
+    $given = trim($firstName . ' ' . $middleName);
+    if ($lastName === '') {
+        return $given;
+    }
+    return $given === '' ? $lastName : $lastName . ', ' . $given;
+}
+
+function minimumBirthDate()
+{
+    return date('Y-m-d', strtotime('-17 years'));
+}
+
 function handleAddStudent($conn)
 {
     $studentNumber = trim($_POST['student_number'] ?? '');
-    $name          = trim($_POST['name'] ?? '');
+    $lastName      = trim($_POST['last_name'] ?? '');
+    $firstName     = trim($_POST['first_name'] ?? '');
+    $middleName    = trim($_POST['middle_name'] ?? '');
+    $name          = buildFullName($lastName, $firstName, $middleName);
     $course        = normalizeCourseName($_POST['course'] ?? '');
     $yearSection   = trim($_POST['year_section'] ?? '');
 
     $missing = [];
     if ($studentNumber === '') $missing[] = 'Student Number';
-    if ($name === '')          $missing[] = 'Name';
+    if ($lastName === '')      $missing[] = 'Last Name';
+    if ($firstName === '')     $missing[] = 'First Name';
     if ($course === '')        $missing[] = 'Course';
     if ($yearSection === '')   $missing[] = 'Year & Section';
 
@@ -1074,6 +670,10 @@ function handleAddStudent($conn)
 
     $sex              = trim($_POST['sex'] ?? '');
     $dob              = dateOfBirthForDb(trim($_POST['date_of_birth'] ?? ''));
+    if ($dob !== null && $dob > minimumBirthDate()) {
+        echo json_encode(['success' => false, 'message' => 'Date of Birth is too recent. The student must be at least 17 years old.']);
+        return;
+    }
     $placeOfBirth     = trim($_POST['place_of_birth'] ?? '');
     $address          = trim($_POST['address'] ?? '');
     $mobileNumber    = trim($_POST['mobile_number'] ?? '');
@@ -1173,14 +773,14 @@ function handleAddStudent($conn)
     mysqli_begin_transaction($conn);
     try {
         $sql = "INSERT INTO students
-                (student_number, name, course, year_section, status, sex, date_of_birth,
+                (student_number, name, last_name, first_name, middle_name, course, year_section, status, sex, date_of_birth,
                  place_of_birth, address, mobile_number, email, admission_track)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
         $stmt = mysqli_prepare($conn, $sql);
         mysqli_stmt_bind_param(
             $stmt,
-            "ssssssssssss",
-            $studentNumber, $name, $course, $yearSection, $status,
+            "sssssssssssssss",
+            $studentNumber, $name, $lastName, $firstName, $middleName, $course, $yearSection, $status,
             $sex, $dob, $placeOfBirth, $address, $mobileNumber, $email, $admissionTrack
         );
         mysqli_stmt_execute($stmt);
@@ -1260,6 +860,8 @@ function handleAddStudent($conn)
     }
 }
 
+archiveGraduatedStudents($conn);
+
 $search            = isset($_GET['search']) ? trim($_GET['search']) : '';
 $courseFilter      = isset($_GET['course']) ? trim($_GET['course']) : '';
 $yearSectionFilter = isset($_GET['year_section']) ? trim($_GET['year_section']) : '';
@@ -1304,7 +906,7 @@ if ($yearSectionFilter !== '') {
     $types   .= 's';
 }
 
-$sql = "SELECT student_id, student_number, name, course, year_section, status FROM students";
+$sql = "SELECT student_id, student_number, name, course, year_section, status, admission_track FROM students";
 if (!empty($conditions)) {
     $sql .= " WHERE " . implode(' AND ', $conditions);
 }
@@ -1317,6 +919,18 @@ if (!empty($params)) {
 } else {
     $result = mysqli_query($conn, $sql);
 }
+
+$studentRows        = $result ? mysqli_fetch_all($result, MYSQLI_ASSOC) : [];
+$clientRequirements = requirementsForClient();
+$codesByStudent     = requirementCodesByStudent($conn, array_column($studentRows, 'student_id'));
+foreach ($studentRows as &$studentRow) {
+    $studentRow['completion'] = requirementCompletion(
+        $clientRequirements,
+        normalizeAdmissionTrack($studentRow['admission_track'] ?? ''),
+        $codesByStudent[(int) $studentRow['student_id']] ?? []
+    );
+}
+unset($studentRow);
 
 $courseOptions = [];
 foreach (getCourseCatalog() as $catalogEntry) {
@@ -1402,31 +1016,27 @@ include 'navbar.php';
         <th>Course</th>
         <th>Year & Section</th>
         <th>Status</th>
+        <th>Requirements</th>
         <th>Records</th>
     </tr>
 
-    <?php if ($result && mysqli_num_rows($result) > 0): ?>
-        <?php while ($row = mysqli_fetch_assoc($result)): ?>
+    <?php if (!empty($studentRows)): ?>
+        <?php foreach ($studentRows as $row): ?>
         <tr>
             <td><?= htmlspecialchars($row['student_number']) ?></td>
             <td><?= htmlspecialchars($row['name']) ?></td>
             <td><?= htmlspecialchars($row['course']) ?></td>
             <td><?= htmlspecialchars($row['year_section']) ?></td>
-            <td>
-                <select class="status-fliter" data-id="<?= htmlspecialchars($row['student_id']) ?>">
-                    <option value="active" <?= $row['status'] === 'active' ? 'selected' : '' ?>>ACTIVE</option>
-                    <option value="inactive" <?= $row['status'] === 'inactive' ? 'selected' : '' ?>>IN-ACTIVE</option>
-                    <option value="onleave" <?= $row['status'] === 'onleave' ? 'selected' : '' ?>>ON-LEAVE</option>
-                </select>
-            </td>
+            <td>ENROLLEE</td>
+            <td><?= requirementStatusBadge($row['completion']) ?></td>
             <td>
                <button class="view-btn" data-id="<?= htmlspecialchars($row['student_id']) ?>"><i class="bi bi-eye-fill"></i>View</button>
             </td>
         </tr>
-        <?php endwhile; ?>
+        <?php endforeach; ?>
     <?php else: ?>
         <tr>
-            <td colspan="6" class="no-students-message">No students found.</td>
+            <td colspan="7" class="no-students-message">No students found.</td>
         </tr>
     <?php endif; ?>
     </table>
@@ -1514,11 +1124,27 @@ include 'navbar.php';
 
                     <div class="col-md-6">
                     <div class="d-flex align-items-center mb-3">
-                        <label for="name" class="form-label form-label-custom">
-                            Full Name:
+                        <label for="last_name" class="form-label form-label-custom">
+                            Last Name:
                         </label>
-                        <input type="text" id="name" name="name" class="form-control input-custom" required
-                               pattern="[A-Za-z\s.,]+">
+                        <input type="text" id="last_name" name="last_name" class="form-control input-custom" required
+                               pattern="[A-Za-zÑñ\s.,'\-]+">
+                    </div>
+
+                    <div class="d-flex align-items-center mb-3">
+                        <label for="first_name" class="form-label form-label-custom">
+                            First Name:
+                        </label>
+                        <input type="text" id="first_name" name="first_name" class="form-control input-custom" required
+                               pattern="[A-Za-zÑñ\s.,'\-]+">
+                    </div>
+
+                    <div class="d-flex align-items-center mb-3">
+                        <label for="middle_name" class="form-label form-label-custom">
+                            Middle Name:
+                        </label>
+                        <input type="text" id="middle_name" name="middle_name" class="form-control input-custom"
+                               pattern="[A-Za-zÑñ\s.,'\-]+" placeholder="(optional)">
                     </div>
 
                     <div class="d-flex align-items-center mb-3">
@@ -1526,7 +1152,7 @@ include 'navbar.php';
                             Student Number:
                         </label>
                         <input type="text" id="student_number" name="student_number" class="form-control input-custom" required
-                               maxlength="15">
+                               maxlength="15" placeholder="0000-00000-BN-0">
                     </div>
                     <small id="studentNumberFeedback" class="text-danger d-block mb-3"></small>
 
@@ -1535,7 +1161,7 @@ include 'navbar.php';
                             Course:
                         </label>
                         <input type="text" id="course" name="course" class="form-control input-custom"
-                               pattern="[A-Za-z\s\-]+">
+                               pattern="[A-Za-z\s\-]+" placeholder="BSIT">
                     </div>
 
                     <div class="d-flex align-items-center mb-3">
@@ -1544,7 +1170,7 @@ include 'navbar.php';
                         </label>
                         <input type="text" id="year_section" name="year_section" class="form-control input-custom"
                                pattern="[0-9]-[0-9]" inputmode="numeric" maxlength="3"
-                               title="One number for the year and one for the section, e.g. 1-1">
+                               title="One number for the year and one for the section, e.g. 1-1" placeholder="1-1">
                     </div>
 
                     <div class="d-flex align-items-center mb-3">
@@ -1552,21 +1178,7 @@ include 'navbar.php';
                             Gender:
                         </label>
                         <input type="text" id="sex" name="sex" class="form-control input-custom"
-                               pattern="[A-Za-z\s]+">
-                    </div>
-
-                    <div class="d-flex align-items-center mb-3">
-                        <label for="date_of_birth" class="form-label form-label-custom">
-                            Date of Birth:
-                        </label>
-                        <input type="text" id="date_of_birth" name="date_of_birth" class="form-control input-custom">
-                    </div>
-
-                    <div class="d-flex align-items-center mb-3">
-                        <label for="place_of_birth" class="form-label form-label-custom">
-                            Place of Birth:
-                        </label>
-                        <input type="text" id="place_of_birth" name="place_of_birth" class="form-control input-custom">
+                               pattern="[A-Za-z\s]+" placeholder="Female/Male">
                     </div>
                     </div>
 
@@ -1583,11 +1195,27 @@ include 'navbar.php';
                     </div>
 
                     <div class="d-flex align-items-center mb-3">
+                        <label for="date_of_birth" class="form-label form-label-custom">
+                            Date of Birth:
+                        </label>
+                        <input type="date" id="date_of_birth" name="date_of_birth" class="form-control input-custom"
+                               min="1900-01-01" max="<?= minimumBirthDate() ?>"
+                               title="The student must be at least 17 years old">
+                    </div>
+                    <div class="d-flex align-items-center mb-3">
+                        <label for="place_of_birth" class="form-label form-label-custom">
+                            Place of Birth:
+                        </label>
+                        <input type="text" id="place_of_birth" name="place_of_birth" class="form-control input-custom"
+                               placeholder="City/Municipality, Province">
+                    </div>
+
+                    <div class="d-flex align-items-center mb-3">
                         <label for="mobile_number" class="form-label form-label-custom">
                             Mobile Number:
                         </label>
                         <input type="text" id="mobile_number" name="mobile_number" class="form-control input-custom"
-                               pattern="[0-9]{11}" maxlength="11" inputmode="numeric">
+                               pattern="[0-9]{11}" maxlength="11" inputmode="numeric" placeholder="09XXXXXXXXX">
                     </div>
 
                     <div class="d-flex align-items-center mb-3">
@@ -1595,7 +1223,7 @@ include 'navbar.php';
                             Email Address:
                         </label>
                         <input type="email" id="email" name="email" class="form-control input-custom"
-                               pattern="[^@\s]+@[^@\s]+\.[^@\s]+" title="Enter a valid email address">
+                               pattern="[^@\s]+@[^@\s]+\.[^@\s]+" title="Enter a valid email address" placeholder="name@example.com">
                     </div>
                     <small id="emailFeedback" class="text-danger d-block mb-3"></small>
 
@@ -1603,13 +1231,16 @@ include 'navbar.php';
                         <label for="address" class="form-label form-label-custom">
                             Address:
                         </label>
-                        <textarea id="address" name="address" class="form-control input-custom" rows="3"></textarea>
+                        <textarea id="address" name="address" class="form-control input-custom" rows="3"
+                                  placeholder="House/Unit No., Street Name, Barangay, City/Municipality, Province"></textarea>
                     </div>
                     </div>
                     </div>
                 </div>
 
                 <div class="tab-pane fade" id="documents" role="tabpanel">
+
+                <div id="requirementChecklist" class="requirement-checklist"></div>
 
                 <div id="documentList" class="d-flex flex-column gap-2"></div>
 
@@ -1669,7 +1300,9 @@ include 'navbar.php';
                     <tr><th>Course</th><td id="confirmSummaryCourse"></td></tr>
                     <tr><th>Year &amp; Section</th><td id="confirmSummarySection"></td></tr>
                     <tr><th>Admission Type</th><td id="confirmSummaryTrack"></td></tr>
+                    <tr><th>Graduation SY</th><td id="confirmSummaryGraduation"></td></tr>
                     <tr><th>Attached Documents</th><td id="confirmSummaryDocs"></td></tr>
+                    <tr><th>Requirements Status</th><td id="confirmSummaryCompletion"></td></tr>
                     <tr><th>Missing Requirements</th><td id="confirmSummaryMissing"></td></tr>
                 </table>
             </div>
@@ -1731,7 +1364,7 @@ include 'navbar.php';
     'groups'       => getDocumentRequirementGroups(),
     'tracks'       => getAdmissionTracks(),
 ]), ENT_QUOTES, 'UTF-8') ?>"></div>
-<script src="../js/add-student-ocr.js?v=<?= @filemtime(__DIR__ . '/../js/add-student-ocr.js') ?>"></script>
+<script src="../js/add-student.js?v=<?= @filemtime(__DIR__ . '/../js/add-student.js') ?>"></script>
 <script src="../js/student-directory-filters.js?v=<?= @filemtime(__DIR__ . '/../js/student-directory-filters.js') ?>"></script>
 <script src="../js/student-directory.js?v=<?= @filemtime(__DIR__ . '/../js/student-directory.js') ?>"></script>
     </div>

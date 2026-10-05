@@ -1,6 +1,6 @@
 (function () {
-    const statusLabels     = { active: 'ACTIVE', inactive: 'IN-ACTIVE', onleave: 'ON-LEAVE' };
-    const ARCHIVE_STATUSES = ['inactive', 'onleave'];
+    const statusLabels     = { active: 'ENROLLEE', graduated: 'GRADUATE', inactive: 'IN-ACTIVE', onleave: 'ON-LEAVE' };
+    const ARCHIVE_STATUSES = ['graduated', 'inactive', 'onleave'];
 
     const confirmModalEl = document.getElementById('confirmStatusModal');
     const confirmModal   = confirmModalEl ? new bootstrap.Modal(confirmModalEl) : null;
@@ -42,7 +42,7 @@
         row.remove();
         if (body && !body.querySelector('.status-fliter')) {
             const emptyRow = document.createElement('tr');
-            emptyRow.innerHTML = '<td colspan="6" class="no-students-message">No students found.</td>';
+            emptyRow.innerHTML = '<td colspan="7" class="no-students-message">No students found.</td>';
             body.appendChild(emptyRow);
         }
     }
@@ -243,7 +243,9 @@ document.querySelectorAll('.view-btn').forEach((btn) => {
 
     const bindFilter = (id, transform) => bindFilterEl(document.getElementById(id), transform);
 
-    bindFilter('name', (v) => v.replace(/[^A-Za-z\s.,]/g, ''));
+    bindFilter('last_name', (v) => v.replace(/[^A-Za-zÑñ\s.,'\-]/g, ''));
+    bindFilter('first_name', (v) => v.replace(/[^A-Za-zÑñ\s.,'\-]/g, ''));
+    bindFilter('middle_name', (v) => v.replace(/[^A-Za-zÑñ\s.,'\-]/g, ''));
     bindFilter('course', (v) => v.replace(/[^A-Za-z\s\-]/g, ''));
     bindFilter('sex', lettersOnly);
     bindFilter('mobile_number', (v) => digitsOnly(v).slice(0, 11));

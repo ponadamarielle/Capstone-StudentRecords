@@ -317,7 +317,7 @@ document.addEventListener('DOMContentLoaded', function () {
         toggleSaveDisabled(false);
 
         if (!data.success) {
-            setStatus(data.message || 'OCR extraction failed.', 'error');
+            setStatus(data.message || 'AI extraction failed.', 'error');
             return;
         }
 
@@ -414,7 +414,7 @@ document.addEventListener('DOMContentLoaded', function () {
         toggleSaveDisabled(false);
 
         if (!data.success || !data.documents || !data.documents.length) {
-            setStatus(data.message || 'OCR extraction failed.', 'error');
+            setStatus(data.message || 'AI extraction failed.', 'error');
             return;
         }
 
@@ -612,6 +612,18 @@ document.addEventListener('DOMContentLoaded', function () {
         documentList.appendChild(node);
     }
 
+
+    function completionBadge(complete, title) {
+        const badge = document.createElement('span');
+        badge.className = 'req-completion ' + (complete ? 'req-completion-complete' : 'req-completion-incomplete');
+        if (title) badge.title = title;
+        const icon = document.createElement('i');
+        icon.className = 'bi ' + (complete ? 'bi-check-circle-fill' : 'bi-exclamation-circle-fill');
+        badge.appendChild(icon);
+        badge.appendChild(document.createTextNode(' ' + (complete ? 'Complete' : 'Incomplete')));
+        return badge;
+    }
+
     function renderRequirementChecklist() {
         if (!requirementChecklist) return;
         requirementChecklist.innerHTML = '';
@@ -622,46 +634,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const heading = document.createElement('div');
         heading.className = 'requirement-checklist-heading';
-        heading.textContent = (ADMISSION_TRACKS[currentTrack()] || 'Requirements') + ': '
-            + attachedRequired.length + ' of ' + required.length + ' required documents attached';
+        const missingNow = missingRequiredLabels();
+        heading.appendChild(completionBadge(missingNow.length === 0,
+            missingNow.length ? 'Missing: ' + missingNow.join(', ') : 'All required documents attached'));
+        heading.appendChild(document.createTextNode((ADMISSION_TRACKS[currentTrack()] || 'Requirements') + ': '
+            + attachedRequired.length + ' of ' + required.length + ' required documents attached'));
         requirementChecklist.appendChild(heading);
 
-        Object.keys(REQUIREMENT_GROUPS).forEach(function (groupKey) {
-            const reqs = REQUIREMENTS.filter(function (r) { return r.group === groupKey; });
-            if (!reqs.length) return;
-
-            const relevant = reqs.some(function (r) {
-                return isRequiredForTrack(r) || findDocByRequirement(r.code, -1) !== -1 || r.required_for.length === 0;
-            });
-            if (!relevant) return;
-
-            const groupEl = document.createElement('div');
-            groupEl.className = 'requirement-group';
-
-            const label = document.createElement('div');
-            label.className = 'requirement-group-label';
-            label.textContent = REQUIREMENT_GROUPS[groupKey];
-            groupEl.appendChild(label);
-
-            const items = document.createElement('div');
-            items.className = 'requirement-items';
-            reqs.forEach(function (r) {
-                const done = findDocByRequirement(r.code, -1) !== -1;
-                const required = isRequiredForTrack(r);
-                if (!done && !required && r.required_for.length > 0) return; // required only for other tracks
-                const item = document.createElement('span');
-                item.className = 'requirement-item' + (done ? ' is-attached' : '') + (required ? ' is-required' : '');
-                item.title = (r.ref ? r.ref + ' — ' : '') + (r.note || '')
-                    + (done ? ' (attached)' : required ? ' (required, not yet attached)' : ' (if applicable)');
-                const icon = document.createElement('i');
-                icon.className = 'bi ' + (done ? 'bi-check-circle-fill' : 'bi-circle');
-                item.appendChild(icon);
-                item.appendChild(document.createTextNode(' ' + r.label + (required ? ' *' : '')));
-                items.appendChild(item);
-            });
-            groupEl.appendChild(items);
-            requirementChecklist.appendChild(groupEl);
-        });
     }
 
     function missingRequiredLabels() {
@@ -752,7 +731,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const REQUIRED_FIELDS = [
         { name: 'student_number', label: 'Student Number' },
-        { name: 'name',           label: 'Name' },
+        { name: 'last_name',      label: 'Last Name' },
+        { name: 'first_name',     label: 'First Name' },
         { name: 'course',         label: 'Course' },
         { name: 'year_section',   label: 'Year & Section' },
     ];
@@ -804,7 +784,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
             showConfirmModal({
                 studentNumber: values.student_number,
-                name: values.name,
+                name: values.last_name + ', ' + (values.first_name + ' ' + ((form.elements['middle_name'] || {}).value || '')).trim(),
                 course: values.course,
                 yearSection: values.year_section,
                 docCount: uploadedDocuments.length,
@@ -833,6 +813,17 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById('confirmSummaryCourse').textContent = summary.course || '—';
         document.getElementById('confirmSummarySection').textContent = summary.yearSection || '—';
         document.getElementById('confirmSummaryDocs').textContent = summary.docCount + ' document(s)';
+        const gradEl = document.getElementById('confirmSummaryGraduation');
+        if (gradEl) {
+            const entryMatch = String(summary.studentNumber || '').match(/^\s*((?:19|20)\d{2})/);
+            const endYear = entryMatch ? parseInt(entryMatch[1], 10) + 4 : null;
+            const today = new Date();
+            const ended = endYear !== null && today > new Date(endYear, 6, 31, 23, 59, 59);
+            gradEl.textContent = endYear === null ? '—'
+                : 'SY ' + (endYear - 1) + '-' + endYear
+                    + (ended ? ' (already ended: this student will be moved to Archive as GRADUATE after saving)' : '');
+            gradEl.classList.toggle('text-danger', ended);
+        }
         const trackEl = document.getElementById('confirmSummaryTrack');
         if (trackEl) trackEl.textContent = ADMISSION_TRACKS[currentTrack()] || '—';
         const missingEl = document.getElementById('confirmSummaryMissing');
@@ -840,6 +831,12 @@ document.addEventListener('DOMContentLoaded', function () {
             const missing = missingRequiredLabels();
             missingEl.textContent = missing.length ? missing.join(', ') : 'None';
             missingEl.classList.toggle('text-danger', missing.length > 0);
+        }
+        const completionEl = document.getElementById('confirmSummaryCompletion');
+        if (completionEl) {
+            const missingNow = missingRequiredLabels();
+            completionEl.innerHTML = '';
+            completionEl.appendChild(completionBadge(missingNow.length === 0));
         }
 
         const bsModal = bootstrap.Modal.getOrCreateInstance(modalEl);

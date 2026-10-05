@@ -273,3 +273,23 @@ body:has(#confirmDeleteDocModal.show) #addRecordsModal .modal-content {
     filter: brightness(0.6);
     transition: filter 0.15s ease;
 }
+#view-info .view-info-field {
+    flex-wrap: wrap;
+}
+#view-info .form-label-custom {
+    font-weight: 600;
+    font-size: 1rem;
+    width: 200px;
+}
+#view-info .view-readonly {
+    background-color: #ffffff;
+    border-color: #d6d6d6;
+    color: #212529;
+    font-size: 1rem;
+    cursor: default;
+    resize: none;
+}
+#view-info .view-readonly:focus {
+    box-shadow: none;
+    border-color: #d6d6d6;
+}

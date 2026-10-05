@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/ai_extraction.php';
 
 if (!defined('DOC_CLASSIFY_MAX_PAGES')) {
     define('DOC_CLASSIFY_MAX_PAGES', 20);   
@@ -70,18 +71,11 @@ function getDocumentRequirements()
             'extract_fields' => true, 'field_priority' => 2,
             'ai_hint' => 'PUP "Route and Approval Slip": Name of Applicant, Reference Number, SHS Track/Strand, Admission Status checkboxes (PUPCET Qualifier, ALS, PWD...), Steps 1-5 (submission of credentials, college interview and tagging of program, medical examination, registration certificate, ID card) with signature lines.',
         ],
-        'health_information_form' => [
-            'label' => 'Health Information Form',
-            'group' => 'admission_form', 'store' => true, 'required_for' => ['shs_current', 'shs_past', 'als'],
-            'ref' => '2.1.7', 'note' => 'Duly accomplished; submitted to the Medical Services Department.',
-            'extract_fields' => true, 'field_priority' => 1, 'photo_box' => 'health_information_form',
-            'ai_hint' => 'PUP Medical Services Department "Health Information Form for Students" (code PUP-HIFS-6-MEDS-020): student information, medical history checkboxes (asthma, diabetes...), allergies, smoking/alcohol, medical clearance.',
-        ],
         'certification_undertaking' => [
             'label' => 'Waiver/Certification/Undertaking (Form 2)',
             'group' => 'admission_form', 'store' => true, 'required_for' => ['shs_current', 'shs_past', 'als'],
             'ref' => '2.1.5', 'note' => 'Duly signed Waiver/Certification/Undertaking.',
-            'extract_fields' => false, 'field_priority' => 6,
+            'extract_fields' => true, 'field_priority' => 6,
             'ai_hint' => 'PUP "Certification/Undertaking" (Form 2): "I, ___, of legal age, Filipino ... hereby certify that" the enrollee will submit the listed documents, vouches their authenticity, signed by the enrollee and attested by parent/guardian.',
         ],
 
@@ -273,6 +267,17 @@ function aiClassifierConfig()
     return null;
 }
 
+function aiClassifierReasoning($model)
+{
+    if (stripos($model, 'gpt-oss') !== false) {
+        return ['reasoning_effort' => 'low'];
+    }
+    if (stripos($model, 'qwen') !== false) {
+        return ['reasoning_effort' => 'none'];
+    }
+    return [];
+}
+
 function redactTextForAi($text)
 {
     $text = preg_replace('/[\w.+-]+@[\w-]+\.[\w.]+/', '[email]', (string) $text);
@@ -366,7 +371,7 @@ function aiClassifyPages(array $pageTexts)
                 ['role' => 'system', 'content' => $instructions . "\nReply with the JSON object only."],
                 ['role' => 'user', 'content' => $pagesBlock],
             ],
-        ]);
+        ] + aiClassifierReasoning($config['model']));
         $content = $json['choices'][0]['message']['content'] ?? '';
         $decoded = json_decode($content, true);
         $items = $decoded['classifications'] ?? null;
@@ -543,46 +548,68 @@ function extractPdfPages($srcPdf, array $pages, $destPdf)
 
 function processDocumentUpload($destPath, $originalName, $uploadDir, array $options = [])
 {
+    $startedAt  = microtime(true);
+    $timings    = [];
     $sourceHash = hash_file('sha256', $destPath);
     $pageCount  = pdfPageCount($destPath);
     $warnings   = [];
 
-    $azureCache   = [];
-    $ocrFailed    = false;
+    $aiCache      = [];
+    $aiFailed     = false;
     $renderFailed = false;
-    $azureOcr = function ($page) use (&$azureCache, &$ocrFailed, &$renderFailed, $destPath, $uploadDir) {
-        if (array_key_exists($page, $azureCache)) {
-            return $azureCache[$page];
+    $readPages = function (array $pages) use (&$aiCache, &$aiFailed, &$renderFailed, $destPath, $uploadDir) {
+        $pages = array_values(array_unique(array_diff($pages, array_keys($aiCache))));
+        if (!$pages) {
+            return;
         }
-        $result = null;
-        $png = renderPdfPagePng($destPath, $page, $uploadDir);
-        if ($png === null) {
-            $renderFailed = true;
-        } else {
-            $GLOBALS['azureLineBoxes'] = [];
-            $text = callAzureVisionOcr($png);
-            @unlink($png);
-            if ($text !== null && trim($text) !== '') {
-                $result = ['text' => $text, 'boxes' => $GLOBALS['azureLineBoxes'] ?? []];
-            } else {
-                $ocrFailed = true;
+        foreach (aiReadPdfPages($destPath, $pages, $uploadDir) as $page => $read) {
+            $hasText = $read['text'] !== null && trim($read['text']) !== '';
+            if ($read['render_failed']) {
+                $renderFailed = true;
+            } elseif (!$hasText) {
+                $aiFailed = true;
             }
+            $aiCache[$page] = $hasText ? $read : null;
         }
-        return $azureCache[$page] = $result;
     };
 
     $pageTexts = [];
+    $scannedPages = [];
     $classifyUpTo = min($pageCount, DOC_CLASSIFY_MAX_PAGES);
     for ($p = 1; $p <= $classifyUpTo; $p++) {
-        $text = pdfPageText($destPath, $p);
-        if (preg_match_all('/[A-Za-z]/', $text) < 40) {
-            $ocr  = $azureOcr($p);
-            $text = $ocr['text'] ?? '';
+        $pageTexts[$p] = pdfPageText($destPath, $p);
+        if (preg_match_all('/[A-Za-z]/', $pageTexts[$p]) < 40) {
+            $scannedPages[] = $p;
         }
-        $pageTexts[$p] = $text;
+    }
+    $timings['pdf_text'] = microtime(true) - $startedAt;
+    $mark = microtime(true);
+    $readPages($scannedPages);
+    foreach ($scannedPages as $p) {
+        $pageTexts[$p] = $aiCache[$p]['text'] ?? '';
+    }
+    $timings['ai_read'] = microtime(true) - $mark;
+    $mark = microtime(true);
+
+    $codes = array_keys(getDocumentRequirements());
+    $visionPages = [];
+    foreach ($pageTexts as $p => $text) {
+        $type = $aiCache[$p]['doc_type'] ?? null;
+        if ($type === null || ($type !== 'none' && !in_array($type, $codes, true))) {
+            $visionPages = null;
+            break;
+        }
+        $visionPages[$p] = [
+            'code'       => $type === 'none' ? null : $type,
+            'confidence' => $type === 'none' ? 'none' : $aiCache[$p]['doc_confidence'],
+            'reason'     => '',
+        ];
     }
 
-    $ai = aiClassifyPages($pageTexts);
+    $ai = $visionPages
+        ? ['pages' => $visionPages, 'error' => null, 'source' => 'Groq (' . groqModel() . ')']
+        : aiClassifyPages($pageTexts);
+    $timings['classify'] = microtime(true) - $mark;
     if ($ai['error'] !== null) {
         $warnings[] = $ai['error'] . ' The file was kept as one unclassified document; choose its type manually.';
     }
@@ -607,25 +634,36 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
         ];
     }
 
+    $fieldPages = [];
+    foreach ($groups as $g) {
+        $req = getDocumentRequirement($g['code']);
+        if ($req && !empty($req['extract_fields'])) {
+            $fieldPages[] = $g['pages'][0];
+        }
+    }
+    $mark = microtime(true);
+    $readPages($fieldPages);
+    $timings['ai_fields'] = microtime(true) - $mark;
+    $mark = microtime(true);
+
     $fieldSets = [];
     $photoPath = null;
     $photoGroupIndex = null;
     foreach ($groups as $gi => $g) {
         $req       = getDocumentRequirement($g['code']);
         $firstPage = $g['pages'][0];
+        $extract   = $req && !empty($req['extract_fields']);
 
-        $ocr  = ($req && !empty($req['extract_fields'])) ? $azureOcr($firstPage) : ($azureCache[$firstPage] ?? null);
-        $text = $ocr['text'] ?? ($pageTexts[$firstPage] ?? '');
+        $read = $aiCache[$firstPage] ?? null;
+        $text = $read['text'] ?? ($pageTexts[$firstPage] ?? '');
         if (trim($text) === '') {
             continue;
         }
 
-        $fields = parseOcrText($text);
-        if ($fields['year_section'] === '' && $ocr !== null && function_exists('sectionBoxHasStroke')
-            && sectionBoxHasStroke($destPath, $ocr['boxes'], $firstPage)) {
-            $fields['year_section'] = '1-1';
+        $fields = $extract ? aiExtractStudentFields($text) : aiFieldsFromCache($text);
+        if ($fields !== null) {
+            $fieldSets[] = ['priority' => $req['field_priority'] ?? 50, 'fields' => $fields];
         }
-        $fieldSets[] = ['priority' => $req['field_priority'] ?? 50, 'fields' => $fields];
 
         if ($photoPath === null && $req && !empty($req['photo_box'])) {
             $photoPath = extractIdPhoto($destPath, $req['photo_box'], $firstPage);
@@ -634,6 +672,9 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
             }
         }
     }
+
+    $timings['photo'] = microtime(true) - $mark;
+    $mark = microtime(true);
 
     usort($fieldSets, fn($a, $b) => $a['priority'] <=> $b['priority']);
     $extracted = [];
@@ -705,16 +746,20 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     }
 
     if ($renderFailed) {
-        $warnings[] = 'Some pages could not be converted to images for OCR. Make sure poppler (pdftoppm) is installed.';
+        $warnings[] = 'Some pages could not be converted to images for AI reading. Make sure poppler (pdftoppm) is installed.';
     }
-    if ($ocrFailed) {
-        $warnings[] = 'Azure Vision could not read some pages. Check your internet connection and the AZURE_VISION_KEY / AZURE_VISION_ENDPOINT values in .env. Fields may not be auto-filled.';
+    if ($aiFailed && aiExtractionError() === null) {
+        $warnings[] = 'The AI could not read some pages. Check your internet connection and the GROQ_API_KEY value in .env. Fields may not be auto-filled.';
     }
 
     $imagePath = null;
     if (!empty($options['preview_image']) && $photoPath === null) {
         $imagePath = renderPdfPagePng($documents[0]['file_path'], 1, $uploadDir);
     }
+    $timings['split_save'] = microtime(true) - $mark;
+    $timings['total'] = microtime(true) - $startedAt;
+    error_log('AI upload timings (' . $pageCount . ' page(s)): ' . implode(', ', array_map(
+        fn($k, $v) => $k . ' ' . number_format($v, 2) . 's', array_keys($timings), $timings)));
 
     return [
         'success'       => true,
@@ -725,7 +770,7 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
         'skipped_pages' => $skipped,
         'extracted'     => $extracted,
         'photo_path'    => $photoPath,
-        'ocr_source'    => 'azure_vision',
+        'ocr_source'    => 'groq_ai',
         'warnings'      => $warnings,
         'classified_by' => $ai['source'],
         'image_path'    => $imagePath,

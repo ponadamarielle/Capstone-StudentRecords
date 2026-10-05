@@ -721,3 +721,58 @@ body.has-document-preview #addRecordsModal.modal {
 .change-type-link:focus {
     color: #5a0000;
 }
+.req-completion {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    font-family: "Inter";
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    vertical-align: middle;
+}
+.req-completion-complete {
+    color: #146c43;
+    background: #e8f5ee;
+    border-color: #a3cfbb;
+}
+.req-completion-incomplete {
+    color: #b02a37;
+    background: #fff1f2;
+    border-color: #f1c2c7;
+}
+.requirement-checklist-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+.requirement-status {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+}
+.requirement-status-detail {
+    font-size: 0.85rem;
+}
+
+.requirement-summary {
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 6px;
+}
+.requirement-summary-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+}
+.requirement-summary-title {
+    letter-spacing: 0.04em;
+}

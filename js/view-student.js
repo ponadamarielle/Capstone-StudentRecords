@@ -156,7 +156,9 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    bindFilter('edit_name', (v) => v.replace(/[^A-Za-z\s.,]/g, ''));
+    bindFilter('edit_last_name', (v) => v.replace(/[^A-Za-zÑñ\s.,'\-]/g, ''));
+    bindFilter('edit_first_name', (v) => v.replace(/[^A-Za-zÑñ\s.,'\-]/g, ''));
+    bindFilter('edit_middle_name', (v) => v.replace(/[^A-Za-zÑñ\s.,'\-]/g, ''));
     bindFilter('edit_course', (v) => v.replace(/[^A-Za-z\s\-]/g, ''));
     bindFilter('edit_sex', (v) => v.replace(/[^A-Za-z\s]/g, ''));
     bindFilter('edit_mobile_number', (v) => v.replace(/[^0-9]/g, '').slice(0, 11));
@@ -260,7 +262,10 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     const ocrFieldMap = {
-        name: 'edit_name',
+        last_name: 'edit_last_name',
+        first_name: 'edit_first_name',
+        middle_name: 'edit_middle_name',
+        graduation_year: 'edit_graduation_year',
         student_number: 'edit_student_number',
         course: 'edit_course',
         year_section: 'edit_year_section',
@@ -562,6 +567,37 @@ document.addEventListener('DOMContentLoaded', function () {
         }).catch((err) => console.error('Failed to clean up staged file:', err));
     }
 
+
+    function completionBadge(complete, title) {
+        const badge = document.createElement('span');
+        badge.className = 'req-completion ' + (complete ? 'req-completion-complete' : 'req-completion-incomplete');
+        if (title) badge.title = title;
+        const icon = document.createElement('i');
+        icon.className = 'bi ' + (complete ? 'bi-check-circle-fill' : 'bi-exclamation-circle-fill');
+        badge.appendChild(icon);
+        badge.appendChild(document.createTextNode(' ' + (complete ? 'Complete' : 'Incomplete')));
+        return badge;
+    }
+
+    function savedCompletion() {
+        const required = REQUIREMENTS.filter((r) => Array.isArray(r.required_for) && r.required_for.indexOf(originalTrack) !== -1);
+        const missing = required.filter((r) => !storedByCode(r.code)).map((r) => r.label);
+        return { complete: missing.length === 0, total: required.length, fulfilled: required.length - missing.length, missing };
+    }
+
+    function updatePageCompletion() {
+        const status = savedCompletion();
+        const title = status.missing.length ? 'Missing: ' + status.missing.join(', ') : 'All required documents are on file';
+        document.querySelectorAll('[data-requirement-badge]').forEach((el) => {
+            el.innerHTML = '';
+            el.appendChild(completionBadge(status.complete, title));
+        });
+        document.querySelectorAll('[data-requirement-detail]').forEach((el) => {
+            el.textContent = status.fulfilled + ' of ' + status.total + ' required documents'
+                + (status.missing.length ? ' · Missing: ' + status.missing.join(', ') : '');
+        });
+    }
+
     function renderRequirementChecklist() {
         if (!requirementChecklist) return;
         requirementChecklist.innerHTML = '';
@@ -572,43 +608,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const heading = document.createElement('div');
         heading.className = 'requirement-checklist-heading';
-        heading.textContent = (ADMISSION_TRACKS[currentTrack()] || 'Requirements') + ': '
-            + done.length + ' of ' + required.length + ' required documents';
+        const missingNow = missingRequiredLabels();
+        heading.appendChild(completionBadge(missingNow.length === 0,
+            missingNow.length ? 'Missing: ' + missingNow.join(', ') : 'All required documents will be on file'));
+        heading.appendChild(document.createTextNode((ADMISSION_TRACKS[currentTrack()] || 'Requirements') + ': '
+            + done.length + ' of ' + required.length + ' required documents'));
         requirementChecklist.appendChild(heading);
 
-        Object.keys(REQUIREMENT_GROUPS).forEach((groupKey) => {
-            const reqs = REQUIREMENTS.filter((r) => r.group === groupKey
-                && (isRequiredForTrack(r) || r.required_for.length === 0 || requirementWillBeOnFile(r.code)));
-            if (!reqs.length) return;
-
-            const groupEl = document.createElement('div');
-            groupEl.className = 'requirement-group';
-            const label = document.createElement('div');
-            label.className = 'requirement-group-label';
-            label.textContent = REQUIREMENT_GROUPS[groupKey];
-            groupEl.appendChild(label);
-
-            const items = document.createElement('div');
-            items.className = 'requirement-items';
-            reqs.forEach((r) => {
-                const onFile = !!storedByCode(r.code);
-                const staged = stagedIndexByCode(r.code, -1) !== -1;
-                const required = isRequiredForTrack(r);
-                const item = document.createElement('span');
-                item.className = 'requirement-item' + (onFile || staged ? ' is-attached' : '')
-                    + (staged ? ' is-staged' : '') + (required ? ' is-required' : '');
-                item.title = (r.ref ? r.ref + ' — ' : '') + (r.note || '')
-                    + (staged ? ' (new, saved on UPDATE)'
-                        : onFile ? ' (on file)' : required ? ' (required, missing)' : ' (if applicable)');
-                const icon = document.createElement('i');
-                icon.className = 'bi ' + (staged ? 'bi-plus-circle-fill' : onFile ? 'bi-check-circle-fill' : 'bi-circle');
-                item.appendChild(icon);
-                item.appendChild(document.createTextNode(' ' + r.label + (required ? ' *' : '')));
-                items.appendChild(item);
-            });
-            groupEl.appendChild(items);
-            requirementChecklist.appendChild(groupEl);
-        });
     }
 
     function missingRequiredLabels() {
@@ -683,6 +689,7 @@ document.addEventListener('DOMContentLoaded', function () {
         refreshStoredRows();
         renderStagedDocuments();
         renderRequirementChecklist();
+        updatePageCompletion();
         updateSaveButtonState();
     }
 
@@ -912,7 +919,7 @@ document.addEventListener('DOMContentLoaded', function () {
             (data.documents || []).forEach((d) => cleanupStagedFile(d.file_path, '', ''));
             cleanupStagedFile('', data.image_path || '', data.photo_path || '');
             if (!modalClosed) {
-                setStatus(!data.success ? (data.message || 'OCR extraction failed.') : '"' + file.name + '" was already uploaded.', 'error');
+                setStatus(!data.success ? (data.message || 'AI extraction failed.') : '"' + file.name + '" was already uploaded.', 'error');
             }
             return;
         }
@@ -1066,7 +1073,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const REQUIRED_FIELDS = [
         { name: 'student_number', label: 'Student Number' },
-        { name: 'name',           label: 'Name' },
+        { name: 'last_name',      label: 'Last Name' },
+        { name: 'first_name',     label: 'First Name' },
         { name: 'course',         label: 'Course' },
         { name: 'year_section',   label: 'Year & Section' },
     ];
@@ -1132,7 +1140,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         showConfirmModal({
             studentNumber: values.student_number,
-            name: values.name,
+            name: values.last_name + ', ' + (values.first_name + ' ' + ((form.elements['middle_name'] || {}).value || '')).trim(),
             course: values.course,
             yearSection: values.year_section,
             docCount: storedDocs.length + stagedDocs.length,
@@ -1158,6 +1166,11 @@ document.addEventListener('DOMContentLoaded', function () {
             const missingDocs = missingRequiredLabels();
             missingEl.textContent = missingDocs.length ? missingDocs.join(', ') : 'None';
             missingEl.classList.toggle('text-danger', missingDocs.length > 0);
+        }
+        const completionEl = document.getElementById('confirmSummaryCompletion');
+        if (completionEl) {
+            completionEl.innerHTML = '';
+            completionEl.appendChild(completionBadge(missingRequiredLabels().length === 0));
         }
 
         const bsModal = bootstrap.Modal.getOrCreateInstance(modalEl);
