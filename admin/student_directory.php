@@ -6,6 +6,8 @@ require_once __DIR__ . '/document_classifier.php';
 require_once __DIR__ . '/ai_extraction.php';
 require_once __DIR__ . '/archive.php';
 require_once __DIR__ . '/requirement_status.php';
+require_once __DIR__ . '/../activity_log.php';
+require_once __DIR__ . '/../database_backup.php';
 
 function loadEnv($path)
 {
@@ -607,7 +609,18 @@ function handleUpdateStatus($conn)
     $stmt = mysqli_prepare($conn, $sql);
     mysqli_stmt_bind_param($stmt, 'si', $status, $studentId);
 
+    $before = activityFetchStudent($conn, (int) $studentId);
     if (mysqli_stmt_execute($stmt)) {
+        if (($before['status'] ?? '') !== $status) {
+            $studentOpts = activityStudentOpts($conn, $studentId);
+            logActivity('student_status_changed',
+                'Changed status of ' . activityStudentLabel($studentOpts) . ' to ' . strtoupper($status === 'active' ? 'Enrollee' : $status),
+                $studentOpts + [
+                    'target_type' => 'student',
+                    'target_id'   => $studentId,
+                    'details'     => ['changes' => ['Status' => ['from' => (string) ($before['status'] ?? ''), 'to' => $status]]],
+                ]);
+        }
         echo json_encode(['success' => true, 'message' => 'Status updated.', 'status' => $status, 'archived' => false]);
     } else {
         echo json_encode(['success' => false, 'message' => 'Failed to update status: ' . mysqli_error($conn)]);
@@ -838,6 +851,38 @@ function handleAddStudent($conn)
 
         mysqli_commit($conn);
 
+        if (in_array('graduation_year', studentColumns($conn), true)) {
+            $enteredLevel = yearLevelOf($yearSection);
+            $autoEndYear  = expectedGraduationYear(['student_number' => $studentNumber]);
+            if ($enteredLevel !== null && graduationYearForLevel($enteredLevel) !== $autoEndYear) {
+                $gradForLevel = graduationYearForLevel($enteredLevel);
+                $gradStmt = mysqli_prepare($conn, "UPDATE students SET graduation_year = ? WHERE student_id = ?");
+                mysqli_stmt_bind_param($gradStmt, "ii", $gradForLevel, $studentId);
+                mysqli_stmt_execute($gradStmt);
+            }
+        }
+
+        $studentOpts = activityStudentOpts($conn, $studentId);
+        logActivity('student_created', 'Created student record ' . activityStudentLabel($studentOpts),
+            $studentOpts + [
+                'target_type' => 'student',
+                'target_id'   => $studentId,
+                'details'     => [
+                    'course'          => $course,
+                    'year_section'    => $yearSection,
+                    'admission_track' => $admissionTrack,
+                    'documents'       => count($documents),
+                ],
+            ]);
+        foreach ($documents as $doc) {
+            logActivity('document_uploaded',
+                'Uploaded ' . $doc['document_type'] . ' "' . $doc['file_name'] . '" for ' . activityStudentLabel($studentOpts),
+                $studentOpts + [
+                    'target_type' => 'document',
+                    'details'     => ['file_name' => $doc['file_name'], 'document_type' => $doc['document_type'], 'file_path' => $doc['file_path']],
+                ]);
+        }
+
         echo json_encode([
             'success'    => true,
             'message'    => 'Student record saved successfully.',
@@ -861,6 +906,8 @@ function handleAddStudent($conn)
 }
 
 archiveGraduatedStudents($conn);
+updateYearLevels($conn);
+runScheduledBackupIfDue();
 
 $search            = isset($_GET['search']) ? trim($_GET['search']) : '';
 $courseFilter      = isset($_GET['course']) ? trim($_GET['course']) : '';
@@ -1364,7 +1411,7 @@ include 'navbar.php';
     'groups'       => getDocumentRequirementGroups(),
     'tracks'       => getAdmissionTracks(),
 ]), ENT_QUOTES, 'UTF-8') ?>"></div>
-<script src="../js/add-student.js?v=<?= @filemtime(__DIR__ . '/../js/add-student.js') ?>"></script>
+<script src="../js/add-student-ocr.js?v=<?= @filemtime(__DIR__ . '/../js/add-student.js') ?>"></script>
 <script src="../js/student-directory-filters.js?v=<?= @filemtime(__DIR__ . '/../js/student-directory-filters.js') ?>"></script>
 <script src="../js/student-directory.js?v=<?= @filemtime(__DIR__ . '/../js/student-directory.js') ?>"></script>
     </div>

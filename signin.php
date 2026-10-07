@@ -2,6 +2,7 @@
 <?php
 include 'security_headers.php';
 session_start();
+require_once __DIR__ . '/activity_log.php';
 
 // csrf token
 if (!isset($_SESSION['csrf_token'])) {
@@ -52,6 +53,13 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
                 $_SESSION['role'] = $row['role'];
                 $_SESSION['name'] = $row['name'];
                 $_SESSION['is_first_login'] = $row['is_first_login']; 
+
+                logActivity('login', 'Signed in as ' . $row['role'], [
+                    'user_id'   => $row['id'] ?? null,
+                    'user_name' => $row['name'],
+                    'user_role' => $row['role'],
+                    'details'   => ['email' => $row['email']],
+                ]);
 
                 if($row['is_first_login'] == 1 && $row['role'] == 'Admin') {
                     header("Location: change_password.php");

@@ -39,9 +39,9 @@
 
                 <!-- Icons -->
                 <li class="nav-item dropdown me-3 user-dropdown">
-                    <a class="nav-link" href="#" id="userDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                    <span class="nav-link user-icon" id="userDropdown" tabindex="0" aria-haspopup="true">
                         <i class="bi bi-person-fill"></i>
-                    </a>
+                    </span>
 
                 <!-- Dropdown Box -->
                 <div class="dropdown-menu user-dropdown-menu p-3">

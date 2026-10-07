@@ -1,6 +1,7 @@
 <?php
 include 'security_headers.php';
 session_start();
+require_once __DIR__ . '/activity_log.php';
 
 try {
     if (headers_sent()) {
@@ -8,6 +9,11 @@ try {
     }
 
     if (!empty($_SESSION)) {
+        if (isset($_SESSION['name'])) {
+            logActivity('logout', 'Signed out', [
+                'details' => ['email' => $_SESSION['email'] ?? ''],
+            ]);
+        }
         session_unset();
         session_destroy();
     }

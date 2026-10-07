@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/course_catalog.php';
+require_once __DIR__ . '/../activity_log.php';
 
 if (!defined('DOCUMENTS_DIR')) {
     define('DOCUMENTS_DIR', '../uploads/documents/');
@@ -258,11 +259,103 @@ function archiveGraduatedStudents($conn, $limit = 30)
         $outcome = archiveStudentRecord($conn, (int) $row['student_id'], 'graduated');
         if (!empty($outcome['success'])) {
             $archived++;
+            $studentOpts = activityStudentOpts($conn, (int) $row['student_id']);
+            logActivity('student_auto_archived',
+                'Automatically archived ' . activityStudentLabel($studentOpts) . ' as GRADUATE',
+                $studentOpts + [
+                    'system'      => true,
+                    'target_type' => 'student',
+                    'target_id'   => $row['student_id'],
+                    'details'     => [
+                        'new_status'        => 'graduated',
+                        'school_year_ended' => schoolYearLabel($endYear),
+                        'documents_moved'   => $outcome['documents'] ?? 0,
+                        'reason'            => 'Expected graduation school year has ended.',
+                    ],
+                ]);
         } else {
             error_log('Auto-archive of graduate ' . $row['student_number'] . ' failed: ' . ($outcome['message'] ?? ''));
         }
     }
     return $archived;
+}
+
+function yearLevelForGraduation($endYear)
+{
+    $level = PROGRAM_LENGTH_YEARS - ((int) $endYear - currentSchoolYearEndYear());
+    return max(1, min(PROGRAM_LENGTH_YEARS, $level));
+}
+
+function graduationYearForLevel($level)
+{
+    $level = max(1, min(PROGRAM_LENGTH_YEARS, (int) $level));
+    return currentSchoolYearEndYear() + (PROGRAM_LENGTH_YEARS - $level);
+}
+
+function yearLevelOf($yearSection)
+{
+    return preg_match('/^\s*(\d)\s*-\s*\d\s*$/', (string) $yearSection, $m) ? (int) $m[1] : null;
+}
+
+function applyYearLevel($conn, $studentId)
+{
+    $columns = studentColumns($conn);
+    $stmt = mysqli_prepare($conn, "SELECT student_number, year_section"
+        . (in_array('graduation_year', $columns, true) ? ", graduation_year" : "")
+        . " FROM students WHERE student_id = ?");
+    $studentId = (int) $studentId;
+    mysqli_stmt_bind_param($stmt, "i", $studentId);
+    mysqli_stmt_execute($stmt);
+    $student = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    if (!$student || !preg_match('/^\s*\d\s*-\s*(\d)\s*$/', (string) $student['year_section'], $m)) {
+        return null;
+    }
+
+    $endYear = expectedGraduationYear($student);
+    if ($endYear === null) {
+        return null;
+    }
+
+    $newYearSection = yearLevelForGraduation($endYear) . '-' . $m[1];
+    if ($newYearSection === $student['year_section']) {
+        return null;
+    }
+
+    $update = mysqli_prepare($conn, "UPDATE students SET year_section = ? WHERE student_id = ?");
+    mysqli_stmt_bind_param($update, "si", $newYearSection, $studentId);
+    mysqli_stmt_execute($update);
+
+    return ['from' => $student['year_section'], 'to' => $newYearSection];
+}
+
+function updateYearLevels($conn)
+{
+    $result = mysqli_query($conn, "SELECT student_id FROM students WHERE status = 'active' OR status IS NULL OR status = ''");
+    if (!$result) {
+        return 0;
+    }
+
+    $updated = 0;
+    while ($row = mysqli_fetch_assoc($result)) {
+        $change = applyYearLevel($conn, (int) $row['student_id']);
+        if ($change === null) {
+            continue;
+        }
+        $updated++;
+        $studentOpts = activityStudentOpts($conn, (int) $row['student_id']);
+        logActivity('student_updated',
+            'Updated year level of ' . activityStudentLabel($studentOpts) . ' to ' . $change['to'] . ' for ' . schoolYearLabel(currentSchoolYearEndYear()),
+            $studentOpts + [
+                'system'      => true,
+                'target_type' => 'student',
+                'target_id'   => $row['student_id'],
+                'details'     => [
+                    'changes' => ['Year & Section' => $change],
+                    'reason'  => 'Year level follows the Graduation SY and the current school year.',
+                ],
+            ]);
+    }
+    return $updated;
 }
 
 function fileUrl($path)
@@ -347,7 +440,11 @@ function handleRestoreStudent($conn)
         }
 
         if ($student['status'] === 'graduated' && in_array('graduation_year', studentColumns($conn), true)) {
-            $newEndYear = currentSchoolYearEndYear();
+            $levelStmt = mysqli_prepare($conn, "SELECT year_section FROM students WHERE student_id = ?");
+            mysqli_stmt_bind_param($levelStmt, "i", $studentId);
+            mysqli_stmt_execute($levelStmt);
+            $restoredLevel = yearLevelOf(mysqli_fetch_assoc(mysqli_stmt_get_result($levelStmt))['year_section'] ?? '');
+            $newEndYear = $restoredLevel !== null ? graduationYearForLevel($restoredLevel) : currentSchoolYearEndYear();
             $gradStmt = mysqli_prepare($conn, "UPDATE students SET graduation_year = ? WHERE student_id = ?");
             mysqli_stmt_bind_param($gradStmt, "ii", $newEndYear, $studentId);
             if (!mysqli_stmt_execute($gradStmt)) {
@@ -381,6 +478,18 @@ function handleRestoreStudent($conn)
     foreach ($done as $move) {
         removeEmptyArchiveDirs(dirname($move['from']));
     }
+
+    $studentOpts = activityStudentOpts($conn, $studentId);
+    logActivity('student_restored',
+        'Restored ' . activityStudentLabel($studentOpts) . ' to the Student Directory',
+        $studentOpts + [
+            'target_type' => 'student',
+            'target_id'   => $studentId,
+            'details'     => [
+                'changes'         => ['Status' => ['from' => $student['status'], 'to' => 'active']],
+                'documents_moved' => count($done),
+            ],
+        ]);
 
     echo json_encode(['success' => true, 'message' => 'Student restored to the Student Directory.', 'status' => 'active']);
 }

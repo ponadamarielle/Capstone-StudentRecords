@@ -66,8 +66,16 @@
     border-radius: 10px;
     box-shadow: 0 4px 12px rgba(0,0,0,0.15);
 }
-.user-dropdown:hover .dropdown-menu {
+.user-dropdown:hover .dropdown-menu,
+.user-dropdown:focus-within .dropdown-menu {
     display: block;
+}
+.user-dropdown {
+    position: relative;
+}
+.user-icon {
+    cursor: default;
+    outline: none;
 }
 .user-dropdown .dropdown-item {
     background-color: transparent;
@@ -86,22 +94,29 @@
     border-radius: 10px;
 }
 .btn-danger {
-    font-family: "Inter";
     background-color: #800000;
-    border: none;
+    color: white;
+    width: 100px;
+    font-family: "Inter";
+    font-weight: bold;
 }
 .btn-danger:hover {
     background-color: #660403;
+    border-color: #660403;
+    color: #fff;
 }
 .btn-secondary {
+    background-color: #ffffff;
+    color: #800000;
+    border-color: #800000;
+    width: 100px;
     font-family: "Inter";
-    background-color: #000;
-    color: #ffffff;
-    border-color: #000;
+    font-weight: bold;
 }
 .btn-secondary:hover {
-    background-color: #333333;
-    border-color: #333333;
+    background-color: #fdf0f0;
+    color: #800503;
+    border-color: #800503;
 }
 #logoutModal .modal-dialog {
     max-width: 350px;

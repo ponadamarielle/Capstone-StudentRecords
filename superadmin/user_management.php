@@ -159,6 +159,7 @@ if (isset($_POST['toggle_status']) && $_POST['toggle_status'] === '1') {
     <title>User Management</title>
     <link href="../css/bootstrap.min.css" rel="stylesheet">
     <link href="../css/bootstrap-icons.css" rel="stylesheet">
+    <link href="../css/font.css" rel="stylesheet">
     <link href="../css/navbar-superadmin.css" rel="stylesheet">
     <link href="../css/user_management.css" rel="stylesheet">
 </head>

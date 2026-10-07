@@ -6,6 +6,7 @@ require_once __DIR__ . '/document_classifier.php';
 require_once __DIR__ . '/ai_extraction.php';
 require_once __DIR__ . '/archive.php';
 require_once __DIR__ . '/requirement_status.php';
+require_once __DIR__ . '/../activity_log.php';
 
 if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] !== 'Admin') {
     header("Location: ../signin.php");
@@ -403,7 +404,7 @@ function requirementsForClient()
         $text = ($r['label'] ?? '') . ' ' . ($r['code'] ?? '');
         if (preg_match('/chest[\s_-]*x[\s_-]*-?ray|xray/i', $text)) {
             $r['required_for'] = [];
-            $r['clinic_only']  = true;  
+            $r['clinic_only']  = true;   // handled by the clinic: hidden from the registrar checklist
         }
         return $r;
     }, getDocumentRequirementsForClient()));
@@ -644,6 +645,8 @@ function handleUpdateStudentInfo($conn)
         return;
     }
 
+    $studentBefore = activityFetchStudent($conn, (int) $studentId);
+
     $lastName    = trim($_POST['last_name'] ?? '');
     $firstName   = trim($_POST['first_name'] ?? '');
     $middleName  = trim($_POST['middle_name'] ?? '');
@@ -777,10 +780,24 @@ function handleUpdateStudentInfo($conn)
             mysqli_stmt_bind_param($gradStmt, "ii", $gradYear, $studentId);
             mysqli_stmt_execute($gradStmt);
         }
+        if (in_array('graduation_year', studentColumns($conn), true)) {
+            $gradPosted   = trim($_POST['graduation_year'] ?? '');
+            $gradBefore   = (string) ($studentBefore['graduation_year'] ?? '');
+            $levelBefore  = yearLevelOf($studentBefore['year_section'] ?? '');
+            $levelPosted  = yearLevelOf($yearSection);
+            if ($gradPosted === $gradBefore && $levelPosted !== null && $levelPosted !== $levelBefore) {
+                $gradForLevel = graduationYearForLevel($levelPosted);
+                $levelStmt = mysqli_prepare($conn, "UPDATE students SET graduation_year = ? WHERE student_id = ?");
+                mysqli_stmt_bind_param($levelStmt, "ii", $gradForLevel, $studentId);
+                mysqli_stmt_execute($levelStmt);
+            }
+        }
+        applyYearLevel($conn, (int) $studentId);
         if ($newPhotoPath !== null && $oldPhotoPath && $oldPhotoPath !== $newPhotoPath
             && strpos($oldPhotoPath, '../uploads/photos/') === 0 && is_file($oldPhotoPath)) {
             @unlink($oldPhotoPath);
         }
+        logStudentUpdate($conn, (int) $studentId, $studentBefore, $newPhotoPath !== null);
         echo json_encode([
             'success'    => true,
             'message'    => 'Student information updated.',
@@ -860,6 +877,8 @@ function handleDeleteDocumentRecord($conn)
         return;
     }
 
+    $deletedDoc = fetchDocumentRow($conn, (int) $documentId);
+
     $deleteSql  = "DELETE FROM documents WHERE document_id = ?";
     $deleteStmt = mysqli_prepare($conn, $deleteSql);
     mysqli_stmt_bind_param($deleteStmt, "i", $documentId);
@@ -868,6 +887,18 @@ function handleDeleteDocumentRecord($conn)
         if (isPathInsideUploads($row['file_path']) && file_exists($row['file_path'])) {
             @unlink($row['file_path']);
         }
+        $studentOpts = activityStudentOpts($conn, $row['student_id']);
+        logActivity('document_deleted',
+            'Deleted ' . requirementLabel($deletedDoc['requirement_code'] ?? null) . ' "' . ($deletedDoc['file_name'] ?? '') . '" of ' . activityStudentLabel($studentOpts),
+            $studentOpts + [
+                'target_type' => 'document',
+                'target_id'   => $documentId,
+                'details'     => [
+                    'file_name'     => $deletedDoc['file_name'] ?? '',
+                    'document_type' => requirementLabel($deletedDoc['requirement_code'] ?? null),
+                    'file_path'     => $row['file_path'],
+                ],
+            ]);
         echo json_encode(['success' => true, 'message' => 'Document deleted.']);
     } else {
         echo json_encode(['success' => false, 'message' => 'Failed to delete: ' . mysqli_error($conn)]);
@@ -979,6 +1010,21 @@ function handleReplaceDocument($conn)
     if ($row['file_path'] !== '' && isPathInsideUploads($row['file_path']) && is_file($row['file_path'])) {
         @unlink($row['file_path']);
     }
+    $studentOpts = activityStudentOpts($conn, $studentId);
+    logActivity('document_replaced',
+        'Replaced ' . $label . ' of ' . activityStudentLabel($studentOpts) . ': "' . $row['file_name'] . '" → "' . $originalName . '"',
+        $studentOpts + [
+            'target_type' => 'document',
+            'target_id'   => $documentId,
+            'details'     => [
+                'changes' => array_filter([
+                    'File'          => ['from' => $row['file_name'], 'to' => $originalName],
+                    'Document Type' => requirementLabel($row['requirement_code']) !== $label
+                        ? ['from' => requirementLabel($row['requirement_code']), 'to' => $label] : null,
+                ]),
+                'new_file_path' => $new['file_path'],
+            ],
+        ]);
     echo json_encode([
         'success'          => true,
         'message'          => 'Document replaced.',
@@ -1028,6 +1074,18 @@ function handleSetDocumentType($conn)
     } catch (Exception $e) {
         echo json_encode(['success' => false, 'message' => 'Failed to update: ' . $e->getMessage()]);
         return;
+    }
+    $oldLabel = requirementLabel($row['requirement_code']);
+    if ($oldLabel !== $label) {
+        $studentOpts = activityStudentOpts($conn, $row['student_id']);
+        logActivity('document_type_changed',
+            'Changed type of "' . $row['file_name'] . '" (' . activityStudentLabel($studentOpts) . ') from ' . $oldLabel . ' to ' . $label,
+            $studentOpts + [
+                'target_type' => 'document',
+                'target_id'   => $documentId,
+                'details'     => ['changes' => ['Document Type' => ['from' => $oldLabel, 'to' => $label]],
+                                  'file_name' => $row['file_name']],
+            ]);
     }
     echo json_encode(['success' => true, 'requirement_code' => $code, 'document_type' => $label]);
 }
@@ -1113,6 +1171,15 @@ function handleAddDocuments($conn)
         return;
     }
 
+    $studentOpts = activityStudentOpts($conn, $studentId);
+    foreach ($clean as $d) {
+        logActivity('document_uploaded',
+            'Uploaded ' . $d['label'] . ' "' . $d['file_name'] . '" for ' . activityStudentLabel($studentOpts),
+            $studentOpts + [
+                'target_type' => 'document',
+                'details'     => ['file_name' => $d['file_name'], 'document_type' => $d['label'], 'file_path' => $d['file_path']],
+            ]);
+    }
     echo json_encode(['success' => true, 'message' => count($clean) . ' document(s) saved.']);
 }
 
