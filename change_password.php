@@ -2,6 +2,7 @@
 <?php
 include 'security_headers.php';
 session_start();
+require_once __DIR__ . '/activity_log.php';
 
 // csrf token
 if (!isset($_SESSION['csrf_token'])) {
@@ -35,10 +36,17 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         die("CSRF validation failed.");
     }
 
-    $new_pass = $_POST['new_password'];
-    $confirm  = $_POST['confirm_password'];
+    $new_pass = $_POST['new_password'] ?? '';
+    $confirm  = $_POST['confirm_password'] ?? '';
 
-    if(strlen($new_pass) < 8){
+    $currentStmt = mysqli_prepare($conn, "SELECT pass FROM accounts WHERE email = ? LIMIT 1");
+    mysqli_stmt_bind_param($currentStmt, "s", $_SESSION['email']);
+    mysqli_stmt_execute($currentStmt);
+    $currentHash = mysqli_fetch_row(mysqli_stmt_get_result($currentStmt))[0] ?? '';
+
+    if($currentHash !== '' && password_verify($new_pass, $currentHash)){
+        $error = "Your new password must be different from your temporary password.";
+    } elseif(strlen($new_pass) < 8){
         $error = "Password must be at least 8 characters.";
     } elseif(!preg_match('/[A-Z]/', $new_pass)){
         $error = "Password must contain at least one uppercase letter.";
@@ -54,12 +62,16 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         $hashed = password_hash($new_pass, PASSWORD_DEFAULT);
         $email  = $_SESSION['email'];
 
-        $sql = "UPDATE accounts SET pass='$hashed', is_first_login=0 WHERE email='$email'";
-        if(mysqli_query($conn, $sql)){
+        $updateStmt = mysqli_prepare($conn, "UPDATE accounts SET pass = ?, is_first_login = 0 WHERE email = ?");
+        mysqli_stmt_bind_param($updateStmt, "ss", $hashed, $email);
+        if(mysqli_stmt_execute($updateStmt)){
             $_SESSION['is_first_login'] = 0;
+            logActivity('password_changed', 'Changed the temporary password', [
+                'details' => ['email' => $email],
+            ]);
             $role = $_SESSION['role'];
             if($role == 'Super Admin') header("Location: superadmin/dashboard.php");
-            else header("Location: admin/dashboard.php");
+            else header("Location: admin/student_directory.php");
             exit();
         } else {
             $error = "Something went wrong. Please try again.";

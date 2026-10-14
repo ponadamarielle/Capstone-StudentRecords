@@ -13,6 +13,9 @@ if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] 
     exit();
 }
 
+require_once __DIR__ . '/../account_guard.php';
+requireActiveAccount(($_GET['action'] ?? $_POST['action'] ?? '') !== '');
+
 function loadEnv($path)
 {
     if (!file_exists($path)) {
@@ -57,6 +60,26 @@ if ($action !== '') {
 
     ob_start();
 
+    register_shutdown_function(function () use ($action) {
+        $error = error_get_last();
+        if (!$error || !in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true)) {
+            return;
+        }
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        error_log("view_student.php action '$action' fatal error: " . $error['message'] . ' in ' . $error['file'] . ':' . $error['line']);
+        if (!headers_sent()) {
+            http_response_code(200);
+            header('Content-Type: application/json');
+        }
+        echo json_encode([
+            'success' => false,
+            'message' => 'Server error: ' . $error['message'] . ' (' . basename($error['file']) . ' line ' . $error['line'] . ')',
+        ]);
+    });
+
+    try {
     switch ($action) {
         case 'ocr_extract':
             handleOcrExtract($conn);
@@ -79,8 +102,31 @@ if ($action !== '') {
         case 'update_student_info':
             handleUpdateStudentInfo($conn);
             break;
+        case 'check_student_number':
+            handleCheckEditStudentNumber($conn);
+            break;
+        case 'archive_if_graduated':
+            handleArchiveIfGraduated($conn);
+            break;
+        case 'commit_replace_document':
+            handleCommitReplaceDocument($conn);
+            break;
         default:
             echo json_encode(['success' => false, 'message' => 'Invalid action.']);
+    }
+    } catch (Throwable $e) {
+        if (isset($conn) && $conn instanceof mysqli) {
+            try {
+                mysqli_rollback($conn);
+            } catch (Throwable $ignored) {
+            }
+        }
+        error_log("view_student.php action '$action' failed: " . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+        ob_clean();
+        echo json_encode([
+            'success' => false,
+            'message' => 'Server error: ' . $e->getMessage() . ' (' . basename($e->getFile()) . ' line ' . $e->getLine() . ')',
+        ]);
     }
 
     $buffered = ob_get_clean();
@@ -655,7 +701,11 @@ function handleUpdateStudentInfo($conn)
         return;
     }
     $name        = buildFullName($lastName, $firstName, $middleName);
-    $studentNum  = trim($_POST['student_number'] ?? '');
+    $studentNum  = strtoupper(trim($_POST['student_number'] ?? ''));
+    if ($studentNum !== '' && $studentNum !== strtoupper(trim($studentBefore['student_number'] ?? '')) && !preg_match('/^\d{4}-\d{5}-BN-\d$/', $studentNum)) {
+        echo json_encode(['success' => false, 'message' => 'Invalid student number format. Use 0000-00000-BN-0 (e.g. 2021-00123-BN-0).']);
+        return;
+    }
     $course      = normalizeCourseName($_POST['course'] ?? '');
     $yearSection = trim($_POST['year_section'] ?? '');
     if ($yearSection !== '' && !preg_match('/^\d-\d$/', $yearSection)) {
@@ -675,14 +725,13 @@ function handleUpdateStudentInfo($conn)
     $track       = normalizeAdmissionTrack($_POST['admission_track'] ?? '');
 
     if ($studentNum !== '') {
-        $dupSql  = "SELECT student_id FROM students WHERE student_number = ? AND student_id != ? LIMIT 1";
-        $dupStmt = mysqli_prepare($conn, $dupSql);
-        mysqli_stmt_bind_param($dupStmt, "si", $studentNum, $studentId);
-        mysqli_stmt_execute($dupStmt);
-        mysqli_stmt_store_result($dupStmt);
-
-        if (mysqli_stmt_num_rows($dupStmt) > 0) {
-            echo json_encode(['success' => false, 'message' => 'That student number is already used by another record.']);
+        $duplicate = findDuplicateStudentNumber($conn, $studentNum, (int) $studentId);
+        if ($duplicate !== null) {
+            echo json_encode([
+                'success'   => false,
+                'duplicate' => true,
+                'message'   => duplicateStudentNumberMessage($duplicate),
+            ]);
             return;
         }
     }
@@ -767,7 +816,7 @@ function handleUpdateStudentInfo($conn)
         $stmt = mysqli_prepare($conn, $sql);
         mysqli_stmt_bind_param(
             $stmt,
-            "sssssssssssssssi",
+            "ssssssssssssssi",
             $name, $lastName, $firstName, $middleName, $studentNum, $course, $yearSection, $sex, $dob, $pob, $mobile, $email, $address, $track, $studentId
         );
     }
@@ -786,7 +835,10 @@ function handleUpdateStudentInfo($conn)
             $levelBefore  = yearLevelOf($studentBefore['year_section'] ?? '');
             $levelPosted  = yearLevelOf($yearSection);
             if ($gradPosted === $gradBefore && $levelPosted !== null && $levelPosted !== $levelBefore) {
-                $gradForLevel = graduationYearForLevel($levelPosted);
+                $entryAfter   = entryYearFromStudentNumber($studentNum);
+                $gradForLevel = $entryAfter !== null && $levelPosted === yearLevelForGraduation($entryAfter + PROGRAM_LENGTH_YEARS)
+                    ? null
+                    : graduationYearForLevel($levelPosted);
                 $levelStmt = mysqli_prepare($conn, "UPDATE students SET graduation_year = ? WHERE student_id = ?");
                 mysqli_stmt_bind_param($levelStmt, "ii", $gradForLevel, $studentId);
                 mysqli_stmt_execute($levelStmt);
@@ -802,6 +854,7 @@ function handleUpdateStudentInfo($conn)
             'success'    => true,
             'message'    => 'Student information updated.',
             'photo_path' => $newPhotoPath,
+            'graduated'  => studentHasGraduated($conn, (int) $studentId),
         ]);
     } else {
         if ($newPhotoPath !== null && !$photoIsStaged) {
@@ -809,6 +862,91 @@ function handleUpdateStudentInfo($conn)
         }
         echo json_encode(['success' => false, 'message' => 'Failed to update: ' . mysqli_error($conn)]);
     }
+}
+
+function findDuplicateStudentNumber($conn, $studentNumber, $exceptId)
+{
+    $stmt = mysqli_prepare($conn, "SELECT student_id, status FROM students WHERE student_number = ? AND student_id != ? LIMIT 1");
+    mysqli_stmt_bind_param($stmt, "si", $studentNumber, $exceptId);
+    mysqli_stmt_execute($stmt);
+    $row = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    return $row ?: null;
+}
+
+function duplicateStudentNumberMessage(array $duplicate)
+{
+    return isArchivedStatus($duplicate['status'] ?? '')
+        ? 'That student number is already used by an archived graduate. The original student number was kept.'
+        : 'That student number is already used by another student. The original student number was kept.';
+}
+
+function handleCheckEditStudentNumber($conn)
+{
+    $studentNumber = strtoupper(trim($_GET['student_number'] ?? ''));
+    $studentId     = (int) ($_GET['student_id'] ?? 0);
+    if ($studentNumber === '') {
+        echo json_encode(['success' => false, 'message' => 'No student number provided.']);
+        return;
+    }
+    $duplicate = findDuplicateStudentNumber($conn, $studentNumber, $studentId);
+    echo json_encode([
+        'success'  => true,
+        'exists'   => $duplicate !== null,
+        'archived' => $duplicate !== null && isArchivedStatus($duplicate['status'] ?? ''),
+        'message'  => $duplicate !== null ? duplicateStudentNumberMessage($duplicate) : '',
+    ]);
+}
+
+function studentHasGraduated($conn, $studentId)
+{
+    $student = activityFetchStudent($conn, $studentId);
+    if (!$student || isArchivedStatus($student['status'] ?? '')) {
+        return false;
+    }
+    $endYear = expectedGraduationYear($student);
+    return $endYear !== null && schoolYearHasEnded($endYear);
+}
+
+function handleArchiveIfGraduated($conn)
+{
+    $studentId = $_POST['student_id'] ?? '';
+    if ($studentId === '' || !ctype_digit((string) $studentId)) {
+        echo json_encode(['success' => false, 'message' => 'Invalid student.']);
+        return;
+    }
+    $studentId = (int) $studentId;
+    if (!studentHasGraduated($conn, $studentId)) {
+        echo json_encode(['success' => true, 'archived' => false]);
+        return;
+    }
+
+    $student = activityFetchStudent($conn, $studentId);
+    $endYear = expectedGraduationYear($student);
+    $outcome = archiveStudentRecord($conn, $studentId, 'graduated');
+    if (empty($outcome['success'])) {
+        echo json_encode(['success' => false, 'message' => $outcome['message'] ?? 'Could not move the student to Archive.']);
+        return;
+    }
+
+    $studentOpts = activityStudentOpts($conn, $studentId);
+    logActivity('student_auto_archived',
+        'Archived ' . activityStudentLabel($studentOpts) . ' as GRADUATE after the record was updated',
+        $studentOpts + [
+            'target_type' => 'student',
+            'target_id'   => $studentId,
+            'details'     => [
+                'new_status'        => 'graduated',
+                'school_year_ended' => schoolYearLabel($endYear),
+                'documents_moved'   => $outcome['documents'] ?? 0,
+                'reason'            => 'Expected graduation school year has ended.',
+            ],
+        ]);
+
+    echo json_encode([
+        'success'  => true,
+        'archived' => true,
+        'message'  => 'This student has already graduated and was moved to Archive as GRADUATE.',
+    ]);
 }
 
 function handleDeleteStagedDocument()
@@ -874,6 +1012,19 @@ function handleDeleteDocumentRecord($conn)
         return;
     }
     if (rejectIfArchived($conn, $row['student_id'])) {
+        return;
+    }
+
+    $countStmt = mysqli_prepare($conn, "SELECT COUNT(*) AS total FROM documents WHERE student_id = ?");
+    mysqli_stmt_bind_param($countStmt, "i", $row['student_id']);
+    mysqli_stmt_execute($countStmt);
+    $countRow = mysqli_fetch_assoc(mysqli_stmt_get_result($countStmt));
+    if ((int) ($countRow['total'] ?? 0) <= 1) {
+        echo json_encode([
+            'success'       => false,
+            'last_document' => true,
+            'message'       => 'A student record must have at least one document. Upload another document first, or use Replace to change this file.',
+        ]);
         return;
     }
 
@@ -991,6 +1142,19 @@ function handleReplaceDocument($conn)
         }
     }
 
+    if (($_POST['stage'] ?? '') === '1') {
+        echo json_encode([
+            'success'          => true,
+            'staged'           => true,
+            'warning'          => $warning,
+            'file_name'        => $originalName,
+            'file_path'        => $new['file_path'],
+            'requirement_code' => $code,
+            'document_type'    => requirementLabel($code),
+        ]);
+        return;
+    }
+
     $label = requirementLabel($code);
     $updateSql  = "UPDATE documents
                    SET file_name = ?, file_path = ?, file_hash = ?, requirement_code = ?, document_type = ?,
@@ -1034,6 +1198,86 @@ function handleReplaceDocument($conn)
         'requirement_code' => $code,
         'document_type'    => $label,
     ]);
+}
+
+function handleCommitReplaceDocument($conn)
+{
+    $documentId = $_POST['document_id'] ?? '';
+    if ($documentId === '' || !ctype_digit((string) $documentId)) {
+        echo json_encode(['success' => false, 'message' => 'Invalid document.']);
+        return;
+    }
+    $row = fetchDocumentRow($conn, (int) $documentId);
+    if (!$row) {
+        echo json_encode(['success' => false, 'message' => 'Document not found.']);
+        return;
+    }
+    if (rejectIfArchived($conn, $row['student_id'])) {
+        return;
+    }
+
+    $filePath = $_POST['file_path'] ?? '';
+    $fileName = trim($_POST['file_name'] ?? '') ?: basename($filePath);
+    if ($filePath === '' || !is_file($filePath) || !isPathInsideUploads($filePath)) {
+        echo json_encode(['success' => false, 'message' => 'The replacement for "' . $row['file_name'] . '" is missing on the server. Please replace it again.']);
+        return;
+    }
+    if ($filePath === $row['file_path']) {
+        echo json_encode(['success' => true, 'message' => 'Nothing to replace.']);
+        return;
+    }
+
+    $studentId = (int) $row['student_id'];
+    $code = $row['requirement_code'];
+    if ($code === null) {
+        $posted = trim($_POST['requirement_code'] ?? '');
+        if ($posted !== '' && isStorableRequirement($posted)) {
+            $taken = findStoredRequirement($conn, $studentId, $posted);
+            if (!$taken || (int) $taken['document_id'] === (int) $row['document_id']) {
+                $code = $posted;
+            }
+        }
+    }
+
+    $hash = pdfContentFingerprint($filePath);
+    $sameFile = findStoredFileHash($conn, $studentId, $hash);
+    if ($sameFile && (int) $sameFile['document_id'] !== (int) $row['document_id']) {
+        echo json_encode(['success' => false, 'message' => 'This exact file is already on record as ' . $sameFile['document_type'] . ' (' . $sameFile['file_name'] . ').']);
+        return;
+    }
+
+    $label = requirementLabel($code);
+    $updateStmt = mysqli_prepare($conn, "UPDATE documents
+                   SET file_name = ?, file_path = ?, file_hash = ?, requirement_code = ?, document_type = ?,
+                       uploaded_at = NOW()
+                   WHERE document_id = ?");
+    mysqli_stmt_bind_param($updateStmt, "sssssi", $fileName, $filePath, $hash, $code, $label, $documentId);
+    try {
+        mysqli_stmt_execute($updateStmt);
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'message' => 'Failed to replace "' . $row['file_name'] . '": ' . $e->getMessage()]);
+        return;
+    }
+
+    if ($row['file_path'] !== '' && isPathInsideUploads($row['file_path']) && is_file($row['file_path'])) {
+        @unlink($row['file_path']);
+    }
+    $studentOpts = activityStudentOpts($conn, $studentId);
+    logActivity('document_replaced',
+        'Replaced ' . $label . ' of ' . activityStudentLabel($studentOpts) . ': "' . $row['file_name'] . '" → "' . $fileName . '"',
+        $studentOpts + [
+            'target_type' => 'document',
+            'target_id'   => $documentId,
+            'details'     => [
+                'changes' => array_filter([
+                    'File'          => ['from' => $row['file_name'], 'to' => $fileName],
+                    'Document Type' => requirementLabel($row['requirement_code']) !== $label
+                        ? ['from' => requirementLabel($row['requirement_code']), 'to' => $label] : null,
+                ]),
+                'new_file_path' => $filePath,
+            ],
+        ]);
+    echo json_encode(['success' => true, 'message' => 'Document replaced.']);
 }
 
 function handleSetDocumentType($conn)
@@ -1488,8 +1732,9 @@ include 'navbar.php';
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_student_number" class="form-label form-label-custom">Student Number:</label>
                                                     <input type="text" id="edit_student_number" name="student_number" class="form-control input-custom" required
-                                                           value="<?= htmlspecialchars($student['student_number'] ?? '') ?>" maxlength="15" placeholder="0000-00000-BN-0">
+                                                           value="<?= htmlspecialchars($student['student_number'] ?? '') ?>" maxlength="15" placeholder="0000-00000-BN-0" inputmode="numeric" autocomplete="off">
                                                 </div>
+                                                <small id="editStudentNumberFeedback" class="text-danger d-block mb-3" hidden></small>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_course" class="form-label form-label-custom">Course:</label>
                                                     <input type="text" id="edit_course" name="course" class="form-control input-custom"
@@ -1539,6 +1784,7 @@ include 'navbar.php';
                                                         <?php endforeach; ?>
                                                     </select>
                                                 </div>
+                                                <small id="editGraduationNote" class="text-danger d-block mb-3" hidden></small>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_mobile_number" class="form-label form-label-custom">Mobile Number:</label>
                                                     <input type="text" id="edit_mobile_number" name="mobile_number" class="form-control input-custom"
@@ -1556,6 +1802,7 @@ include 'navbar.php';
                                                 </div>
                                             </div>
                                         </div>
+                                        <small id="editInfoFeedback" class="text-danger d-block" hidden></small>
                                     </div>
 
                                     <div class="tab-pane fade" id="edit-docs" role="tabpanel">
@@ -1621,7 +1868,7 @@ include 'navbar.php';
     </div>
 
     <!-- confirm update modal -->
-    <div class="modal fade" id="confirmSaveModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="confirmSaveModal" tabindex="-1" aria-hidden="true" data-bs-focus="false">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
@@ -1650,7 +1897,7 @@ include 'navbar.php';
     </div>
 
     <!-- confirm delete document modal -->
-    <div class="modal fade" id="confirmDeleteDocModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="confirmDeleteDocModal" tabindex="-1" aria-hidden="true" data-bs-focus="false">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
@@ -1660,6 +1907,7 @@ include 'navbar.php';
                     <p>
                         Are you sure you want to delete <strong id="confirmDeleteDocName"></strong>?
                     </p>
+                    <small class="text-muted d-block">The document will only be removed when you click UPDATE.</small>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-cancel" data-bs-dismiss="modal">Cancel</button>

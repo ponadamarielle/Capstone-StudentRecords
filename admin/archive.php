@@ -397,6 +397,10 @@ function handleRestoreStudent($conn)
         echo json_encode(['success' => false, 'message' => 'This student is not archived.']);
         return;
     }
+    if ($student['status'] === 'graduated') {
+        echo json_encode(['success' => false, 'message' => 'Graduated records cannot be restored. The record stays in the Archive.']);
+        return;
+    }
 
     if (!is_dir(DOCUMENTS_DIR) && !@mkdir(DOCUMENTS_DIR, 0755, true)) {
         echo json_encode(['success' => false, 'message' => 'Could not create the documents folder.']);
@@ -530,6 +534,9 @@ if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] 
     header("Location: ../signin.php");
     exit();
 }
+
+require_once __DIR__ . '/../account_guard.php';
+requireActiveAccount($isAjax);
 
 if (!$isAjax && isset($_SESSION['is_first_login']) && $_SESSION['is_first_login'] == 1) {
     header("Location: ../change_password.php");
@@ -776,11 +783,6 @@ include 'navbar.php';
                         </div>
                     <?php endif; ?>
 
-                    <button type="button" class="btn btn-sm archive-restore-btn"
-                            data-id="<?= $sid ?>" data-name="<?= htmlspecialchars($row['name']) ?>"
-                            title="Move back to the Student Directory as ENROLLEE">
-                        <i class="bi bi-arrow-counterclockwise"></i> Restore
-                    </button>
                 </div>
             </td>
         </tr>

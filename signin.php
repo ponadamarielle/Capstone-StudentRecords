@@ -4,12 +4,38 @@ include 'security_headers.php';
 session_start();
 require_once __DIR__ . '/activity_log.php';
 
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: Sat, 01 Jan 2000 00:00:00 GMT');
+
+const MAX_LOGIN_ATTEMPTS    = 3;
+const LOGIN_LOCK_MINUTES    = 5;
+const LOGIN_ATTEMPT_WINDOW  = 15;
+
+if (isset($_SESSION['name'], $_SESSION['role'])) {
+    if ($_SESSION['role'] === 'Admin' && ($_SESSION['is_first_login'] ?? 0) == 1) {
+        header("Location: change_password.php");
+        exit();
+    }
+    if ($_SESSION['role'] === 'Super Admin') {
+        header("Location: superadmin/dashboard.php");
+        exit();
+    }
+    if ($_SESSION['role'] === 'Admin') {
+        header("Location: admin/student_directory.php");
+        exit();
+    }
+}
+
 // csrf token
 if (!isset($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 
 $error = "";
+if (isset($_GET['deactivated'])) {
+    $error = "Your account has been deactivated. Please contact the Super Admin.";
+}
 
 $DBHost = "localhost";
 $DBUser = "root";
@@ -20,6 +46,65 @@ $conn = mysqli_connect($DBHost, $DBUser, $DBPass, $DBName);
 
 if(!$conn) {
     die("Connection failed: " .mysqli_connect_error());
+}
+
+mysqli_query($conn, "CREATE TABLE IF NOT EXISTS login_attempts (
+    email        VARCHAR(255) NOT NULL PRIMARY KEY,
+    attempts     INT          NOT NULL DEFAULT 0,
+    locked_until DATETIME     NULL,
+    last_attempt DATETIME     NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+function loginLockSeconds($conn, $email)
+{
+    $window = LOGIN_ATTEMPT_WINDOW;
+    $stmt = mysqli_prepare($conn, "DELETE FROM login_attempts WHERE email = ?
+        AND ((locked_until IS NOT NULL AND locked_until <= NOW())
+          OR (locked_until IS NULL AND last_attempt < NOW() - INTERVAL $window MINUTE))");
+    mysqli_stmt_bind_param($stmt, "s", $email);
+    mysqli_stmt_execute($stmt);
+
+    $stmt = mysqli_prepare($conn, "SELECT TIMESTAMPDIFF(SECOND, NOW(), locked_until) FROM login_attempts
+        WHERE email = ? AND locked_until > NOW()");
+    mysqli_stmt_bind_param($stmt, "s", $email);
+    mysqli_stmt_execute($stmt);
+    $row = mysqli_fetch_row(mysqli_stmt_get_result($stmt));
+    return $row ? max(1, (int) $row[0]) : 0;
+}
+
+function recordFailedLogin($conn, $email)
+{
+    $stmt = mysqli_prepare($conn, "INSERT INTO login_attempts (email, attempts, last_attempt) VALUES (?, 1, NOW())
+        ON DUPLICATE KEY UPDATE attempts = attempts + 1, last_attempt = NOW()");
+    mysqli_stmt_bind_param($stmt, "s", $email);
+    mysqli_stmt_execute($stmt);
+
+    $stmt = mysqli_prepare($conn, "SELECT attempts FROM login_attempts WHERE email = ?");
+    mysqli_stmt_bind_param($stmt, "s", $email);
+    mysqli_stmt_execute($stmt);
+    $attempts = (int) (mysqli_fetch_row(mysqli_stmt_get_result($stmt))[0] ?? 1);
+
+    if ($attempts >= MAX_LOGIN_ATTEMPTS) {
+        $minutes = LOGIN_LOCK_MINUTES;
+        $stmt = mysqli_prepare($conn, "UPDATE login_attempts SET locked_until = NOW() + INTERVAL $minutes MINUTE WHERE email = ?");
+        mysqli_stmt_bind_param($stmt, "s", $email);
+        mysqli_stmt_execute($stmt);
+    }
+    return $attempts;
+}
+
+function clearFailedLogins($conn, $email)
+{
+    $stmt = mysqli_prepare($conn, "DELETE FROM login_attempts WHERE email = ?");
+    mysqli_stmt_bind_param($stmt, "s", $email);
+    mysqli_stmt_execute($stmt);
+}
+
+function lockMessage($seconds)
+{
+    $minutes = (int) ceil($seconds / 60);
+    return "Too many failed sign-in attempts. This account is temporarily locked. Please try again in "
+        . $minutes . ' minute' . ($minutes === 1 ? '' : 's') . '.';
 }
 
 if($_SERVER['REQUEST_METHOD'] == 'POST'){
@@ -39,47 +124,70 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         $error = "Please enter a valid email address.";
     } else {
 
-    $sql = "SELECT * FROM accounts WHERE email='$email'";
-    $result = mysqli_query($conn, $sql);
+    $attemptKey  = strtolower($email);
+    $lockSeconds = loginLockSeconds($conn, $attemptKey);
 
-    if(mysqli_num_rows($result) > 0){
-        $row = mysqli_fetch_assoc($result);
+    $stmt = mysqli_prepare($conn, "SELECT * FROM accounts WHERE email = ? LIMIT 1");
+    mysqli_stmt_bind_param($stmt, "s", $email);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    $row = $result ? mysqli_fetch_assoc($result) : null;
 
-        if(password_verify($pass, $row['pass'])){
-            if($row['status'] !== 'Active') {
-                $error = "Your account is inactive. Please contact super admin.";
-            } else {
-                $_SESSION['email'] = $row['email'];
-                $_SESSION['role'] = $row['role'];
-                $_SESSION['name'] = $row['name'];
-                $_SESSION['is_first_login'] = $row['is_first_login']; 
-
-                logActivity('login', 'Signed in as ' . $row['role'], [
-                    'user_id'   => $row['id'] ?? null,
-                    'user_name' => $row['name'],
-                    'user_role' => $row['role'],
-                    'details'   => ['email' => $row['email']],
-                ]);
-
-                if($row['is_first_login'] == 1 && $row['role'] == 'Admin') {
-                    header("Location: change_password.php");
-                    exit();
-                }
-
-                if ($row['role'] == 'Super Admin') {
-                    header("Location: superadmin/dashboard.php");
-                    exit();
-                } elseif ($row['role'] == 'Admin') {
-                    header("Location: admin/student_directory.php");
-                    exit();
-                }
-            }
+    if ($lockSeconds > 0) {
+        $error = lockMessage($lockSeconds);
+    } elseif ($row && password_verify($pass, $row['pass'])) {
+        clearFailedLogins($conn, $attemptKey);
+        if($row['status'] !== 'Active') {
+            $error = "Your account is inactive. Please contact super admin.";
         } else {
-            $error = "Invalid email or password";
-        }
+            session_regenerate_id(true);
+            $_SESSION['email'] = $row['email'];
+            $_SESSION['role'] = $row['role'];
+            $_SESSION['name'] = $row['name'];
+            $_SESSION['is_first_login'] = $row['is_first_login']; 
 
+            logActivity('login', 'Signed in as ' . $row['role'], [
+                'user_id'   => $row['id'] ?? null,
+                'user_name' => $row['name'],
+                'user_role' => $row['role'],
+                'details'   => ['email' => $row['email']],
+            ]);
+
+            if($row['is_first_login'] == 1 && $row['role'] == 'Admin') {
+                header("Location: change_password.php");
+                exit();
+            }
+
+            if ($row['role'] == 'Super Admin') {
+                header("Location: superadmin/dashboard.php");
+                exit();
+            } elseif ($row['role'] == 'Admin') {
+                header("Location: admin/student_directory.php");
+                exit();
+            }
+        }
     } else {
-        $error = "Invalid email or password";
+        $attempts  = recordFailedLogin($conn, $attemptKey);
+        $remaining = MAX_LOGIN_ATTEMPTS - $attempts;
+
+        logActivity('login_failed', 'Failed sign-in attempt ' . min($attempts, MAX_LOGIN_ATTEMPTS) . ' of ' . MAX_LOGIN_ATTEMPTS . ' for ' . $email, [
+            'user_id'   => $row['id'] ?? null,
+            'user_name' => $row['name'] ?? $email,
+            'user_role' => $row['role'] ?? 'Unknown account',
+            'details'   => ['email' => $email, 'reason' => $row ? 'Wrong password' : 'Email not registered'],
+        ]);
+
+        if ($remaining <= 0) {
+            $error = lockMessage(LOGIN_LOCK_MINUTES * 60);
+            logActivity('account_locked', 'Sign-in locked for ' . LOGIN_LOCK_MINUTES . ' minutes after ' . MAX_LOGIN_ATTEMPTS . ' failed attempts for ' . $email, [
+                'user_id'   => $row['id'] ?? null,
+                'user_name' => $row['name'] ?? $email,
+                'user_role' => $row['role'] ?? 'Unknown account',
+                'details'   => ['email' => $email, 'locked_minutes' => LOGIN_LOCK_MINUTES],
+            ]);
+        } else {
+            $error = "Invalid email or password. You have " . $remaining . " attempt" . ($remaining === 1 ? '' : 's') . " left.";
+        }
     }
     }
 }

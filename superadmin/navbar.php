@@ -2,6 +2,11 @@
     $userName = $_SESSION['name'];
     $userRole = $_SESSION['role'];
     $currentPage = basename($_SERVER['PHP_SELF']);
+    if (!headers_sent()) {
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        header('Pragma: no-cache');
+        header('Expires: Sat, 01 Jan 2000 00:00:00 GMT');
+    }
 ?>
 
 <link href="../css/bootstrap-icons.css" rel="stylesheet">

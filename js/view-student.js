@@ -163,7 +163,159 @@ document.addEventListener('DOMContentLoaded', function () {
     bindFilter('edit_sex', (v) => v.replace(/[^A-Za-z\s]/g, ''));
     bindFilter('edit_mobile_number', (v) => v.replace(/[^0-9]/g, '').slice(0, 11));
     bindFilter('edit_year_section', formatYearSection);
-    bindFilter('edit_student_number', formatStudentNumber);
+
+    const EDIT_NUMBER_FORMAT  = /^\d{4}-\d{5}-BN-\d$/;
+    const EDIT_NUMBER_MESSAGE = 'Invalid student number format. Use 0000-00000-BN-0 (e.g. 2021-00123-BN-0).';
+    const EDIT_PROGRAM_YEARS  = 4;
+    const editNumberInput     = document.getElementById('edit_student_number');
+    const editNumberFeedback  = document.getElementById('editStudentNumberFeedback');
+    const editYearInput       = document.getElementById('edit_year_section');
+    const editGradSelect      = document.getElementById('edit_graduation_year');
+    const editGradNote        = document.getElementById('editGraduationNote');
+    const editOriginalNumber  = editNumberInput ? editNumberInput.value.trim().toUpperCase() : '';
+    const editAutoOption      = editGradSelect ? editGradSelect.querySelector('option[value=""]') : null;
+    let editNumberDuplicate   = false;
+    let editNumberCheckSeq    = 0;
+
+    function maskEditStudentNumber(value, deleting) {
+        const digits = String(value || '').replace(/\D/g, '').slice(0, 10);
+        let out = digits.slice(0, 4);
+        if (digits.length > 4 || (digits.length === 4 && !deleting)) out += '-';
+        if (digits.length > 4) out += digits.slice(4, 9);
+        if (digits.length > 9 || (digits.length === 9 && !deleting)) out += '-BN-';
+        if (digits.length > 9) out += digits.slice(9, 10);
+        return out;
+    }
+
+    function setEditNumberError(message) {
+        if (editNumberFeedback) {
+            editNumberFeedback.textContent = message || '';
+            editNumberFeedback.hidden = !message;
+        }
+        if (editNumberInput) editNumberInput.classList.toggle('is-invalid', !!message);
+    }
+
+    function validateEditNumberFormat() {
+        if (!editNumberInput) return true;
+        const value = editNumberInput.value.trim().toUpperCase();
+        const valid = value === '' || value === editOriginalNumber || EDIT_NUMBER_FORMAT.test(value);
+        if (!valid) {
+            setEditNumberError(EDIT_NUMBER_MESSAGE);
+        } else if (!editNumberDuplicate) {
+            setEditNumberError('');
+        }
+        return valid;
+    }
+
+    function checkEditStudentNumber() {
+        const value = editNumberInput ? editNumberInput.value.trim().toUpperCase() : '';
+        const seq = ++editNumberCheckSeq;
+        if (!value || value === editOriginalNumber || !EDIT_NUMBER_FORMAT.test(value)) {
+            editNumberDuplicate = false;
+            validateEditNumberFormat();
+            return Promise.resolve(true);
+        }
+        const url = ACTIONS_URL + '?action=check_student_number&student_number=' + encodeURIComponent(value)
+            + '&student_id=' + encodeURIComponent(form.elements['student_id'].value);
+        return fetch(url)
+            .then((res) => res.json())
+            .then((data) => {
+                if (seq !== editNumberCheckSeq || !data.success) return !editNumberDuplicate;
+                editNumberDuplicate = !!data.exists;
+                setEditNumberError(editNumberDuplicate ? data.message || 'That student number is already used by another student.' : '');
+                return !editNumberDuplicate;
+            })
+            .catch(() => true);
+    }
+
+    function editSchoolYearEnd() {
+        const now = new Date();
+        return now.getFullYear() + (now.getMonth() > 6 ? 1 : 0);
+    }
+
+    function editEntryYear() {
+        const match = String(editNumberInput ? editNumberInput.value : '').match(/^\s*((?:19|20)\d{2})/);
+        return match ? parseInt(match[1], 10) : null;
+    }
+
+    function editAutoGraduation() {
+        const entry = editEntryYear();
+        if (entry === null) return null;
+        const endYear = entry + EDIT_PROGRAM_YEARS;
+        const current = editSchoolYearEnd();
+        return {
+            endYear: endYear,
+            level: Math.max(1, Math.min(EDIT_PROGRAM_YEARS, EDIT_PROGRAM_YEARS - (endYear - current))),
+            graduated: endYear < current,
+        };
+    }
+
+    function editGraduationInfo() {
+        if (editGradSelect && editGradSelect.value) {
+            const endYear = parseInt(editGradSelect.value, 10);
+            return { endYear: endYear, graduated: endYear < editSchoolYearEnd() };
+        }
+        const auto = editAutoGraduation();
+        if (!auto) return null;
+        const match = String(editYearInput ? editYearInput.value : '').match(/^(\d)/);
+        const level = match ? parseInt(match[1], 10) : null;
+        if (level !== null && level !== auto.level) return { endYear: null, graduated: false };
+        return auto;
+    }
+
+    function updateEditGraduationDisplay() {
+        const auto = editAutoGraduation();
+        if (editAutoOption) {
+            editAutoOption.textContent = 'Auto' + (auto ? ' (SY ' + (auto.endYear - 1) + '-' + auto.endYear + ')' : '');
+        }
+        if (editGradNote) {
+            const info = editGraduationInfo();
+            const graduated = !!(info && info.graduated);
+            editGradNote.textContent = graduated
+                ? 'This student has already graduated. The record will be moved to Archive as GRADUATE after saving.'
+                : '';
+            editGradNote.hidden = !graduated;
+        }
+    }
+
+    function syncEditYearFromStudentNumber() {
+        const auto = editAutoGraduation();
+        if (auto && editYearInput) {
+            const sectionMatch = String(editYearInput.value || '').match(/^\d-(\d)$/);
+            editYearInput.value = auto.level + '-' + (sectionMatch ? sectionMatch[1] : '');
+            editYearInput.classList.remove('is-invalid');
+        }
+        if (auto && editGradSelect) editGradSelect.value = '';
+        updateEditGraduationDisplay();
+        if (typeof updateSaveButtonState === 'function') updateSaveButtonState();
+    }
+
+    if (editNumberInput) {
+        editNumberInput.addEventListener('beforeinput', (e) => {
+            if (e.data && /[^0-9]/.test(e.data) && e.inputType === 'insertText') e.preventDefault();
+        });
+        editNumberInput.addEventListener('input', (e) => {
+            const masked = maskEditStudentNumber(editNumberInput.value, isDeleting(e));
+            if (masked !== editNumberInput.value) {
+                editNumberInput.value = masked;
+                editNumberInput.setSelectionRange(masked.length, masked.length);
+            }
+            editNumberDuplicate = false;
+            if (!masked || EDIT_NUMBER_FORMAT.test(masked)) setEditNumberError('');
+            const value = masked.toUpperCase();
+            if (value === editOriginalNumber) {
+                updateEditGraduationDisplay();
+            } else if (editEntryYear() !== null && value.length >= 4) {
+                syncEditYearFromStudentNumber();
+            }
+        });
+        editNumberInput.addEventListener('blur', () => {
+            if (editNumberInput.value.trim() && validateEditNumberFormat()) checkEditStudentNumber();
+        });
+    }
+    if (editYearInput) editYearInput.addEventListener('input', updateEditGraduationDisplay);
+    if (editGradSelect) editGradSelect.addEventListener('change', updateEditGraduationDisplay);
+    updateEditGraduationDisplay();
 
     const editMobile = document.getElementById('edit_mobile_number');
     if (editMobile) {
@@ -222,6 +374,8 @@ document.addEventListener('DOMContentLoaded', function () {
     }));
 
     let stagedDocs = [];
+    let pendingDeletedDocs = [];
+    let pendingReplacements = {};
     const stagedSources = new Map();   
     let needsReload = false;           
 
@@ -292,7 +446,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const photoChanged = !!(replacePhotoInput && replacePhotoInput.files && replacePhotoInput.files.length > 0)
             || !!(stagedPhotoPath && stagedPhotoPath.value);
 
-        return fieldsChanged || photoChanged || stagedDocs.length > 0 || currentTrack() !== originalTrack;
+        return fieldsChanged || photoChanged || stagedDocs.length > 0 || pendingDeletedDocs.length > 0 || Object.keys(pendingReplacements).length > 0 || currentTrack() !== originalTrack;
     }
 
     let pendingUploads = 0;
@@ -386,12 +540,29 @@ document.addEventListener('DOMContentLoaded', function () {
         Object.keys(ocrFieldMap).forEach((key) => {
             const input = document.getElementById(ocrFieldMap[key]);
             const value = (extracted[key] || '').trim();
+            if (input && value && key === 'year_section') {
+                const found = value.match(/(\d)\s*-\s*(\d)/);
+                const current = input.value.trim();
+                if (!found || /^\d-\d$/.test(current)) return;
+                const currentYear = (current.match(/^(\d)/) || [])[1];
+                input.value = (currentYear || found[1]) + '-' + found[2];
+                input.classList.add('ocr-filled');
+                input.classList.remove('is-invalid');
+                applied.push(ocrFieldMap[key]);
+                return;
+            }
             if (input && value && !input.value.trim()) {
-                input.value = value;
+                input.value = key === 'student_number' ? maskEditStudentNumber(value, false) : value;
                 input.classList.add('ocr-filled');
                 applied.push(ocrFieldMap[key]);
             }
         });
+        if (applied.indexOf('edit_student_number') !== -1) {
+            if (validateEditNumberFormat()) checkEditStudentNumber();
+            syncEditYearFromStudentNumber();
+        } else {
+            updateEditGraduationDisplay();
+        }
         return applied;
     }
 
@@ -579,9 +750,12 @@ document.addEventListener('DOMContentLoaded', function () {
         return badge;
     }
 
+    // Status of what is actually saved (shown on the page behind the modal).
+    // Uses the saved admission track and stored documents only, so staged
+    // uploads / unsaved track changes don't affect it until UPDATE is clicked.
     function savedCompletion() {
         const required = REQUIREMENTS.filter((r) => Array.isArray(r.required_for) && r.required_for.indexOf(originalTrack) !== -1);
-        const missing = required.filter((r) => !storedByCode(r.code)).map((r) => r.label);
+        const missing = required.filter((r) => !storedByCode(r.code) && !pendingDeletedDocs.some((p) => p.doc.requirement_code === r.code)).map((r) => r.label);
         return { complete: missing.length === 0, total: required.length, fulfilled: required.length - missing.length, missing };
     }
 
@@ -602,6 +776,7 @@ document.addEventListener('DOMContentLoaded', function () {
         if (!requirementChecklist) return;
         requirementChecklist.innerHTML = '';
         if (!REQUIREMENTS.length) return;
+        if (storedDocs.length + stagedDocs.length === 0) return;
 
         const required = REQUIREMENTS.filter(isRequiredForTrack);
         const done = required.filter((r) => requirementWillBeOnFile(r.code));
@@ -830,6 +1005,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
         if (addDocumentFeedback) addDocumentFeedback.textContent = '';
         setStatus('', '');
+        discardPendingReplacements();
+        restorePendingDeletes();
 
         const infoTab = document.getElementById('edit-info-tab');
         if (infoTab) bootstrap.Tab.getOrCreateInstance(infoTab).show();
@@ -849,6 +1026,7 @@ document.addEventListener('DOMContentLoaded', function () {
     window.addEventListener('pagehide', () => {
         if (recordSaved || isSaving) return;
         const paths = stagedDocs.map((d) => d.file_path);
+        Object.keys(pendingReplacements).forEach((id) => paths.push(pendingReplacements[id].file_path));
         if (stagedPhotoPath && stagedPhotoPath.value) paths.push('photo:' + stagedPhotoPath.value);
         paths.forEach((p) => {
             const data = new FormData();
@@ -1116,16 +1294,19 @@ document.addEventListener('DOMContentLoaded', function () {
         const tabBtn = pane && document.querySelector(`[data-bs-target="#${pane.id}"]`);
         if (tabBtn && !pane.classList.contains('active')) bootstrap.Tab.getOrCreateInstance(tabBtn).show();
         if (addDocumentFeedback) addDocumentFeedback.textContent = 'Please correct: ' + (e.target.labels && e.target.labels[0] ? e.target.labels[0].textContent.trim() : e.target.name);
+        showEditInfoFeedback('Please correct: ' + (e.target.labels && e.target.labels[0] ? e.target.labels[0].textContent.trim() : e.target.name));
     }, true);
 
     form.addEventListener('submit', (e) => {
         e.preventDefault();
         if (addDocumentFeedback) addDocumentFeedback.textContent = '';
+        showEditInfoFeedback('');
 
         const { values, missing } = collectAndValidateRequiredFields();
 
         if (missing.length > 0) {
             if (addDocumentFeedback) addDocumentFeedback.textContent = 'Please fill in: ' + missing.join(', ') + '.';
+            showEditInfoFeedback('Please fill in: ' + missing.join(', ') + '.');
             const infoTab = document.getElementById('edit-info-tab');
             if (infoTab) bootstrap.Tab.getOrCreateInstance(infoTab).show();
             return;
@@ -1133,17 +1314,39 @@ document.addEventListener('DOMContentLoaded', function () {
 
         clearRequiredFieldErrors();
 
+        if (!validateEditNumberFormat()) {
+            if (addDocumentFeedback) addDocumentFeedback.textContent = EDIT_NUMBER_MESSAGE;
+            showEditInfoFeedback(EDIT_NUMBER_MESSAGE);
+            const infoTab = document.getElementById('edit-info-tab');
+            if (infoTab) bootstrap.Tab.getOrCreateInstance(infoTab).show();
+            return;
+        }
+
         if (!hasUnsavedChanges()) {
             forceCloseModal(addRecordsModalEl);
             return;
         }
 
-        showConfirmModal({
+        if (storedDocs.length + stagedDocs.length === 0) {
+            showLastDocumentMessage();
+            return;
+        }
+
+        checkEditStudentNumber().then((numberOk) => {
+            if (!numberOk) {
+                if (addDocumentFeedback) addDocumentFeedback.textContent = editNumberFeedback ? editNumberFeedback.textContent : 'That student number is already used by another student.';
+                showEditInfoFeedback(addDocumentFeedback ? addDocumentFeedback.textContent : 'That student number is already used by another student.');
+                const infoTab = document.getElementById('edit-info-tab');
+                if (infoTab) bootstrap.Tab.getOrCreateInstance(infoTab).show();
+                return;
+            }
+            showConfirmModal({
             studentNumber: values.student_number,
             name: values.last_name + ', ' + (values.first_name + ' ' + ((form.elements['middle_name'] || {}).value || '')).trim(),
             course: values.course,
             yearSection: values.year_section,
             docCount: storedDocs.length + stagedDocs.length,
+            });
         });
     });
 
@@ -1190,6 +1393,14 @@ document.addEventListener('DOMContentLoaded', function () {
         isSaving = false;
         setStatus('', '');
         if (addDocumentFeedback) addDocumentFeedback.textContent = message;
+        showEditInfoFeedback(message);
+    }
+
+    function showEditInfoFeedback(message) {
+        const el = document.getElementById('editInfoFeedback');
+        if (!el) return;
+        el.textContent = message || '';
+        el.hidden = !message;
     }
 
     async function submitUpdate() {
@@ -1209,6 +1420,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
             if (!infoData.success) {
                 failSave(infoData.message || 'Failed to update student information.');
+                if (infoData.duplicate) {
+                    editNumberDuplicate = true;
+                    setEditNumberError(infoData.message);
+                    const infoTab = document.getElementById('edit-info-tab');
+                    if (infoTab) bootstrap.Tab.getOrCreateInstance(infoTab).show();
+                }
                 return;
             }
 
@@ -1231,6 +1448,43 @@ document.addEventListener('DOMContentLoaded', function () {
                     failSave((docData.message || 'The documents failed to save.') + ' Student information was already updated.');
                     const docsTab = document.getElementById('edit-docs-tab');
                     if (docsTab) bootstrap.Tab.getOrCreateInstance(docsTab).show();
+                    return;
+                }
+            }
+
+            if (Object.keys(pendingReplacements).length) {
+                const replaceError = await commitPendingReplacements();
+                if (replaceError) {
+                    failSave(replaceError + ' The other changes were already saved.');
+                    const docsTab = document.getElementById('edit-docs-tab');
+                    if (docsTab) bootstrap.Tab.getOrCreateInstance(docsTab).show();
+                    return;
+                }
+            }
+
+            if (pendingDeletedDocs.length) {
+                const deleteError = await deletePendingDocuments();
+                if (deleteError) {
+                    failSave(deleteError + ' The other changes were already saved.');
+                    const docsTab = document.getElementById('edit-docs-tab');
+                    if (docsTab) bootstrap.Tab.getOrCreateInstance(docsTab).show();
+                    return;
+                }
+            }
+
+            if (infoData.graduated) {
+                const archiveForm = new FormData();
+                archiveForm.append('student_id', studentId);
+                const archiveRes = await fetch(ACTIONS_URL + '?action=archive_if_graduated', {
+                    method: 'POST',
+                    body: archiveForm,
+                });
+                const archiveData = await parseJsonResponse(archiveRes);
+                if (archiveData.success && archiveData.archived) {
+                    recordSaved = true;
+                    setStatus(archiveData.message, 'success');
+                    window.alert(archiveData.message);
+                    location.href = 'archive.php';
                     return;
                 }
             }
@@ -1275,6 +1529,8 @@ document.addEventListener('DOMContentLoaded', function () {
                     needsReload = true;
                     if (deletedPath && deletedPath === currentPreviewPath) hideDocumentPreview();
                     refreshDocumentsUi();
+                } else if (data.last_document) {
+                    showLastDocumentMessage(data.message);
                 } else {
                     alert(data.message || 'Failed to delete document.');
                 }
@@ -1282,11 +1538,160 @@ document.addEventListener('DOMContentLoaded', function () {
             .catch(() => alert('Something went wrong deleting the document.'));
     }
 
+    const LAST_DOCUMENT_MESSAGE = 'A student record must have at least one document. Upload another document first, or use Replace to change this file.';
+
+    function showLastDocumentMessage(message) {
+        if (addDocumentFeedback) addDocumentFeedback.textContent = message || LAST_DOCUMENT_MESSAGE;
+        const docsTab = document.getElementById('edit-docs-tab');
+        if (docsTab) bootstrap.Tab.getOrCreateInstance(docsTab).show();
+    }
+
+    function setModalRowFile(documentId, fileName, filePath) {
+        const row = modalDocumentList && modalDocumentList.querySelector(`.document-row[data-document-id="${documentId}"]`);
+        if (!row) return;
+        const nameEl = row.querySelector('.document-name');
+        if (nameEl) nameEl.textContent = fileName;
+        const downloadLink = row.querySelector('a[title="Download file"]');
+        if (downloadLink) downloadLink.href = filePath;
+        row.dataset.filePath = filePath;
+    }
+
+    function stageReplacement(documentId, data, replacedPath) {
+        const id = String(documentId);
+        const doc = storedDocs.find((d) => d.document_id === id);
+        if (!doc) {
+            cleanupStagedFile(data.file_path, '', '');
+            return;
+        }
+        const previous = pendingReplacements[id];
+        if (previous) cleanupStagedFile(previous.file_path, '', '');
+        const original = previous ? previous.original : {
+            file_name: doc.file_name,
+            file_path: doc.file_path,
+            requirement_code: doc.requirement_code,
+        };
+        pendingReplacements[id] = {
+            original: original,
+            file_name: data.file_name,
+            file_path: data.file_path,
+            requirement_code: data.requirement_code || null,
+        };
+        doc.file_name = data.file_name;
+        doc.file_path = data.file_path;
+        doc.requirement_code = data.requirement_code || null;
+        setModalRowFile(id, data.file_name, data.file_path);
+        if (replacedPath && replacedPath === currentPreviewPath) hideDocumentPreview();
+        setStatus('"' + data.file_name + '" will replace "' + original.file_name + '" when you click UPDATE.'
+            + (data.warning ? ' ' + data.warning : ''), data.warning ? 'warning' : 'success');
+        refreshDocumentsUi();
+    }
+
+    function discardPendingReplacements() {
+        Object.keys(pendingReplacements).forEach((id) => {
+            const p = pendingReplacements[id];
+            cleanupStagedFile(p.file_path, '', '');
+            const doc = storedDocs.find((d) => d.document_id === id)
+                || (pendingDeletedDocs.find((x) => x.doc.document_id === id) || {}).doc;
+            if (doc) {
+                doc.file_name = p.original.file_name;
+                doc.file_path = p.original.file_path;
+                doc.requirement_code = p.original.requirement_code;
+            }
+            setModalRowFile(id, p.original.file_name, p.original.file_path);
+            const pending = pendingDeletedDocs.find((x) => x.doc.document_id === id);
+            if (pending && pending.row) {
+                const nameEl = pending.row.querySelector('.document-name');
+                if (nameEl) nameEl.textContent = p.original.file_name;
+                pending.row.dataset.filePath = p.original.file_path;
+            }
+        });
+        pendingReplacements = {};
+    }
+
+    async function commitPendingReplacements() {
+        const ids = Object.keys(pendingReplacements);
+        for (const id of ids) {
+            const p = pendingReplacements[id];
+            const data = new FormData();
+            data.append('document_id', id);
+            data.append('file_path', p.file_path);
+            data.append('file_name', p.file_name);
+            data.append('requirement_code', p.requirement_code || '');
+            const res = await fetch(ACTIONS_URL + '?action=commit_replace_document', { method: 'POST', body: data });
+            const result = await parseJsonResponse(res);
+            if (!result.success) {
+                return result.message || ('Could not replace "' + p.original.file_name + '".');
+            }
+            delete pendingReplacements[id];
+        }
+        return null;
+    }
+
+    function stageDeleteDocument(documentId, deletedPath) {
+        const doc = storedDocs.find((d) => d.document_id === String(documentId));
+        if (!doc) return;
+        if (pendingReplacements[String(documentId)]) {
+            const p = pendingReplacements[String(documentId)];
+            cleanupStagedFile(p.file_path, '', '');
+            doc.file_name = p.original.file_name;
+            doc.file_path = p.original.file_path;
+            doc.requirement_code = p.original.requirement_code;
+            setModalRowFile(String(documentId), p.original.file_name, p.original.file_path);
+            delete pendingReplacements[String(documentId)];
+        }
+        const row = modalDocumentList && modalDocumentList.querySelector(`.document-row[data-document-id="${documentId}"]`);
+        const placeholder = document.createComment('pending-delete-' + documentId);
+        if (row) row.replaceWith(placeholder);
+        pendingDeletedDocs.push({ doc: doc, row: row, placeholder: placeholder });
+        storedDocs = storedDocs.filter((d) => d.document_id !== String(documentId));
+        if (modalDocumentList && !modalDocumentList.querySelector('.document-row') && !modalDocumentList.querySelector('.pending-delete-empty')) {
+            const empty = document.createElement('div');
+            empty.className = 'text-muted document-empty-state pending-delete-empty';
+            empty.textContent = 'No documents uploaded yet.';
+            modalDocumentList.appendChild(empty);
+        }
+        if (deletedPath && deletedPath === currentPreviewPath) hideDocumentPreview();
+        refreshDocumentsUi();
+        setStatus('"' + doc.file_name + '" will be deleted when you click UPDATE.', 'success');
+    }
+
+    function restorePendingDeletes() {
+        if (!pendingDeletedDocs.length) return;
+        const emptyState = modalDocumentList && modalDocumentList.querySelector('.pending-delete-empty');
+        if (emptyState) emptyState.remove();
+        pendingDeletedDocs.slice().reverse().forEach((p) => {
+            if (p.row && p.placeholder.parentNode) p.placeholder.replaceWith(p.row);
+            else if (p.placeholder.parentNode) p.placeholder.remove();
+            if (!storedDocs.some((d) => d.document_id === p.doc.document_id)) storedDocs.push(p.doc);
+        });
+        pendingDeletedDocs = [];
+    }
+
+    async function deletePendingDocuments() {
+        while (pendingDeletedDocs.length) {
+            const p = pendingDeletedDocs[0];
+            const data = new FormData();
+            data.append('document_id', p.doc.document_id);
+            const res = await fetch(ACTIONS_URL + '?action=delete_document_record', { method: 'POST', body: data });
+            const result = await parseJsonResponse(res);
+            if (!result.success) {
+                return result.message || ('Could not delete "' + p.doc.file_name + '".');
+            }
+            pendingDeletedDocs.shift();
+        }
+        return null;
+    }
+
     function showConfirmDeleteModal(documentId, fileName, deletedPath) {
+        if (storedDocs.length + stagedDocs.length <= 1) {
+            showLastDocumentMessage();
+            return;
+        }
+        if (addDocumentFeedback && addDocumentFeedback.textContent === LAST_DOCUMENT_MESSAGE) addDocumentFeedback.textContent = '';
         const modalEl = document.getElementById('confirmDeleteDocModal');
         if (!modalEl) {
-            if (confirm('Delete this document? This cannot be undone.')) {
-                performDeleteDocument(documentId, deletedPath);
+            if (confirm('Delete this document? It will be removed when you click UPDATE.')) {
+                stageDeleteDocument(documentId, deletedPath);
             }
             return;
         }
@@ -1302,7 +1707,7 @@ document.addEventListener('DOMContentLoaded', function () {
         confirmBtn.parentNode.replaceChild(freshBtn, confirmBtn);
         freshBtn.addEventListener('click', () => {
             bsModal.hide();
-            performDeleteDocument(documentId, deletedPath);
+            stageDeleteDocument(documentId, deletedPath);
         });
     }
 
@@ -1368,6 +1773,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const formDataRep = new FormData();
             formDataRep.append('document_id', documentId);
             formDataRep.append('document', file);
+            formDataRep.append('stage', '1');
 
             setStatus('Uploading replacement... please wait.', 'loading');
             toggleSaveDisabled(true);
@@ -1378,7 +1784,9 @@ document.addEventListener('DOMContentLoaded', function () {
             })
                 .then(parseJsonResponse)
                 .then((data) => {
-                    if (data.success) {
+                    if (data.success && data.staged) {
+                        stageReplacement(documentId, data, replacedPath);
+                    } else if (data.success) {
                         getRowsForDocument(documentId).forEach((row) => {
                             const nameEl = row.querySelector('.document-name');
                             if (nameEl) nameEl.textContent = data.file_name;

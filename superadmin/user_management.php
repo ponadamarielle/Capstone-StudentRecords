@@ -2,6 +2,7 @@
 <?php
 include '../security_headers.php';
 session_start();
+require_once __DIR__ . '/../activity_log.php';
 
 $envFile = __DIR__ . '/../.env';
 
@@ -60,8 +61,8 @@ if (isset($_POST['add_admin'])) {
         die("CSRF validation failed.");
     }
 
-    $name = trim($_POST['name']);
-    $email = trim($_POST['email']);
+    $name = trim(preg_replace('/\s+/u', ' ', $_POST['name'] ?? ''));
+    $email = trim($_POST['email'] ?? '');
 
     $pass = substr(str_shuffle('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'), 0, 8);
     $hashedPass = password_hash($pass, PASSWORD_DEFAULT);
@@ -69,12 +70,21 @@ if (isset($_POST['add_admin'])) {
     $role = "Admin";
     $status = "Active";
 
+    if ($name === '' || !preg_match("/^[\p{L}][\p{L} .'\-]*$/u", $name) || mb_strlen($name) > 100) {
+        $nameError = "Name can only contain letters (including ñ), spaces, hyphens (-), periods (.) and apostrophes (').";
+    }
+    if ($email === '' || filter_var($email, FILTER_VALIDATE_EMAIL) === false || !preg_match('/^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/', $email)) {
+        $emailError = "Please enter a valid email address (e.g. name@gmail.com).";
+    }
+
     $checkStmt = $conn->prepare("SELECT id FROM accounts WHERE email = ?");
     $checkStmt->bind_param("s", $email);
     $checkStmt->execute();
     $checkStmt->store_result();
 
-    if ($checkStmt->num_rows > 0) {
+    if (isset($nameError) || isset($emailError)) {
+        $error = $nameError ?? $emailError;
+    } elseif ($checkStmt->num_rows > 0) {
         $error = "This email is already associated with an existing account.";
     } else {
         $insertStmt = $conn->prepare("INSERT INTO accounts (name, email, pass, role, status) VALUES (?, ?, ?, ?, ?)");
@@ -143,13 +153,33 @@ if (isset($_POST['toggle_status']) && $_POST['toggle_status'] === '1') {
             $stmt = $conn->prepare("UPDATE accounts SET status=? WHERE email=? AND role='Admin'");
             $stmt->bind_param("ss", $newStatus, $email);
             $stmt->execute();
+            $changed = $stmt->affected_rows > 0;
             $stmt->close();
         }
     } else {
         $stmt = $conn->prepare("UPDATE accounts SET status=? WHERE email=? AND role='Admin'");
         $stmt->bind_param("ss", $newStatus, $email);
         $stmt->execute();
+        $changed = $stmt->affected_rows > 0;
         $stmt->close();
+    }
+
+    if (!empty($changed)) {
+        $nameStmt = $conn->prepare("SELECT name FROM accounts WHERE email=? LIMIT 1");
+        $nameStmt->bind_param("s", $email);
+        $nameStmt->execute();
+        $accountName = $nameStmt->get_result()->fetch_assoc()['name'] ?? $email;
+        $nameStmt->close();
+        logActivity('account_status_changed',
+            ($newStatus === 'Active' ? 'Activated' : 'Deactivated') . ' Admin account of ' . $accountName . ' (' . $email . ')',
+            [
+                'target_type' => 'account',
+                'details'     => [
+                    'email'   => $email,
+                    'changes' => ['Status' => ['from' => $currentStatus, 'to' => $newStatus]],
+                    'effect'  => $newStatus === 'Active' ? 'The Admin can sign in again.' : 'The Admin is signed out on their next page load and can no longer sign in.',
+                ],
+            ]);
     }
 }
 ?>
@@ -235,7 +265,7 @@ if (isset($_POST['toggle_status']) && $_POST['toggle_status'] === '1') {
       </div>
       <div class="modal-body">
 
-        <form name="signin" method="POST" action="<?php echo htmlspecialchars($_SERVER['PHP_SELF']); ?>">
+        <form name="signin" id="addAdminForm" method="POST" action="<?php echo htmlspecialchars($_SERVER['PHP_SELF']); ?>" novalidate>
         <input
             type="hidden"
             name="csrf_token"
@@ -243,16 +273,22 @@ if (isset($_POST['toggle_status']) && $_POST['toggle_status'] === '1') {
         >
             <div class="input-container">
             <div class="form-floating mb-3">
-                <input type="text" class="form-control" id="name" name="name" placeholder="name" required>
+                <input type="text" class="form-control<?= isset($nameError) ? ' is-invalid' : '' ?>" id="name" name="name" placeholder="name" required
+                       maxlength="100" autocomplete="off"
+                       value="<?= isset($error) && isset($_POST['add_admin']) ? htmlspecialchars($_POST['name'] ?? '') : '' ?>">
                 <label for="name">Name</label>
+                <div class="invalid-feedback" id="nameFeedback"><?= isset($nameError) ? htmlspecialchars($nameError) : '' ?></div>
             </div>
 
             <div class="form-floating mb-3">
-                <input type="email" class="form-control" id="email" name="email" placeholder="email" required>
+                <input type="email" class="form-control<?= isset($emailError) ? ' is-invalid' : '' ?>" id="email" name="email" placeholder="email" required
+                       maxlength="150" autocomplete="off"
+                       value="<?= isset($error) && isset($_POST['add_admin']) ? htmlspecialchars($_POST['email'] ?? '') : '' ?>">
                 <label for="email">Email Address</label>
+                <div class="invalid-feedback" id="emailFeedback"><?= isset($emailError) ? htmlspecialchars($emailError) : '' ?></div>
             </div>
 
-            <?php if (isset($error) && isset($_POST['add_admin'])): ?>
+            <?php if (isset($error) && isset($_POST['add_admin']) && !isset($nameError) && !isset($emailError)): ?>
                 <div class="alert alert-danger"><?= htmlspecialchars($error) ?></div>
             <?php endif; ?>
             <button type="submit" name="add_admin" class="btn btn-custom w-100 mt-3">Create Account</button>

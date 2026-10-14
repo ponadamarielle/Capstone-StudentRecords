@@ -43,6 +43,9 @@ if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] 
     exit();
 }
 
+require_once __DIR__ . '/../account_guard.php';
+requireActiveAccount($isAjaxAction);
+
 if (!$isAjaxAction && isset($_SESSION['is_first_login']) && $_SESSION['is_first_login'] == 1) {
     header("Location: ../change_password.php");
     exit();
@@ -605,6 +608,16 @@ function handleUpdateStatus($conn)
         return;
     }
 
+    $current = activityFetchStudent($conn, (int) $studentId);
+    if (!$current) {
+        echo json_encode(['success' => false, 'message' => 'Student not found.']);
+        return;
+    }
+    if (in_array($current['status'] ?? '', ARCHIVED_STATUSES, true)) {
+        echo json_encode(['success' => false, 'message' => 'This student is archived as GRADUATE. Archived records cannot be restored or changed.']);
+        return;
+    }
+
     $sql = "UPDATE students SET status = ? WHERE student_id = ?";
     $stmt = mysqli_prepare($conn, $sql);
     mysqli_stmt_bind_param($stmt, 'si', $status, $studentId);
@@ -666,6 +679,12 @@ function handleAddStudent($conn)
         return;
     }
 
+    $studentNumber = strtoupper($studentNumber);
+    if (!preg_match('/^\d{4}-\d{5}-BN-\d$/', $studentNumber)) {
+        echo json_encode(['success' => false, 'invalid_student_number' => true, 'message' => 'Invalid student number format. Use 0000-00000-BN-0 (e.g. 2021-00123-BN-0).']);
+        return;
+    }
+
     if (!preg_match('/^\d-\d$/', $yearSection)) {
         echo json_encode(['success' => false, 'message' => 'Year & Section must be one number, a dash, and one number (e.g. 1-1).']);
         return;
@@ -723,6 +742,11 @@ function handleAddStudent($conn)
     $submittedDocs = json_decode($_POST['documents'] ?? '[]', true);
     if (!is_array($submittedDocs)) {
         $submittedDocs = [];
+    }
+
+    if (count($submittedDocs) === 0) {
+        echo json_encode(['success' => false, 'no_documents' => true, 'message' => 'Please upload at least one document before saving the student record.']);
+        return;
     }
 
     $documents   = [];
@@ -854,7 +878,8 @@ function handleAddStudent($conn)
         if (in_array('graduation_year', studentColumns($conn), true)) {
             $enteredLevel = yearLevelOf($yearSection);
             $autoEndYear  = expectedGraduationYear(['student_number' => $studentNumber]);
-            if ($enteredLevel !== null && graduationYearForLevel($enteredLevel) !== $autoEndYear) {
+            $autoLevel    = $autoEndYear !== null ? yearLevelForGraduation($autoEndYear) : null;
+            if ($enteredLevel !== null && $enteredLevel !== $autoLevel) {
                 $gradForLevel = graduationYearForLevel($enteredLevel);
                 $gradStmt = mysqli_prepare($conn, "UPDATE students SET graduation_year = ? WHERE student_id = ?");
                 mysqli_stmt_bind_param($gradStmt, "ii", $gradForLevel, $studentId);
@@ -1221,6 +1246,15 @@ include 'navbar.php';
                     </div>
 
                     <div class="d-flex align-items-center mb-3">
+                        <label for="graduation_sy_display" class="form-label form-label-custom">
+                            Graduation SY:
+                        </label>
+                        <input type="text" id="graduation_sy_display" class="form-control input-custom graduation-display bg-light"
+                               readonly tabindex="-1" placeholder="Based on the student number">
+                    </div>
+                    <small id="graduationNote" class="text-danger d-block mb-3"></small>
+
+                    <div class="d-flex align-items-center mb-3">
                         <label for="sex" class="form-label form-label-custom">
                             Gender:
                         </label>
@@ -1411,7 +1445,7 @@ include 'navbar.php';
     'groups'       => getDocumentRequirementGroups(),
     'tracks'       => getAdmissionTracks(),
 ]), ENT_QUOTES, 'UTF-8') ?>"></div>
-<script src="../js/add-student-ocr.js?v=<?= @filemtime(__DIR__ . '/../js/add-student.js') ?>"></script>
+<script src="../js/add-student.js?v=<?= @filemtime(__DIR__ . '/../js/add-student.js') ?>"></script>
 <script src="../js/student-directory-filters.js?v=<?= @filemtime(__DIR__ . '/../js/student-directory-filters.js') ?>"></script>
 <script src="../js/student-directory.js?v=<?= @filemtime(__DIR__ . '/../js/student-directory.js') ?>"></script>
     </div>

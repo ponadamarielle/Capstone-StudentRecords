@@ -243,6 +243,90 @@ document.addEventListener('DOMContentLoaded', function () {
             const deleting = !!(e.inputType && e.inputType.indexOf('delete') === 0);
             const formatted = formatYearSection(yearSectionInput.value, deleting);
             if (formatted !== yearSectionInput.value) yearSectionInput.value = formatted;
+            updateGraduationDisplay();
+        });
+    }
+
+    const PROGRAM_YEARS = 4;
+    const graduationDisplay = document.getElementById('graduation_sy_display');
+    const graduationNote = document.getElementById('graduationNote');
+
+    function currentSchoolYearEnd() {
+        const now = new Date();
+        const afterJuly = now.getMonth() > 6;
+        return now.getFullYear() + (afterJuly ? 1 : 0);
+    }
+
+    function entryYearOf(studentNumber) {
+        const match = String(studentNumber || '').match(/^\s*((?:19|20)\d{2})/);
+        return match ? parseInt(match[1], 10) : null;
+    }
+
+    function clampLevel(level) {
+        return Math.max(1, Math.min(PROGRAM_YEARS, level));
+    }
+
+    function autoGraduationInfo() {
+        const entry = entryYearOf(studentNumberInput ? studentNumberInput.value : '');
+        if (entry === null) return null;
+        const endYear = entry + PROGRAM_YEARS;
+        const current = currentSchoolYearEnd();
+        return {
+            endYear: endYear,
+            level: clampLevel(PROGRAM_YEARS - (endYear - current)),
+            graduated: endYear < current,
+        };
+    }
+
+    function enteredLevel() {
+        const match = String(yearSectionInput ? yearSectionInput.value : '').match(/^(\d)/);
+        return match ? parseInt(match[1], 10) : null;
+    }
+
+    function graduationInfo() {
+        const auto = autoGraduationInfo();
+        if (!auto) return null;
+        const level = enteredLevel();
+        if (level === null || level === auto.level) return auto;
+        const current = currentSchoolYearEnd();
+        return { endYear: current + (PROGRAM_YEARS - clampLevel(level)), level: clampLevel(level), graduated: false };
+    }
+
+    function schoolYearLabel(endYear) {
+        return 'SY ' + (endYear - 1) + '-' + endYear;
+    }
+
+    function updateGraduationDisplay() {
+        if (!graduationDisplay) return;
+        const info = graduationInfo();
+        graduationDisplay.value = info ? schoolYearLabel(info.endYear) : '';
+        if (graduationNote) {
+            graduationNote.textContent = info && info.graduated
+                ? 'This student has already graduated. The record will be moved to Archive as GRADUATE after saving.'
+                : '';
+        }
+    }
+
+    function syncYearFromStudentNumber() {
+        const auto = autoGraduationInfo();
+        if (auto && yearSectionInput) {
+            const sectionMatch = String(yearSectionInput.value || '').match(/^\d-(\d)$/);
+            yearSectionInput.value = auto.level + '-' + (sectionMatch ? sectionMatch[1] : '');
+            yearSectionInput.classList.remove('is-invalid');
+        }
+        updateGraduationDisplay();
+    }
+
+    if (studentNumberInput) {
+        studentNumberInput.addEventListener('input', function () {
+            if (!studentNumberInput.value.trim()) {
+                numberIsDuplicate = false;
+                if (numberFeedback) numberFeedback.textContent = '';
+                studentNumberInput.classList.remove('is-invalid');
+            }
+            if (entryYearOf(studentNumberInput.value) !== null || !studentNumberInput.value) {
+                syncYearFromStudentNumber();
+            }
         });
     }
 
@@ -485,6 +569,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (numberFeedback) numberFeedback.textContent = '';
             if (studentNumberInput) studentNumberInput.classList.remove('is-invalid');
         }
+        updateGraduationDisplay();
     }
 
     function populateFields(extracted) {
@@ -494,14 +579,33 @@ document.addEventListener('DOMContentLoaded', function () {
             const value = extracted[key];
             if (!value) return;
             const el = form.elements[key];
-            if (el && !el.value) {
+            if (!el) return;
+            if (key === 'year_section') {
+                const found = String(value).match(/(\d)\s*-\s*(\d)/);
+                const current = String(el.value || '').trim();
+                if (!found || /^\d-\d$/.test(current)) return;
+                const currentYear = (current.match(/^(\d)/) || [])[1];
+                el.value = (currentYear || found[1]) + '-' + found[2];
+                el.classList.remove('is-invalid');
+                applied.push(key);
+                return;
+            }
+            if (!el.value) {
                 el.value = value;
                 applied.push(key);
             }
         });
 
-        if (extracted.student_number) {
+        if (applied.indexOf('student_number') !== -1 && studentNumberInput) {
+            studentNumberInput.value = maskStudentNumber(studentNumberInput.value, false);
+            checkStudentNumber(studentNumberInput.value);
+        } else if (extracted.student_number) {
             checkStudentNumber(extracted.student_number);
+        }
+        if (applied.indexOf('student_number') !== -1) {
+            syncYearFromStudentNumber();
+        } else {
+            updateGraduationDisplay();
         }
         return applied;
     }
@@ -627,7 +731,7 @@ document.addEventListener('DOMContentLoaded', function () {
     function renderRequirementChecklist() {
         if (!requirementChecklist) return;
         requirementChecklist.innerHTML = '';
-        if (!REQUIREMENTS.length) return;
+        if (!REQUIREMENTS.length || uploadedDocuments.length === 0) return;
 
         const required = REQUIREMENTS.filter(isRequiredForTrack);
         const attachedRequired = required.filter(function (r) { return findDocByRequirement(r.code, -1) !== -1; });
@@ -690,14 +794,64 @@ document.addEventListener('DOMContentLoaded', function () {
 
     rerenderDocumentList();
 
+    const STUDENT_NUMBER_FORMAT = /^\d{4}-\d{5}-BN-\d$/;
+    const STUDENT_NUMBER_MESSAGE = 'Invalid student number format. Use 0000-00000-BN-0 (e.g. 2021-00123-BN-0).';
+    let numberFormatInvalid = false;
+
+    function validateStudentNumberFormat() {
+        if (!studentNumberInput) return true;
+        const value = studentNumberInput.value.trim().toUpperCase();
+        numberFormatInvalid = value !== '' && !STUDENT_NUMBER_FORMAT.test(value);
+        if (numberFormatInvalid) {
+            if (numberFeedback) numberFeedback.textContent = STUDENT_NUMBER_MESSAGE;
+            studentNumberInput.classList.add('is-invalid');
+        } else if (!numberIsDuplicate) {
+            if (numberFeedback && numberFeedback.textContent === STUDENT_NUMBER_MESSAGE) numberFeedback.textContent = '';
+            studentNumberInput.classList.remove('is-invalid');
+        }
+        return !numberFormatInvalid;
+    }
+
+    function maskStudentNumber(value, deleting) {
+        const digits = String(value || '').replace(/\D/g, '').slice(0, 10);
+        let out = digits.slice(0, 4);
+        if (digits.length > 4 || (digits.length === 4 && !deleting)) out += '-';
+        if (digits.length > 4) out += digits.slice(4, 9);
+        if (digits.length > 9 || (digits.length === 9 && !deleting)) out += '-BN-';
+        if (digits.length > 9) out += digits.slice(9, 10);
+        return out;
+    }
+
     if (studentNumberInput) {
+        studentNumberInput.addEventListener('beforeinput', function (e) {
+            if (e.data && /[^0-9]/.test(e.data) && e.inputType === 'insertText') {
+                e.preventDefault();
+            }
+        });
+        studentNumberInput.addEventListener('input', function (e) {
+            const deleting = !!(e.inputType && e.inputType.indexOf('delete') === 0);
+            const masked = maskStudentNumber(studentNumberInput.value, deleting);
+            if (masked !== studentNumberInput.value) {
+                studentNumberInput.value = masked;
+                studentNumberInput.setSelectionRange(masked.length, masked.length);
+            }
+        });
         studentNumberInput.addEventListener('blur', function () {
             const value = studentNumberInput.value.trim();
-            if (value) checkStudentNumber(value);
+            if (value && validateStudentNumberFormat()) checkStudentNumber(value);
+        });
+        studentNumberInput.addEventListener('input', function () {
+            if (numberFormatInvalid && STUDENT_NUMBER_FORMAT.test(studentNumberInput.value.trim().toUpperCase())) {
+                validateStudentNumberFormat();
+            }
         });
     }
 
     function checkStudentNumber(value) {
+        if (!STUDENT_NUMBER_FORMAT.test(String(value).trim().toUpperCase())) {
+            validateStudentNumberFormat();
+            return;
+        }
         fetch(ACTIONS_URL + '?action=check_student_number&student_number=' + encodeURIComponent(value))
             .then((res) => res.json())
             .then((data) => {
@@ -775,6 +929,21 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
 
+            if (!validateStudentNumberFormat()) {
+                setStatus(STUDENT_NUMBER_MESSAGE, 'error');
+                const studentInfoTab = document.getElementById('student-info-tab');
+                if (studentInfoTab) bootstrap.Tab.getOrCreateInstance(studentInfoTab).show();
+                studentNumberInput.focus();
+                return;
+            }
+
+            if (uploadedDocuments.length === 0) {
+                setStatus('Please upload at least one document before saving the student record.', 'error');
+                const documentsTab = document.getElementById('documents-tab');
+                if (documentsTab) bootstrap.Tab.getOrCreateInstance(documentsTab).show();
+                return;
+            }
+
             if (numberIsDuplicate) {
                 setStatus('Cannot save: student number already exists.', 'error');
                 return;
@@ -815,14 +984,11 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById('confirmSummaryDocs').textContent = summary.docCount + ' document(s)';
         const gradEl = document.getElementById('confirmSummaryGraduation');
         if (gradEl) {
-            const entryMatch = String(summary.studentNumber || '').match(/^\s*((?:19|20)\d{2})/);
-            const endYear = entryMatch ? parseInt(entryMatch[1], 10) + 4 : null;
-            const today = new Date();
-            const ended = endYear !== null && today > new Date(endYear, 6, 31, 23, 59, 59);
-            gradEl.textContent = endYear === null ? '—'
-                : 'SY ' + (endYear - 1) + '-' + endYear
-                    + (ended ? ' (already ended: this student will be moved to Archive as GRADUATE after saving)' : '');
-            gradEl.classList.toggle('text-danger', ended);
+            const info = graduationInfo();
+            gradEl.textContent = !info ? '—'
+                : schoolYearLabel(info.endYear)
+                    + (info.graduated ? ' (already ended: this student will be moved to Archive as GRADUATE after saving)' : '');
+            gradEl.classList.toggle('text-danger', !!(info && info.graduated));
         }
         const trackEl = document.getElementById('confirmSummaryTrack');
         if (trackEl) trackEl.textContent = ADMISSION_TRACKS[currentTrack()] || '—';
@@ -870,6 +1036,9 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (data.duplicate) {
                         numberIsDuplicate = true;
                         studentNumberInput.classList.add('is-invalid');
+                    }
+                    if (data.invalid_student_number) {
+                        validateStudentNumberFormat();
                     }
                     if (data.duplicate_document) {
                         const documentsTab = document.getElementById('documents-tab');
@@ -941,6 +1110,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 clearRequiredFieldErrors();
                 numberIsDuplicate = false;
                 if (numberFeedback) numberFeedback.textContent = '';
+                updateGraduationDisplay();
                 setStatus('', '');
             }
             recordSaved = false;
