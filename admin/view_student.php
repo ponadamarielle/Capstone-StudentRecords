@@ -677,7 +677,7 @@ function splitFullName($name)
 
 function minimumBirthDate()
 {
-    return date('Y-m-d', strtotime('-17 years'));
+    return ((int) date('Y') - 17) . '-12-31';
 }
 
 function handleUpdateStudentInfo($conn)
@@ -715,7 +715,7 @@ function handleUpdateStudentInfo($conn)
     $sex         = trim($_POST['sex'] ?? '');
     $dob         = dateOfBirthForDb(trim($_POST['date_of_birth'] ?? ''));
     if ($dob !== null && $dob > minimumBirthDate()) {
-        echo json_encode(['success' => false, 'message' => 'Date of Birth is too recent. The student must be at least 17 years old.']);
+        echo json_encode(['success' => false, 'message' => 'Date of Birth is too recent. The student must turn at least 17 years old this year.']);
         return;
     }
     $pob         = trim($_POST['place_of_birth'] ?? '');
@@ -1489,7 +1489,7 @@ if (!empty($issuedInfo['uploaded_at'])) {
 }
 $issuedBy = $issuedInfo['added_by'] ?? '';
 
-$statusLabels = ['active' => 'Enrollee', 'graduated' => 'Graduate', 'inactive' => 'In-active', 'onleave' => 'On-leave'];
+$statusLabels = ['enrollee' => 'Enrollee', 'active' => 'Enrollee', 'graduated' => 'Graduate', 'inactive' => 'In-active', 'onleave' => 'On-leave'];
 $savedGradYear    = !empty($student['graduation_year']) ? (int) $student['graduation_year'] : null;
 $expectedGradYear = expectedGraduationYear($student);
 $gradYearOptions  = range(currentSchoolYearEndYear() - 1, currentSchoolYearEndYear() + 6);
@@ -1524,6 +1524,8 @@ include 'navbar.php';
     <link href="../css/navbar-admin.css" rel="stylesheet">
     <link href="../css/student-directory-admin.css?v=<?= @filemtime(__DIR__ . '/../css/student-directory-admin.css') ?>" rel="stylesheet">
     <link href="../css/view-student.css?v=<?= @filemtime(__DIR__ . '/../css/view-student.css') ?>" rel="stylesheet">
+    <link href="../css/scanner.css?v=<?= @filemtime(__DIR__ . '/../css/scanner.css') ?>" rel="stylesheet">
+    <link href="../css/student-report.css?v=<?= @filemtime(__DIR__ . '/../css/student-report.css') ?>" rel="stylesheet">
 </head>
 <body data-student-id="<?= (int) $studentId ?>">
     <div class="view-container">
@@ -1544,6 +1546,9 @@ include 'navbar.php';
                 <div class="view-name"><?= htmlspecialchars($student['name']) ?></div>
                 <div class="view-number"><?= htmlspecialchars($student['student_number']) ?></div>
                 <div class="view-course"><?= htmlspecialchars($student['course']) ?></div>
+                <button class="btn-add btn-report" type="button" id="generateReportBtn" data-student-id="<?= (int) $studentId ?>">
+                    <i class="bi bi-file-earmark-pdf"></i> GENERATE REPORT
+                </button>
             </div>
 
             <div class="view-details">
@@ -1661,7 +1666,7 @@ include 'navbar.php';
                     <h5 class="modal-title add-title">Update Student Record</h5>
 
                     <div class="header-btn-group">
-                        <button type="button" class="btn scan-document-btn" disabled title="Coming soon">
+                        <button type="button" class="btn scan-document-btn">
                             SCAN DOCUMENT
                         </button>
 
@@ -1764,7 +1769,7 @@ include 'navbar.php';
                                                     <label for="edit_date_of_birth" class="form-label form-label-custom">Date of Birth:</label>
                                                     <input type="date" id="edit_date_of_birth" name="date_of_birth" class="form-control input-custom"
                                                            value="<?= htmlspecialchars($student['date_of_birth'] ?? '') ?>" min="1900-01-01" max="<?= minimumBirthDate() ?>"
-                                                           title="The student must be at least 17 years old">
+                                                           title="The student must turn at least 17 years old this year">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_place_of_birth" class="form-label form-label-custom">Place of Birth:</label>
@@ -1942,5 +1947,7 @@ include 'navbar.php';
         'documents'    => $clientDocuments,
     ]), ENT_QUOTES, 'UTF-8') ?>"></div>
     <script src="../js/view-student.js?v=<?= @filemtime(__DIR__ . '/../js/view-student.js') ?>"></script>
+    <script src="../js/scanner.js?v=<?= @filemtime(__DIR__ . '/../js/scanner.js') ?>"></script>
+    <script src="../js/student-report.js?v=<?= @filemtime(__DIR__ . '/../js/student-report.js') ?>"></script>
 </body>
 </html>

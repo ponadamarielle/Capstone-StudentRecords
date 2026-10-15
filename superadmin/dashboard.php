@@ -56,12 +56,12 @@ function dashboardStats($conn)
     };
 
     $total     = $count("SELECT COUNT(*) FROM students");
-    $enrollees = $count("SELECT COUNT(*) FROM students WHERE status = 'active' OR status IS NULL OR status = ''");
+    $enrollees = $count("SELECT COUNT(*) FROM students WHERE (status IN ('enrollee', 'active') OR status IS NULL OR status = '')");
     $graduates = $count("SELECT COUNT(*) FROM students WHERE status = 'graduated'");
 
     $enrolleeRows = [];
     $result = mysqli_query($conn, "SELECT student_id, admission_track FROM students
-                                   WHERE status = 'active' OR status IS NULL OR status = ''");
+                                   WHERE (status IN ('enrollee', 'active') OR status IS NULL OR status = '')");
     while ($result && ($row = mysqli_fetch_assoc($result))) {
         $enrolleeRows[] = $row;
     }

@@ -240,12 +240,37 @@ function schoolYearLabel($endYear)
     return 'SY ' . ((int) $endYear - 1) . '-' . (int) $endYear;
 }
 
+function migrateEnrolleeStatus($conn)
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+    try {
+        $result = mysqli_query($conn, "SHOW COLUMNS FROM students LIKE 'status'");
+        $column = $result ? mysqli_fetch_assoc($result) : null;
+        if ($column) {
+            $type = strtolower((string) $column['Type']);
+            $needsAlter = (strpos($type, 'enum(') === 0 && strpos($type, "'enrollee'") === false)
+                || (string) $column['Default'] !== 'enrollee';
+            if ($needsAlter) {
+                mysqli_query($conn, "ALTER TABLE students MODIFY status VARCHAR(20) NULL DEFAULT 'enrollee'");
+            }
+        }
+        mysqli_query($conn, "UPDATE students SET status = 'enrollee' WHERE status = 'active' OR status IS NULL OR status = ''");
+    } catch (Throwable $e) {
+        error_log('Enrollee status migration failed: ' . $e->getMessage());
+    }
+}
+
 function archiveGraduatedStudents($conn, $limit = 30)
 {
+    migrateEnrolleeStatus($conn);
     $hasColumn = in_array('graduation_year', studentColumns($conn), true);
     $result = mysqli_query($conn, "SELECT student_id, student_number"
         . ($hasColumn ? ", graduation_year" : "")
-        . " FROM students WHERE status = 'active' OR status IS NULL OR status = ''");
+        . " FROM students WHERE (status IN ('enrollee', 'active') OR status IS NULL OR status = '')");
     if (!$result) {
         return 0;
     }
@@ -330,7 +355,7 @@ function applyYearLevel($conn, $studentId)
 
 function updateYearLevels($conn)
 {
-    $result = mysqli_query($conn, "SELECT student_id FROM students WHERE status = 'active' OR status IS NULL OR status = ''");
+    $result = mysqli_query($conn, "SELECT student_id FROM students WHERE (status IN ('enrollee', 'active') OR status IS NULL OR status = '')");
     if (!$result) {
         return 0;
     }
@@ -436,8 +461,8 @@ function handleRestoreStudent($conn)
     mysqli_begin_transaction($conn);
     try {
         $studentStmt = mysqli_prepare($conn, studentHasArchivedAt($conn)
-            ? "UPDATE students SET status = 'active', archived_at = NULL WHERE student_id = ?"
-            : "UPDATE students SET status = 'active' WHERE student_id = ?");
+            ? "UPDATE students SET status = 'enrollee', archived_at = NULL WHERE student_id = ?"
+            : "UPDATE students SET status = 'enrollee' WHERE student_id = ?");
         mysqli_stmt_bind_param($studentStmt, "i", $studentId);
         if (!mysqli_stmt_execute($studentStmt)) {
             throw new Exception(mysqli_error($conn));
@@ -490,12 +515,12 @@ function handleRestoreStudent($conn)
             'target_type' => 'student',
             'target_id'   => $studentId,
             'details'     => [
-                'changes'         => ['Status' => ['from' => $student['status'], 'to' => 'active']],
+                'changes'         => ['Status' => ['from' => $student['status'], 'to' => 'enrollee']],
                 'documents_moved' => count($done),
             ],
         ]);
 
-    echo json_encode(['success' => true, 'message' => 'Student restored to the Student Directory.', 'status' => 'active']);
+    echo json_encode(['success' => true, 'message' => 'Student restored to the Student Directory.', 'status' => 'enrollee']);
 }
 
 if (realpath($_SERVER['SCRIPT_FILENAME'] ?? '') !== realpath(__FILE__)) {
@@ -655,7 +680,7 @@ if ($yearSectionResult) {
     }
 }
 
-$statusLabels = ['active' => 'ENROLLEE', 'graduated' => 'GRADUATE', 'inactive' => 'IN-ACTIVE', 'onleave' => 'ON-LEAVE'];
+$statusLabels = ['enrollee' => 'ENROLLEE', 'active' => 'ENROLLEE', 'graduated' => 'GRADUATE', 'inactive' => 'IN-ACTIVE', 'onleave' => 'ON-LEAVE'];
 
 include 'navbar.php';
 ?>

@@ -336,12 +336,6 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    if (scanBtn) {
-        scanBtn.addEventListener('click', function () {
-            uploadInput.click();
-        });
-    }
-
     function isPdfFile(file) {
         const extOk = /\.pdf$/i.test(file.name);
         const typeOk = !file.type || file.type === 'application/pdf';

@@ -603,7 +603,10 @@ function handleUpdateStatus($conn)
         return;
     }
 
-    if ($status !== 'active') {
+    if ($status === 'active') {
+        $status = 'enrollee';
+    }
+    if ($status !== 'enrollee') {
         echo json_encode(['success' => false, 'message' => 'GRADUATE is set by archiving the student.']);
         return;
     }
@@ -627,7 +630,7 @@ function handleUpdateStatus($conn)
         if (($before['status'] ?? '') !== $status) {
             $studentOpts = activityStudentOpts($conn, $studentId);
             logActivity('student_status_changed',
-                'Changed status of ' . activityStudentLabel($studentOpts) . ' to ' . strtoupper($status === 'active' ? 'Enrollee' : $status),
+                'Changed status of ' . activityStudentLabel($studentOpts) . ' to ' . strtoupper($status === 'enrollee' ? 'Enrollee' : $status),
                 $studentOpts + [
                     'target_type' => 'student',
                     'target_id'   => $studentId,
@@ -651,7 +654,7 @@ function buildFullName($lastName, $firstName, $middleName)
 
 function minimumBirthDate()
 {
-    return date('Y-m-d', strtotime('-17 years'));
+    return ((int) date('Y') - 17) . '-12-31';
 }
 
 function handleAddStudent($conn)
@@ -703,14 +706,14 @@ function handleAddStudent($conn)
     $sex              = trim($_POST['sex'] ?? '');
     $dob              = dateOfBirthForDb(trim($_POST['date_of_birth'] ?? ''));
     if ($dob !== null && $dob > minimumBirthDate()) {
-        echo json_encode(['success' => false, 'message' => 'Date of Birth is too recent. The student must be at least 17 years old.']);
+        echo json_encode(['success' => false, 'message' => 'Date of Birth is too recent. The student must turn at least 17 years old this year.']);
         return;
     }
     $placeOfBirth     = trim($_POST['place_of_birth'] ?? '');
     $address          = trim($_POST['address'] ?? '');
     $mobileNumber    = trim($_POST['mobile_number'] ?? '');
     $email            = trim($_POST['email'] ?? '');
-    $status           = 'active';
+    $status           = 'enrollee';
     $admissionTrack   = normalizeAdmissionTrack($_POST['admission_track'] ?? '');
 
     $photoBinary = null;
@@ -938,7 +941,7 @@ $search            = isset($_GET['search']) ? trim($_GET['search']) : '';
 $courseFilter      = isset($_GET['course']) ? trim($_GET['course']) : '';
 $yearSectionFilter = isset($_GET['year_section']) ? trim($_GET['year_section']) : '';
 
-$conditions = ["(status = 'active' OR status IS NULL OR status = '')"];
+$conditions = ["(status IN ('enrollee', 'active') OR status IS NULL OR status = '')"];
 $params     = [];
 $types      = '';
 
@@ -1010,7 +1013,7 @@ foreach (getCourseCatalog() as $catalogEntry) {
 }
 
 $yearSectionOptions = [];
-$yearSectionResult = mysqli_query($conn, "SELECT DISTINCT year_section FROM students WHERE (status = 'active' OR status IS NULL OR status = '') AND year_section IS NOT NULL AND year_section <> '' ORDER BY year_section ASC");
+$yearSectionResult = mysqli_query($conn, "SELECT DISTINCT year_section FROM students WHERE (status IN ('enrollee', 'active') OR status IS NULL OR status = '') AND year_section IS NOT NULL AND year_section <> '' ORDER BY year_section ASC");
 if ($yearSectionResult) {
     while ($row = mysqli_fetch_assoc($yearSectionResult)) {
         $yearSectionOptions[] = $row['year_section'];
@@ -1031,6 +1034,7 @@ include 'navbar.php';
     <link href="../css/font.css" rel="stylesheet">
     <link href="../css/navbar-admin.css" rel="stylesheet">
     <link href="../css/student-directory-admin.css?v=<?= @filemtime(__DIR__ . '/../css/student-directory-admin.css') ?>" rel="stylesheet">
+    <link href="../css/scanner.css?v=<?= @filemtime(__DIR__ . '/../css/scanner.css') ?>" rel="stylesheet">
 </head>
 
 <body>
@@ -1124,7 +1128,7 @@ include 'navbar.php';
                 <h5 class="modal-title add-title">Add New Student Record</h5>
 
                 <div class="header-btn-group">
-                    <button type="button" class="btn scan-document-btn" disabled title="Coming soon">
+                    <button type="button" class="btn scan-document-btn">
                         SCAN DOCUMENT
                     </button>
 
@@ -1281,7 +1285,7 @@ include 'navbar.php';
                         </label>
                         <input type="date" id="date_of_birth" name="date_of_birth" class="form-control input-custom"
                                min="1900-01-01" max="<?= minimumBirthDate() ?>"
-                               title="The student must be at least 17 years old">
+                               title="The student must turn at least 17 years old this year">
                     </div>
                     <div class="d-flex align-items-center mb-3">
                         <label for="place_of_birth" class="form-label form-label-custom">
@@ -1448,6 +1452,7 @@ include 'navbar.php';
 <script src="../js/add-student.js?v=<?= @filemtime(__DIR__ . '/../js/add-student.js') ?>"></script>
 <script src="../js/student-directory-filters.js?v=<?= @filemtime(__DIR__ . '/../js/student-directory-filters.js') ?>"></script>
 <script src="../js/student-directory.js?v=<?= @filemtime(__DIR__ . '/../js/student-directory.js') ?>"></script>
+<script src="../js/scanner.js?v=<?= @filemtime(__DIR__ . '/../js/scanner.js') ?>"></script>
     </div>
 </body>
 </html>

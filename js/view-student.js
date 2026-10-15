@@ -1040,7 +1040,6 @@ document.addEventListener('DOMContentLoaded', function () {
         if (uploadInput) uploadInput.click();
     }
 
-    if (scanBtn) scanBtn.addEventListener('click', triggerScan);
     if (uploadFileBtn) uploadFileBtn.addEventListener('click', triggerScan);
 
     function isPdfFile(file) {
