@@ -1402,6 +1402,25 @@ document.addEventListener('DOMContentLoaded', function () {
         el.hidden = !message;
     }
 
+    async function sendRequirementNotification() {
+        try {
+            const notifyForm = new FormData();
+            notifyForm.append('student_id', studentId);
+            const res = await fetch(ACTIONS_URL + '?action=notify_requirements', {
+                method: 'POST',
+                body: notifyForm,
+            });
+            const data = await parseJsonResponse(res);
+            const n = data && data.notification;
+            if (!n || n.skipped) return null;
+            const status = n.status ? ' (' + n.status + ')' : '';
+            if (n.sent) return { ok: true, text: 'Email notification sent to ' + n.recipient + status + '.' };
+            return { ok: false, text: 'Email notification was not sent' + status + ': ' + (n.error || 'unknown error') + '.' };
+        } catch (err) {
+            return null;
+        }
+    }
+
     async function submitUpdate() {
         if (addDocumentFeedback) addDocumentFeedback.textContent = '';
         toggleSaveDisabled(true);
@@ -1489,8 +1508,15 @@ document.addEventListener('DOMContentLoaded', function () {
             }
 
             recordSaved = true;
-            setStatus('Saved!', 'success');
-            location.reload();
+            setStatus('Saving changes... checking requirement status', 'loading');
+            const notice = await sendRequirementNotification();
+            if (!notice) {
+                setStatus('Saved!', 'success');
+                location.reload();
+                return;
+            }
+            setStatus('Saved! ' + notice.text, notice.ok ? 'success' : 'error');
+            setTimeout(() => location.reload(), notice.ok ? 2500 : 4500);
         } catch (err) {
             failSave(err.message || 'Error updating student record.');
         }
@@ -1815,6 +1841,43 @@ document.addEventListener('DOMContentLoaded', function () {
                     replaceDocumentInput.value = '';
                     activeRowForReplace = null;
                 });
+        });
+    }
+
+
+    const resendEmailBtn = document.getElementById('resendEmailBtn');
+    if (resendEmailBtn) {
+        resendEmailBtn.addEventListener('click', async function () {
+            const note = document.querySelector('[data-email-note]');
+            const noteText = document.querySelector('[data-email-note-text]');
+            const original = resendEmailBtn.innerHTML;
+            resendEmailBtn.disabled = true;
+            resendEmailBtn.textContent = 'SENDING...';
+            try {
+                const data = new FormData();
+                data.append('student_id', resendEmailBtn.dataset.studentId);
+                data.append('force', '1');
+                const res = await fetch(ACTIONS_URL + '?action=notify_requirements', { method: 'POST', body: data });
+                const result = await parseJsonResponse(res);
+                const n = (result && result.notification) || {};
+                if (result && result.last && note && noteText) {
+                    noteText.textContent = result.last.text;
+                    note.hidden = false;
+                    note.classList.toggle('text-danger', !result.last.success);
+                    note.classList.toggle('text-muted', !!result.last.success);
+                }
+                if (n.sent) {
+                    resendEmailBtn.hidden = true;
+                    window.alert('Email notification sent to ' + n.recipient + ' (' + n.status + ').');
+                } else {
+                    window.alert('Email notification was not sent: ' + (n.error || n.reason || (result && result.message) || 'unknown error') + '.');
+                }
+            } catch (err) {
+                window.alert('Email notification was not sent: ' + (err.message || 'unknown error') + '.');
+            } finally {
+                resendEmailBtn.disabled = false;
+                resendEmailBtn.innerHTML = original;
+            }
         });
     }
 

@@ -7,6 +7,7 @@ require_once __DIR__ . '/ai_extraction.php';
 require_once __DIR__ . '/archive.php';
 require_once __DIR__ . '/requirement_status.php';
 require_once __DIR__ . '/../activity_log.php';
+require_once __DIR__ . '/../student_notifications.php';
 
 if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] !== 'Admin') {
     header("Location: ../signin.php");
@@ -110,6 +111,9 @@ if ($action !== '') {
             break;
         case 'commit_replace_document':
             handleCommitReplaceDocument($conn);
+            break;
+        case 'notify_requirements':
+            handleNotifyRequirements($conn);
             break;
         default:
             echo json_encode(['success' => false, 'message' => 'Invalid action.']);
@@ -907,6 +911,17 @@ function studentHasGraduated($conn, $studentId)
     return $endYear !== null && schoolYearHasEnded($endYear);
 }
 
+function handleNotifyRequirements($conn)
+{
+    $studentId = $_POST['student_id'] ?? '';
+    if ($studentId === '' || !ctype_digit((string) $studentId)) {
+        echo json_encode(['success' => false, 'message' => 'Invalid student.']);
+        return;
+    }
+    $notification = notifyStudentRequirements($conn, (int) $studentId, requirementsForClient(), ($_POST['force'] ?? '') === '1');
+    echo json_encode(['success' => true, 'notification' => $notification, 'last' => studentNotificationSummary($conn, (int) $studentId)]);
+}
+
 function handleArchiveIfGraduated($conn)
 {
     $studentId = $_POST['student_id'] ?? '';
@@ -1619,6 +1634,11 @@ include 'navbar.php';
                             <small class="requirement-status-detail text-muted" data-requirement-detail>
                                 <?= (int) $completion['fulfilled'] ?> of <?= (int) $completion['total'] ?> required documents<?= $completion['missing'] ? ' · Missing: ' . htmlspecialchars(implode(', ', $completion['missing'])) : '' ?>
                             </small>
+                            <?php $emailSummary = studentNotificationSummary($conn, $studentId); ?>
+                            <small class="d-block mt-1 <?= $emailSummary && !$emailSummary['success'] ? 'text-danger' : 'text-muted' ?>" data-email-note<?= $emailSummary ? '' : ' hidden' ?>>
+                                <i class="bi bi-envelope"></i> <span data-email-note-text><?= $emailSummary ? htmlspecialchars($emailSummary['text']) : '' ?></span>
+                            </small>
+                            <button type="button" class="btn btn-sm btn-outline-danger mt-2" id="resendEmailBtn" data-student-id="<?= (int) $studentId ?>"<?= $emailSummary && !$emailSummary['success'] ? '' : ' hidden' ?>><i class="bi bi-send"></i> SEND EMAIL AGAIN</button>
                         </div>
                         <div id="documentList" class="d-flex flex-column gap-2">
                             <?php if (!empty($orderedDocs)): ?>

@@ -1011,6 +1011,13 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    function notificationNotice(n) {
+        if (!n || n.skipped) return null;
+        const status = n.status ? ' (' + n.status + ')' : '';
+        if (n.sent) return { ok: true, text: 'Email notification sent to ' + n.recipient + status + '.' };
+        return { ok: false, text: 'Email notification was not sent' + status + ': ' + (n.error || 'unknown error') + '.' };
+    }
+
     function submitStudent() {
         setStatus('Saving...', 'loading');
         toggleSaveDisabled(true);
@@ -1040,9 +1047,15 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                     return;
                 }
-                setStatus('Saved!', 'success');
                 recordSaved = true;
-                window.location.reload();
+                const notice = notificationNotice(data.notification);
+                if (!notice) {
+                    setStatus('Saved!', 'success');
+                    window.location.reload();
+                    return;
+                }
+                setStatus('Saved! ' + notice.text, notice.ok ? 'success' : 'error');
+                setTimeout(() => window.location.reload(), notice.ok ? 2500 : 4500);
             })
             .catch((err) => {
                 toggleSaveDisabled(false);

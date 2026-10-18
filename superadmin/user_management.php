@@ -3,6 +3,7 @@
 include '../security_headers.php';
 session_start();
 require_once __DIR__ . '/../activity_log.php';
+require_once __DIR__ . '/../account_email.php';
 
 $envFile = __DIR__ . '/../.env';
 
@@ -92,6 +93,12 @@ if (isset($_POST['add_admin'])) {
 
         if ($insertStmt->execute()) {
             $success = true;
+            $newAccountId = $insertStmt->insert_id;
+            logActivity('account_created', 'Created Admin account of ' . $name . ' (' . $email . ')', [
+                'target_type' => 'account',
+                'target_id'   => $newAccountId,
+                'details'     => ['name' => $name, 'email' => $email, 'role' => $role, 'status' => $status],
+            ]);
 
             // send gmail via PHPMailer
             $mail = new PHPMailer(true);
@@ -104,22 +111,31 @@ if (isset($_POST['add_admin'])) {
                 $mail->SMTPSecure = 'tls';
                 $mail->Port = 587;
 
-                $mail->setFrom('pupbc.superadmin@gmail.com', 'PUP eRecords - Admin Module');
+                $mail->setFrom('pupbc.superadmin@gmail.com', 'PUP eRecords');
                 $mail->addAddress($email, $name);
 
                 $refNumber = random_int(1000, 9999);
 
+                $mail->CharSet = 'UTF-8';
                 $mail->isHTML(true);
-                $mail->Subject = "PUP eRecords Admin Module Password [Ref: {$refNumber}]";
-                $mail->Body    = "
-                    <h3>Hi {$name}, below is your login credentials:</h3>
-                    <p><strong>Email:</strong> $email</p>
-                    <p><strong>Password:</strong> $pass</p>
-                ";
+                $mail->Subject = "Your PUP eRecords Admin account [Ref: {$refNumber}]";
+                [$mail->Body, $mail->AltBody] = buildTemporaryPasswordEmail($name, $email, $pass, $refNumber);
 
                 $mail->send();
+                logActivity('email_sent', 'Sent the temporary password email to ' . $name . ' (' . $email . ')', [
+                    'category'    => 'audit',
+                    'target_type' => 'account',
+                    'target_id'   => $newAccountId,
+                    'details'     => ['notification' => 'Admin account temporary password', 'recipient' => $email, 'reference' => $refNumber],
+                ]);
             } catch (Exception $e) {
                 $error = "Email could not be sent: {$mail->ErrorInfo}";
+                logActivity('email_failed', 'Could not send the temporary password email to ' . $name . ' (' . $email . ')', [
+                    'category'    => 'audit',
+                    'target_type' => 'account',
+                    'target_id'   => $newAccountId,
+                    'details'     => ['notification' => 'Admin account temporary password', 'recipient' => $email, 'error' => $mail->ErrorInfo],
+                ]);
             }
         } else {
             $error = "Could not create account: " . $insertStmt->error;

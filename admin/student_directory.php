@@ -8,6 +8,7 @@ require_once __DIR__ . '/archive.php';
 require_once __DIR__ . '/requirement_status.php';
 require_once __DIR__ . '/../activity_log.php';
 require_once __DIR__ . '/../database_backup.php';
+require_once __DIR__ . '/../student_notifications.php';
 
 function loadEnv($path)
 {
@@ -911,10 +912,13 @@ function handleAddStudent($conn)
                 ]);
         }
 
+        $notification = notifyStudentRequirements($conn, $studentId, requirementsForClient());
+
         echo json_encode([
-            'success'    => true,
-            'message'    => 'Student record saved successfully.',
-            'student_id' => $studentId,
+            'success'      => true,
+            'message'      => 'Student record saved successfully.',
+            'student_id'   => $studentId,
+            'notification' => $notification,
         ]);
     } catch (Exception $e) {
         mysqli_rollback($conn);
