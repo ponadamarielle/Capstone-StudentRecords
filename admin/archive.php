@@ -105,12 +105,71 @@ function courseFolderName($course)
     return $entry ? safeName($entry['code'], 'No Course') : safeName($course, 'No Course');
 }
 
+function studentMissingRequirements($conn, $studentId)
+{
+    if (function_exists('requirementsForClient')) {
+        $requirements = requirementsForClient();
+    } elseif (function_exists('getDocumentRequirementsForClient')) {
+        $requirements = array_map(function ($r) {
+            if (preg_match('/chest[\s_-]*x[\s_-]*-?ray|xray/i', ($r['label'] ?? '') . ' ' . ($r['code'] ?? ''))) {
+                $r['required_for'] = [];
+            }
+            return $r;
+        }, getDocumentRequirementsForClient());
+    } else {
+        return [];
+    }
+
+    $studentId = (int) $studentId;
+    $stmt = mysqli_prepare($conn, "SELECT admission_track FROM students WHERE student_id = ?");
+    mysqli_stmt_bind_param($stmt, "i", $studentId);
+    mysqli_stmt_execute($stmt);
+    $student = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    if (!$student) {
+        return [];
+    }
+    $track = function_exists('normalizeAdmissionTrack')
+        ? normalizeAdmissionTrack($student['admission_track'] ?? '')
+        : ($student['admission_track'] ?? '');
+
+    $codeStmt = mysqli_prepare($conn, "SELECT requirement_code FROM documents WHERE student_id = ?");
+    mysqli_stmt_bind_param($codeStmt, "i", $studentId);
+    mysqli_stmt_execute($codeStmt);
+    $onFile = [];
+    foreach (mysqli_fetch_all(mysqli_stmt_get_result($codeStmt), MYSQLI_ASSOC) as $doc) {
+        if (($doc['requirement_code'] ?? '') !== '') {
+            $onFile[$doc['requirement_code']] = true;
+        }
+    }
+
+    $missing = [];
+    foreach ($requirements as $r) {
+        $requiredFor = $r['required_for'] ?? [];
+        if (is_array($requiredFor) && in_array($track, $requiredFor, true) && !isset($onFile[$r['code']])) {
+            $missing[] = $r['label'] ?? $r['code'];
+        }
+    }
+    return $missing;
+}
+
 function archiveStudentRecord($conn, $studentId, $status)
 {
     if (!in_array($status, ARCHIVED_STATUSES, true)) {
         return ['success' => false, 'message' => 'Only GRADUATE, IN-ACTIVE or ON-LEAVE students can be archived.'];
     }
     $studentId = (int) $studentId;
+
+    if ($status === 'graduated') {
+        $missingRequirements = studentMissingRequirements($conn, $studentId);
+        if (!empty($missingRequirements)) {
+            return [
+                'success'    => false,
+                'incomplete' => true,
+                'missing'    => $missingRequirements,
+                'message'    => 'This student cannot be archived as GRADUATE because the requirements are incomplete. Missing: ' . implode(', ', $missingRequirements) . '.',
+            ];
+        }
+    }
 
     $stmt = mysqli_prepare($conn,
         "SELECT student_number, name, course, year_section FROM students WHERE student_id = ?");
@@ -298,7 +357,7 @@ function archiveGraduatedStudents($conn, $limit = 30)
                         'reason'            => 'Expected graduation school year has ended.',
                     ],
                 ]);
-        } else {
+        } elseif (empty($outcome['incomplete'])) {
             error_log('Auto-archive of graduate ' . $row['student_number'] . ' failed: ' . ($outcome['message'] ?? ''));
         }
     }

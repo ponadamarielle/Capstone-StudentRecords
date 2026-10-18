@@ -272,7 +272,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const info = editGraduationInfo();
             const graduated = !!(info && info.graduated);
             editGradNote.textContent = graduated
-                ? 'This student has already graduated. The record will be moved to Archive as GRADUATE after saving.'
+                ? 'This student has already graduated. The record will be moved to Archive as GRADUATE after saving, once all required documents are complete.'
                 : '';
             editGradNote.hidden = !graduated;
         }
@@ -1504,6 +1504,9 @@ document.addEventListener('DOMContentLoaded', function () {
                     window.alert(archiveData.message);
                     location.href = 'archive.php';
                     return;
+                }
+                if (archiveData.incomplete) {
+                    window.alert(archiveData.message + ' The record stays in the Student Directory until all requirements are submitted.');
                 }
             }
 

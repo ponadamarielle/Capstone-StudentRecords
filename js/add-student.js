@@ -302,7 +302,7 @@ document.addEventListener('DOMContentLoaded', function () {
         graduationDisplay.value = info ? schoolYearLabel(info.endYear) : '';
         if (graduationNote) {
             graduationNote.textContent = info && info.graduated
-                ? 'This student has already graduated. The record will be moved to Archive as GRADUATE after saving.'
+                ? 'This student has already graduated. The record will be moved to Archive as GRADUATE after saving, once all required documents are complete.'
                 : '';
         }
     }
@@ -1048,6 +1048,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     return;
                 }
                 recordSaved = true;
+                if (data.archive_blocked) window.alert(data.archive_blocked);
                 const notice = notificationNotice(data.notification);
                 if (!notice) {
                     setStatus('Saved!', 'success');

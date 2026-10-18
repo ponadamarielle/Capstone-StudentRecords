@@ -914,11 +914,23 @@ function handleAddStudent($conn)
 
         $notification = notifyStudentRequirements($conn, $studentId, requirementsForClient());
 
+        $archiveBlocked = null;
+        $savedStudent = activityFetchStudent($conn, $studentId);
+        $savedEndYear = $savedStudent ? expectedGraduationYear($savedStudent) : null;
+        if ($savedEndYear !== null && schoolYearHasEnded($savedEndYear)) {
+            $missingForArchive = studentMissingRequirements($conn, $studentId);
+            if ($missingForArchive) {
+                $archiveBlocked = 'This student has already graduated but cannot be archived as GRADUATE because the requirements are incomplete. Missing: '
+                    . implode(', ', $missingForArchive) . '. The record stays in the Student Directory until all requirements are submitted.';
+            }
+        }
+
         echo json_encode([
-            'success'      => true,
-            'message'      => 'Student record saved successfully.',
-            'student_id'   => $studentId,
-            'notification' => $notification,
+            'success'         => true,
+            'message'         => 'Student record saved successfully.',
+            'student_id'      => $studentId,
+            'notification'    => $notification,
+            'archive_blocked' => $archiveBlocked,
         ]);
     } catch (Exception $e) {
         mysqli_rollback($conn);

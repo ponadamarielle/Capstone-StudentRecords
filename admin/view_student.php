@@ -939,7 +939,7 @@ function handleArchiveIfGraduated($conn)
     $endYear = expectedGraduationYear($student);
     $outcome = archiveStudentRecord($conn, $studentId, 'graduated');
     if (empty($outcome['success'])) {
-        echo json_encode(['success' => false, 'message' => $outcome['message'] ?? 'Could not move the student to Archive.']);
+        echo json_encode(['success' => false, 'incomplete' => !empty($outcome['incomplete']), 'message' => $outcome['message'] ?? 'Could not move the student to Archive.']);
         return;
     }
 
