@@ -358,7 +358,7 @@ function scanAutoCrop($source, $target)
 
     $band = function ($length, callable $lineIsDark) {
         $maxBand = (int) ($length * 0.15);
-        $lead = max(3, (int) ($length * 0.02));
+        $lead = max(3, (int) ($length * 0.05));
         $gapLimit = max(2, (int) ($length * 0.004));
         $last = -1;
         $gap = 0;

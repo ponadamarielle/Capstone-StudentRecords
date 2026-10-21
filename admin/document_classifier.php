@@ -84,21 +84,21 @@ function getDocumentRequirements()
             'group' => 'credential', 'store' => true, 'required_for' => ['shs_current', 'shs_past'],
             'ref' => '2.1.1', 'note' => 'Original High School Card (F138 / Grade 12 card).',
             'extract_fields' => false, 'field_priority' => 9,
-            'ai_hint' => 'Senior High School Grade 12 report card (Form 138 / SF9 / Learner\'s Progress Report Card) showing Grade 12 subjects, semester grades, general average.',
+            'ai_hint' => 'SHS Grade 12 card: 1st/2nd semester, Core/Applied/Specialized subjects. Senior High School Grade 12 report card (Form 138 / SF9 / Learner\'s Progress Report Card) showing Grade 12 subjects, semester grades, general average.',
         ],
         'grade_11_card' => [
             'label' => 'Grade 11 Report Card',
             'group' => 'credential', 'store' => true, 'required_for' => ['shs_current', 'shs_past'],
             'ref' => '2.1.2', 'note' => 'Original or certified true copy.',
             'extract_fields' => false, 'field_priority' => 9,
-            'ai_hint' => 'Senior High School Grade 11 report card (SF9 / Learner\'s Progress Report Card) showing Grade 11 subjects and grades.',
+            'ai_hint' => 'SHS Grade 11 card: 1st/2nd semester, Core/Applied/Specialized subjects. Senior High School Grade 11 report card (SF9 / Learner\'s Progress Report Card) showing Grade 11 subjects and grades.',
         ],
         'grade_10_card' => [
             'label' => 'Grade 10 Report Card',
             'group' => 'credential', 'store' => true, 'required_for' => ['shs_current', 'shs_past'],
             'ref' => '2.1.2', 'note' => 'Original or certified true copy.',
             'extract_fields' => false, 'field_priority' => 9,
-            'ai_hint' => 'Junior High School Grade 10 report card (Form 138 / SF9) showing Grade 10 learning areas and quarterly grades.',
+            'ai_hint' => 'JHS Grade 10 card: quarters 1-4, Filipino, AP, EsP, TLE, MAPEH. Junior High School Grade 10 report card (Form 138 / SF9) showing Grade 10 learning areas and quarterly grades.',
         ],
         'psa_birth_certificate' => [
             'label' => 'PSA Birth Certificate',
@@ -576,10 +576,20 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     $pageTexts = [];
     $scannedPages = [];
     $classifyUpTo = min($pageCount, DOC_CLASSIFY_MAX_PAGES);
+    $singleFile = !empty($options['single_file']);
     for ($p = 1; $p <= $classifyUpTo; $p++) {
         $pageTexts[$p] = pdfPageText($destPath, $p);
         if (preg_match_all('/[A-Za-z]/', $pageTexts[$p]) < 40) {
             $scannedPages[] = $p;
+            if ($singleFile) {
+                $readPages([$p]);
+                $found = $aiCache[$p]['doc_type'] ?? null;
+                if ($found !== null && $found !== 'none' && getDocumentRequirement($found) !== null) {
+                    break;
+                }
+            }
+        } elseif ($singleFile) {
+            break;
         }
     }
     $timings['pdf_text'] = microtime(true) - $startedAt;
@@ -661,7 +671,7 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
             continue;
         }
 
-        $fields = $extract ? aiExtractStudentFields($text) : aiFieldsFromCache($text);
+        $fields = $extract ? aiExtractStudentFields($text) : null;
         if ($fields !== null) {
             $fieldSets[] = ['priority' => $req['field_priority'] ?? 50, 'fields' => $fields];
         }
@@ -696,6 +706,20 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
             $digits = '0' . substr($digits, 2);
         }
         $extracted['mobile_number'] = preg_match('/^09\d{9}$/', $digits) ? $digits : '';
+    }
+
+    if (!empty($options['single_file']) && (count($groups) > 1 || !empty($skipped))) {
+        $main = null;
+        foreach ($groups as $gi => $g) {
+            if ($g['code'] !== null) {
+                $main = $gi;
+                break;
+            }
+        }
+        $main = $main ?? 0;
+        $groups = [array_merge($groups[$main], ['pages' => range(1, $pageCount)])];
+        $skipped = [];
+        $photoGroupIndex = $photoPath !== null ? 0 : null;
     }
 
     $needSplit = count($groups) > 1 || !empty($skipped);

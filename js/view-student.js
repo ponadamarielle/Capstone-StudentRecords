@@ -1059,9 +1059,30 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
 
-            uploadAndExtract(file);
+            uploadAndExtract(file).finally(processScanQueue);
             uploadInput.value = '';
         });
+    }
+
+    function processScanQueue() {
+        const queue = uploadInput && uploadInput.scanQueue;
+        if (!queue || !queue.length) {
+            if (uploadInput) uploadInput.scanTotal = 0;
+            return;
+        }
+        const next = queue.shift();
+        uploadInput.scanIndex = (uploadInput.scanIndex || 1) + 1;
+        uploadInput.dataset.scannedFile = next.name;
+        uploadAndExtract(next).finally(processScanQueue);
+    }
+
+    function uploadingMessage() {
+        const total = uploadInput ? uploadInput.scanTotal || 0 : 0;
+        if (total < 2) return 'Uploading and classifying... please wait.';
+        const index = Math.min(uploadInput.scanIndex || 1, total);
+        const left = total - index;
+        return 'Uploading and classifying scan ' + index + ' of ' + total + '... please wait.'
+            + (left > 0 ? ' ' + left + ' more scan' + (left === 1 ? '' : 's') + ' to upload.' : ' This is the last scan.');
     }
 
     async function uploadAndExtract(file) {
@@ -1073,12 +1094,16 @@ document.addEventListener('DOMContentLoaded', function () {
             return;
         }
 
-        setStatus('Uploading and classifying... please wait.', 'loading');
+        setStatus(uploadingMessage(), 'loading');
         toggleSaveDisabled(true);
 
         const formData = new FormData();
         formData.append('document', file);
         formData.append('student_id', studentId);
+        if (uploadInput && uploadInput.dataset.scannedFile === file.name) {
+            formData.append('scanned', '1');
+            delete uploadInput.dataset.scannedFile;
+        }
 
         let data;
         try {
@@ -1426,6 +1451,8 @@ document.addEventListener('DOMContentLoaded', function () {
         toggleSaveDisabled(true);
         isSaving = true;
         setStatus('Saving changes...', 'loading');
+        const hadDocumentDeletes = pendingDeletedDocs.length > 0;
+        const hadDocumentSubmissions = stagedDocs.length > 0 || Object.keys(pendingReplacements).length > 0;
 
         const formData = new FormData(form);
 
@@ -1511,6 +1538,11 @@ document.addEventListener('DOMContentLoaded', function () {
             }
 
             recordSaved = true;
+            if (hadDocumentDeletes || !hadDocumentSubmissions) {
+                setStatus('Saved!', 'success');
+                location.reload();
+                return;
+            }
             setStatus('Saving changes... checking requirement status', 'loading');
             const notice = await sendRequirementNotification();
             if (!notice) {

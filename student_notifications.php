@@ -475,3 +475,39 @@ function studentNotificationSummary($conn, $studentId)
         : 'Last email notification failed (' . $last['document_status'] . ') on ' . $when . ': ' . ($last['error_message'] ?: 'unknown error');
     return ['text' => $text, 'success' => (bool) $last['success'], 'status' => $last['document_status']];
 }
+
+function studentNotificationPending($conn, $studentId, array $requirements)
+{
+    try {
+        $snapshot = studentRequirementSnapshot($conn, $studentId, $requirements);
+        if (!$snapshot || !$snapshot['total']) {
+            return null;
+        }
+        $student = $snapshot['student'];
+        if (in_array(strtolower((string) ($student['status'] ?? '')), ['graduated', 'inactive', 'onleave'], true)) {
+            return null;
+        }
+        if (function_exists('expectedGraduationYear') && function_exists('schoolYearHasEnded')) {
+            $end = expectedGraduationYear($student);
+            if ($end !== null && schoolYearHasEnded($end)) {
+                return null;
+            }
+        }
+        if (!filter_var(trim((string) ($student['email'] ?? '')), FILTER_VALIDATE_EMAIL)) {
+            return null;
+        }
+        $lastSuccess = latestStudentNotification($conn, $studentId, true);
+        if (!$lastSuccess || decideStudentNotification($snapshot, $lastSuccess) === null) {
+            return null;
+        }
+        $status = $snapshot['complete'] ? 'Complete' : 'Incomplete';
+        return [
+            'status' => $status,
+            'text'   => 'Requirement status changed to ' . $status
+                . ($snapshot['missing'] ? ' (missing: ' . implode(', ', $snapshot['missing']) . ')' : '')
+                . '. The student has not been emailed about this change.',
+        ];
+    } catch (Throwable $e) {
+        return null;
+    }
+}

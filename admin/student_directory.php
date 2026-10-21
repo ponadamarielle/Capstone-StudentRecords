@@ -591,7 +591,7 @@ function handleOcrExtract()
         return;
     }
 
-    echo json_encode(attachAiStatus(processDocumentUpload($destPath, $originalName, $uploadDir)));
+    echo json_encode(attachAiStatus(processDocumentUpload($destPath, $originalName, $uploadDir, ['single_file' => ($_POST['scanned'] ?? '') === '1' || preg_match('/^scanned_\d{4}-\d{2}-\d{2}_\d{6}(-\d+)?\.pdf$/i', $originalName)])));
 }
 
 function dateOfBirthForDb($value)

@@ -280,7 +280,10 @@ function aiPageReadMessages(array $dataUrls)
         . "\"date_of_birth\": \"\", \"place_of_birth\": \"\", \"address\": \"\", \"mobile_number\": \"\", \"email\": \"\"}, \"text\": \"...\"}\n"
         . ($types !== ''
             ? "\"doc_type\": the code of what this page IS (not documents it merely mentions), or \"none\" for a blank page, "
-              . "a back side or continuation page, or a document matching no type. For report cards use the card's own grade level.\n"
+              . "a back side or continuation page, or a document matching no type. For report cards use the card's own grade level: "
+              . "a card with four quarterly grade columns and learning areas such as Araling Panlipunan, EsP, TLE and MAPEH is grade_10_card (Junior High School); "
+              . "a card with 1st/2nd semester and Core, Applied or Specialized subjects is grade_11_card or grade_12_card. "
+              . "Pages may be scanned sideways or upside down; read the rotated text.\n"
               . "\"doc_confidence\": high, medium or low.\nDocument types (code: name. description):\n" . $types
             : '')
         . "\"fields\": the student's details found on this page.\n"

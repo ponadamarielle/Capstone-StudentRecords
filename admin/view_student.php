@@ -697,7 +697,7 @@ function handleOcrExtract($conn)
     }
     [$destPath, $originalName] = $saved;
 
-    $result = processDocumentUpload($destPath, $originalName, $uploadDir, ['preview_image' => true]);
+    $result = processDocumentUpload($destPath, $originalName, $uploadDir, ['single_file' => ($_POST['scanned'] ?? '') === '1' || preg_match('/^scanned_\d{4}-\d{2}-\d{2}_\d{6}(-\d+)?\.pdf$/i', $originalName)]);
 
     if (!empty($result['documents'])) {
         foreach ($result['documents'] as &$doc) {
@@ -1721,10 +1721,12 @@ include 'navbar.php';
                                 <?= (int) $completion['fulfilled'] ?> of <?= (int) $completion['total'] ?> required documents<?= $completion['missing'] ? ' · Missing: ' . htmlspecialchars(implode(', ', $completion['missing'])) : '' ?>
                             </small>
                             <?php $emailSummary = studentNotificationSummary($conn, $studentId); ?>
-                            <small class="d-block mt-1 <?= $emailSummary && !$emailSummary['success'] ? 'text-danger' : 'text-muted' ?>" data-email-note<?= $emailSummary ? '' : ' hidden' ?>>
-                                <i class="bi bi-envelope"></i> <span data-email-note-text><?= $emailSummary ? htmlspecialchars($emailSummary['text']) : '' ?></span>
+                            <?php $emailFailed = $emailSummary && !$emailSummary['success']; ?>
+                            <?php $emailPending = $emailFailed ? null : studentNotificationPending($conn, (int) $studentId, requirementsForClient()); ?>
+                            <small class="d-block mt-1 <?= $emailFailed || $emailPending ? 'text-danger' : 'text-muted' ?>" data-email-note<?= $emailSummary || $emailPending ? '' : ' hidden' ?>>
+                                <i class="bi bi-envelope"></i> <span data-email-note-text><?= $emailPending ? htmlspecialchars($emailPending['text']) : ($emailSummary ? htmlspecialchars($emailSummary['text']) : '') ?></span>
                             </small>
-                            <button type="button" class="btn btn-sm btn-outline-danger mt-2" id="resendEmailBtn" data-student-id="<?= (int) $studentId ?>"<?= $emailSummary && !$emailSummary['success'] ? '' : ' hidden' ?>><i class="bi bi-send"></i> SEND EMAIL AGAIN</button>
+                            <button type="button" class="btn btn-sm btn-outline-danger mt-2" id="resendEmailBtn" data-student-id="<?= (int) $studentId ?>"<?= $emailFailed || $emailPending ? '' : ' hidden' ?>><i class="bi bi-send"></i> <?= $emailPending ? 'SEND EMAIL' : 'SEND EMAIL AGAIN' ?></button>
                         </div>
                         <div id="documentList" class="d-flex flex-column gap-2">
                             <?php if (!empty($orderedDocs)): ?>

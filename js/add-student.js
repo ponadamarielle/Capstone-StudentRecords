@@ -359,15 +359,40 @@ document.addEventListener('DOMContentLoaded', function () {
                 pendingReplaceIndex = null;
                 replaceDocument(indexToReplace, file);
             } else {
-                uploadAndExtract(file);
+                uploadAndExtract(file).finally(processScanQueue);
             }
             uploadInput.value = '';
         });
     }
 
+    function processScanQueue() {
+        const queue = uploadInput && uploadInput.scanQueue;
+        if (!queue || !queue.length) {
+            if (uploadInput) uploadInput.scanTotal = 0;
+            return;
+        }
+        const next = queue.shift();
+        uploadInput.scanIndex = (uploadInput.scanIndex || 1) + 1;
+        uploadInput.dataset.scannedFile = next.name;
+        uploadAndExtract(next).finally(processScanQueue);
+    }
+
+    function uploadingMessage() {
+        const total = uploadInput ? uploadInput.scanTotal || 0 : 0;
+        if (total < 2) return 'Uploading and classifying... please wait.';
+        const index = Math.min(uploadInput.scanIndex || 1, total);
+        const left = total - index;
+        return 'Uploading and classifying scan ' + index + ' of ' + total + '... please wait.'
+            + (left > 0 ? ' ' + left + ' more scan' + (left === 1 ? '' : 's') + ' to upload.' : ' This is the last scan.');
+    }
+
     function sendOcrRequest(file) {
         const formData = new FormData();
         formData.append('document', file);
+        if (uploadInput && uploadInput.dataset.scannedFile === file.name) {
+            formData.append('scanned', '1');
+            delete uploadInput.dataset.scannedFile;
+        }
         return fetch(ACTIONS_URL + '?action=ocr_extract', {
             method: 'POST',
             body: formData,
@@ -381,7 +406,7 @@ document.addEventListener('DOMContentLoaded', function () {
             return;
         }
 
-        setStatus('Uploading and classifying... please wait.', 'loading');
+        setStatus(uploadingMessage(), 'loading');
         toggleSaveDisabled(true);
 
         let data;

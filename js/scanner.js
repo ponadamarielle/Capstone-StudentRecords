@@ -80,7 +80,10 @@ document.addEventListener('DOMContentLoaded', function () {
     previewFrame.title = 'Scanned document preview';
     previewWrap.appendChild(previewInfo);
     previewWrap.appendChild(previewFrame);
+    const readyInfo = el('div', 'scan-ready');
+    readyInfo.hidden = true;
     body.appendChild(deviceBox);
+    body.appendChild(readyInfo);
     body.appendChild(instructions);
     body.appendChild(statusBox);
     body.appendChild(errorBox);
@@ -93,11 +96,13 @@ document.addEventListener('DOMContentLoaded', function () {
     const addPageBtn = el('button', 'btn btn-outline-secondary scan-secondary-btn', 'ADD PAGE');
     const startBtn = el('button', 'btn btn-save', 'START SCAN');
     const useBtn = el('button', 'btn btn-save', 'USE THIS SCAN');
-    [cancelBtn, rescanBtn, addPageBtn, startBtn, useBtn].forEach((b) => { b.type = 'button'; });
+    const nextBtn = el('button', 'btn btn-outline-secondary scan-secondary-btn', 'NEXT DOCUMENT');
+    [cancelBtn, rescanBtn, addPageBtn, startBtn, useBtn, nextBtn].forEach((b) => { b.type = 'button'; });
     footer.appendChild(cancelBtn);
     footer.appendChild(rescanBtn);
     footer.appendChild(addPageBtn);
     footer.appendChild(startBtn);
+    footer.appendChild(nextBtn);
     footer.appendChild(useBtn);
 
     content.appendChild(header);
@@ -117,6 +122,16 @@ document.addEventListener('DOMContentLoaded', function () {
     const WAIT_LIMIT_MS = 5 * 60 * 1000;
 
     let pollPromise = Promise.resolve(null);
+    let readyFiles = [];
+
+    function updateReady() {
+        const count = readyFiles.length + (currentToken ? 1 : 0);
+        useBtn.textContent = count > 1 ? 'USE ' + count + ' SCANS' : 'USE THIS SCAN';
+        readyInfo.hidden = readyFiles.length === 0;
+        readyInfo.textContent = readyFiles.length
+            ? readyFiles.length + ' document' + (readyFiles.length === 1 ? '' : 's') + ' ready. Each document is saved as its own file.'
+            : '';
+    }
 
     function applyScannerReady() {
         const folder = scanMode === 'folder';
@@ -127,6 +142,7 @@ document.addEventListener('DOMContentLoaded', function () {
             b.title = scannerReady ? '' : 'Connect the scanner first';
         });
         useBtn.disabled = busy || (!folder && waiting);
+        nextBtn.disabled = busy || !scannerReady;
         if (folder) addPageBtn.hidden = true;
     }
 
@@ -146,8 +162,11 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function waitingMessage() {
-        return currentToken
-            ? 'To add another page, insert it into the scanner now. Otherwise, click USE THIS SCAN.'
+        if (currentToken) {
+            return 'To add another page to this document, insert it into the scanner now. For a different document, click NEXT DOCUMENT. Otherwise, click ' + useBtn.textContent + '.';
+        }
+        return readyFiles.length
+            ? 'Waiting for the next document... insert it into the scanner now.'
             : 'Waiting for the scanner... insert the document now.';
     }
 
@@ -248,8 +267,10 @@ document.addEventListener('DOMContentLoaded', function () {
         startBtn.hidden = !!currentToken;
         rescanBtn.hidden = !currentToken;
         addPageBtn.hidden = !currentToken;
-        useBtn.hidden = !currentToken;
-        [startBtn, rescanBtn, addPageBtn, useBtn, cancelBtn, closeX].forEach((b) => { b.disabled = busy; });
+        useBtn.hidden = !currentToken && !readyFiles.length;
+        nextBtn.hidden = !currentToken;
+        updateReady();
+        [startBtn, rescanBtn, addPageBtn, useBtn, nextBtn, cancelBtn, closeX].forEach((b) => { b.disabled = busy; });
         startBtn.hidden = !!currentToken || (scanMode === 'folder' && waiting);
         applyScannerReady();
     }
@@ -311,27 +332,58 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    function scanFileName() {
+    function scanFileName(number) {
         const d = new Date();
         const pad = (n) => String(n).padStart(2, '0');
         return 'scanned_' + d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
-            + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '.pdf';
+            + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds())
+            + (number > 1 ? '-' + number : '') + '.pdf';
+    }
+
+    async function currentScanFile() {
+        const res = await fetch(SCANNER_URL + '?action=preview&token=' + encodeURIComponent(currentToken), { cache: 'no-store' });
+        if (!res.ok) throw new Error('missing');
+        const blob = await res.blob();
+        return new File([blob], scanFileName(readyFiles.length + 1), { type: 'application/pdf' });
+    }
+
+    async function nextDocument() {
+        if (busy) return;
+        stopWaiting();
+        await pollPromise;
+        if (!currentToken) return;
+        setView('loading', 'Keeping this document...');
+        try {
+            readyFiles.push(await currentScanFile());
+            resetScan();
+            busy = false;
+            setView('idle');
+            waitForScan(false);
+        } catch (err) {
+            setView('preview');
+            errorBox.hidden = false;
+            errorBox.textContent = 'The scanned document could not be loaded. Please rescan.';
+        }
     }
 
     async function useScan() {
         if (busy) return;
         stopWaiting();
         await pollPromise;
-        if (!currentToken) return;
+        if (!currentToken && !readyFiles.length) return;
         setView('loading', 'Preparing the scanned document...');
         try {
-            const res = await fetch(SCANNER_URL + '?action=preview&token=' + encodeURIComponent(currentToken), { cache: 'no-store' });
-            if (!res.ok) throw new Error('missing');
-            const blob = await res.blob();
-            const file = new File([blob], scanFileName(), { type: 'application/pdf' });
+            const files = readyFiles.slice();
+            if (currentToken) files.push(await currentScanFile());
+            const first = files.shift();
             const transfer = new DataTransfer();
-            transfer.items.add(file);
+            transfer.items.add(first);
             uploadInput.files = transfer.files;
+            uploadInput.dataset.scannedFile = first.name;
+            uploadInput.scanQueue = files;
+            uploadInput.scanTotal = files.length + 1;
+            uploadInput.scanIndex = 1;
+            readyFiles = [];
             resetScan();
             busy = false;
             modal.hide();
@@ -374,7 +426,8 @@ document.addEventListener('DOMContentLoaded', function () {
         if (result.connected) {
             deviceBox.className = 'scan-device scan-device-ok';
             deviceIcon.className = 'bi bi-check-circle-fill';
-            deviceText.textContent = 'Scanner connected: ' + result.device;
+            deviceText.textContent = 'Scanner connected: ' + result.device
+                + (result.warning ? ' — ' + result.warning : '');
         } else if (result.success && result.mode === 'folder' && result.message) {
             deviceBox.className = 'scan-device scan-device-bad';
             deviceIcon.className = 'bi bi-folder-x';
@@ -399,6 +452,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     scanBtn.addEventListener('click', function () {
         stopWaiting();
+        readyFiles = [];
         resetScan();
         setView('idle');
         modal.show();
@@ -413,9 +467,11 @@ document.addEventListener('DOMContentLoaded', function () {
     });
     addPageBtn.addEventListener('click', () => startScan(true));
     useBtn.addEventListener('click', useScan);
+    nextBtn.addEventListener('click', nextDocument);
     [cancelBtn, closeX].forEach((b) => b.addEventListener('click', function () {
         if (busy) return;
         stopWaiting();
+        readyFiles = [];
         resetScan();
         modal.hide();
     }));

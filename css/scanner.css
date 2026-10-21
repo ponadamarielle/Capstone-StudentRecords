@@ -154,3 +154,13 @@
         transform: rotate(360deg);
     }
 }
+.scan-ready {
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    border: 1px solid #a3cfbb;
+    border-radius: 8px;
+    background: #e8f5ee;
+    color: #0f5132;
+    font-size: 0.9rem;
+    font-weight: 600;
+}
