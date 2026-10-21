@@ -648,6 +648,7 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
 
     $fieldSets = [];
     $photoPath = null;
+    $photoTime = 0.0;
     $photoGroupIndex = null;
     foreach ($groups as $gi => $g) {
         $req       = getDocumentRequirement($g['code']);
@@ -666,14 +667,17 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
         }
 
         if ($photoPath === null && $req && !empty($req['photo_box'])) {
+            $photoStart = microtime(true);
             $photoPath = extractIdPhoto($destPath, $req['photo_box'], $firstPage);
+            $photoTime += microtime(true) - $photoStart;
             if ($photoPath !== null) {
                 $photoGroupIndex = $gi;
             }
         }
     }
 
-    $timings['photo'] = microtime(true) - $mark;
+    $timings['fields'] = microtime(true) - $mark - $photoTime;
+    $timings['photo'] = $photoTime;
     $mark = microtime(true);
 
     usort($fieldSets, fn($a, $b) => $a['priority'] <=> $b['priority']);

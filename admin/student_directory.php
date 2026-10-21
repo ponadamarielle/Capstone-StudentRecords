@@ -98,6 +98,114 @@ if ($isAjaxAction) {
     exit();
 }
 
+function sarRegionPixels($pdfPath, $page, $x, $y, $w, $h, ?array $store = null)
+{
+    static $region = null;
+    $key = $pdfPath . '#' . (int) $page;
+    if ($store !== null) {
+        $region = ['key' => $key] + $store;
+        return null;
+    }
+    if ($region === null || $region['key'] !== $key) {
+        return null;
+    }
+    $ox = (int) $x - $region['x'];
+    $oy = (int) $y - $region['y'];
+    $w  = (int) $w;
+    $h  = (int) $h;
+    if ($ox < 0 || $oy < 0 || $w <= 0 || $h <= 0 || $ox + $w > $region['width'] || $oy + $h > $region['height']) {
+        return null;
+    }
+    $rowLen = $region['width'] * 3;
+    $data = '';
+    for ($r = 0; $r < $h; $r++) {
+        $data .= substr($region['data'], ($oy + $r) * $rowLen + $ox * 3, $w * 3);
+    }
+    return ['width' => $w, 'height' => $h, 'data' => $data];
+}
+
+function sarFrameLines($mask, $w, $h, $minRun, $maxGap, $band)
+{
+    $rowsMask = str_split($mask, $w);
+    $zero = str_repeat("\0", $w);
+    $hb = [];
+    foreach ($rowsMask as $r) {
+        $o = $r;
+        for ($b = 1; $b < $band && $b < $w; $b++) {
+            $o |= substr($r, $b) . str_repeat("\0", $b);
+        }
+        $hb[] = $o;
+    }
+
+    $hit = $zero;
+    if ($minRun <= 1) {
+        foreach ($hb as $r) {
+            $hit |= $r;
+        }
+    } else {
+        $next = [];
+        for ($y = 0; $y < $h; $y++) {
+            $o = $zero;
+            for ($k = 1; $k <= $maxGap + 1 && $y + $k < $h; $k++) {
+                $o |= $hb[$y + $k];
+            }
+            $next[] = $o;
+        }
+        $len = $minRun - 1;
+        $res = null;
+        $off = 0;
+        $pow = $next;
+        $p = 1;
+        while ($len > 0) {
+            if ($len & 1) {
+                if ($res === null) {
+                    $res = $pow;
+                } else {
+                    $new = [];
+                    foreach ($res as $y => $s) {
+                        if (!isset($pow[$y + $off])) {
+                            break;
+                        }
+                        $new[] = $s & $pow[$y + $off];
+                    }
+                    $res = $new;
+                }
+                $off += $p;
+            }
+            $len >>= 1;
+            if ($len > 0) {
+                $np = [];
+                $c = count($pow);
+                for ($y = 0; $y + $p < $c; $y++) {
+                    $np[] = $pow[$y] & $pow[$y + $p];
+                }
+                $pow = $np;
+                $p *= 2;
+            }
+        }
+        foreach ($res as $y => $s) {
+            $hit |= $hb[$y] & $s;
+        }
+    }
+    $cols = array_keys(array_filter(str_split($hit), function ($c) { return $c === "\1"; }));
+
+    $rows = [];
+    $pattern = '/\x01(?:\x00{0,' . (int) $maxGap . '}\x01)*/';
+    for ($y = 0; $y < $h; $y++) {
+        $o = $rowsMask[$y];
+        for ($b = 1; $b < $band && $y + $b < $h; $b++) {
+            $o |= $rowsMask[$y + $b];
+        }
+        if (strpos($o, "\1") === false) {
+            continue;
+        }
+        if (preg_match_all($pattern, $o, $m) && max(array_map('strlen', $m[0])) >= $minRun) {
+            $rows[] = $y;
+        }
+    }
+    return [$cols, $rows];
+}
+
 function detectSarPhotoFrame($pdfPath, $page = 1)
 {
     $sx = 1650;
@@ -124,6 +232,7 @@ function detectSarPhotoFrame($pdfPath, $page = 1)
     if ($ppm === null) {
         return null;
     }
+    sarRegionPixels($pdfPath, $page, 0, 0, 0, 0, ['x' => $sx, 'y' => $sy, 'width' => $ppm['width'], 'height' => $ppm['height'], 'data' => $ppm['data']]);
 
     $w = $ppm['width'];
     $h = $ppm['height'];
@@ -144,47 +253,8 @@ function detectSarPhotoFrame($pdfPath, $page = 1)
     $minRun = 350;
     $maxGap = 4;
     $band   = 8;
-    $longestRun = function ($start, $count, $step, $across, $acrossLeft) use ($mask, $maxGap, $band) {
-        $reach = min($band, $acrossLeft);
-        $best = 0;
-        $run = 0;
-        $gap = 0;
-        for ($k = 0, $i = $start; $k < $count; $k++, $i += $step) {
-            $isDark = false;
-            for ($b = 0, $j = $i; $b < $reach; $b++, $j += $across) {
-                if ($mask[$j] === "\1") {
-                    $isDark = true;
-                    break;
-                }
-            }
-            if ($isDark) {
-                $run += $gap + 1;
-                $gap = 0;
-                if ($run > $best) {
-                    $best = $run;
-                }
-            } elseif ($run > 0 && $gap < $maxGap) {
-                $gap++;
-            } else {
-                $run = 0;
-                $gap = 0;
-            }
-        }
-        return $best;
-    };
+    [$cols, $rows] = sarFrameLines($mask, $w, $h, $minRun, $maxGap, $band);
 
-    $cols = [];
-    for ($x = 0; $x < $w; $x++) {
-        if ($longestRun($x, $h, $w, 1, $w - $x) >= $minRun) {
-            $cols[] = $x;
-        }
-    }
-    $rows = [];
-    for ($y = 0; $y < $h; $y++) {
-        if ($longestRun($y * $w, $w, 1, $w, $h - $y) >= $minRun) {
-            $rows[] = $y;
-        }
-    }
     if (count($cols) < 2 || !$rows) {
         return null;
     }
@@ -248,23 +318,26 @@ function savePhotoWithTopSpace($pdfPath, $page, array $box, $photoBase, $spaceRa
     $space = (int) round((int) $box['height'] * $spaceRatio);
     $cropH = max(1, (int) $box['height'] - $space);
 
-    $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('sarphoto_', true);
-    $cmd = escapeshellarg(PDFTOPPM_BIN)
-        . ' -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
-        . ' -x ' . (int) $box['x'] . ' -y ' . (int) $box['y']
-        . ' -W ' . $size . ' -H ' . $cropH
-        . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($tmpBase) . ' 2>&1';
-    exec($cmd, $cmdOut, $cmdCode);
+    $ppm = sarRegionPixels($pdfPath, $page, (int) $box['x'], (int) $box['y'], $size, $cropH);
+    if ($ppm === null) {
+        $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('sarphoto_', true);
+        $cmd = escapeshellarg(PDFTOPPM_BIN)
+            . ' -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+            . ' -x ' . (int) $box['x'] . ' -y ' . (int) $box['y']
+            . ' -W ' . $size . ' -H ' . $cropH
+            . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($tmpBase) . ' 2>&1';
+        exec($cmd, $cmdOut, $cmdCode);
 
-    $ppmFile = $tmpBase . '-1.ppm';
-    if (!file_exists($ppmFile)) {
-        $ppmFile = $tmpBase . '.ppm';
+        $ppmFile = $tmpBase . '-1.ppm';
+        if (!file_exists($ppmFile)) {
+            $ppmFile = $tmpBase . '.ppm';
+        }
+        if (!file_exists($ppmFile)) {
+            return null;
+        }
+        $ppm = readPpmPixels($ppmFile);
+        @unlink($ppmFile);
     }
-    if (!file_exists($ppmFile)) {
-        return null;
-    }
-    $ppm = readPpmPixels($ppmFile);
-    @unlink($ppmFile);
     if ($ppm === null) {
         return null;
     }
@@ -320,6 +393,16 @@ function extractIdPhoto($pdfPath, $docType, $page = 1)
         mkdir($photoDir, 0755, true);
     }
     $photoBase = $photoDir . uniqid('photo_', true);
+
+    if ($docType === 'sar_form') {
+        if (!cropLooksLikePersonPhoto($pdfPath, $box, 0.04, $page)) {
+            return null;
+        }
+        $withSpace = savePhotoWithTopSpace($pdfPath, $page, $box, $photoBase, 0.075);
+        if ($withSpace !== null) {
+            return $withSpace;
+        }
+    }
 
     $cmd = escapeshellarg(PDFTOPPM_BIN)
         . ' -jpeg -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
@@ -414,27 +497,30 @@ function readPpmPixels($path)
 
 function cropLooksLikePersonPhoto($pdfPath, $box, $minSkinRatio = 0.04, $page = 1)
 {
-    $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('ppmcheck_', true);
+    $ppm = sarRegionPixels($pdfPath, $page, (int) $box['x'], (int) $box['y'], (int) $box['width'], (int) $box['height']);
+    if ($ppm === null) {
+        $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('ppmcheck_', true);
 
-    $cmd = escapeshellarg(PDFTOPPM_BIN)
-        . ' -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
-        . ' -x ' . escapeshellarg($box['x'])
-        . ' -y ' . escapeshellarg($box['y'])
-        . ' -W ' . escapeshellarg($box['width'])
-        . ' -H ' . escapeshellarg($box['height'])
-        . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($tmpBase) . ' 2>&1';
-    exec($cmd, $cmdOut, $cmdCode);
+        $cmd = escapeshellarg(PDFTOPPM_BIN)
+            . ' -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+            . ' -x ' . escapeshellarg($box['x'])
+            . ' -y ' . escapeshellarg($box['y'])
+            . ' -W ' . escapeshellarg($box['width'])
+            . ' -H ' . escapeshellarg($box['height'])
+            . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($tmpBase) . ' 2>&1';
+        exec($cmd, $cmdOut, $cmdCode);
 
-    $generated = $tmpBase . '-1.ppm';
-    if (!file_exists($generated)) {
-        $generated = $tmpBase . '.ppm';
+        $generated = $tmpBase . '-1.ppm';
+        if (!file_exists($generated)) {
+            $generated = $tmpBase . '.ppm';
+        }
+        if (!file_exists($generated)) {
+            return true;
+        }
+
+        $ppm = readPpmPixels($generated);
+        @unlink($generated);
     }
-    if (!file_exists($generated)) {
-        return true;
-    }
-
-    $ppm = readPpmPixels($generated);
-    @unlink($generated);
 
     if ($ppm === null) {
         return true;
