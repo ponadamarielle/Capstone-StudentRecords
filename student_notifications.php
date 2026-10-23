@@ -394,7 +394,7 @@ function buildStudentNotificationEmail(array $snapshot, $type)
         . '<tr><td style="background:#6e0000;background-image:linear-gradient(135deg,#7d0000 0%,#560000 100%);padding:26px 32px 22px 32px;">'
         . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
         . '<td style="vertical-align:middle;">'
-        . '<div style="font-family:Georgia,\'Times New Roman\',serif;font-size:20px;line-height:24px;color:#ffffff;font-weight:bold;">PUP <span style="color:#f5c542;">eRecords</span></div>'
+        . '<div style="font-family:Georgia,\'Times New Roman\',serif;font-size:20px;line-height:24px;color:#ffffff;font-weight:bold;">PUP eRecords</div>'
         . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;letter-spacing:2px;color:#e8c9c9;text-transform:uppercase;margin-top:4px;">Polytechnic University of the Philippines &middot; Bi&ntilde;an Campus</div>'
         . '</td>'
         . '<td align="right" style="vertical-align:middle;"><span style="display:inline-block;width:38px;height:38px;line-height:38px;border-radius:50%;background:#f5c542;color:#6e0000;text-align:center;font-family:Georgia,serif;font-size:18px;font-weight:bold;">&#9733;</span></td>'

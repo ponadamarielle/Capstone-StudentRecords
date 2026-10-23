@@ -132,3 +132,92 @@
     width: auto;
     min-width: 110px;
 }
+
+.archive-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-family: var(--font-sans, "Inter");
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0;
+    white-space: nowrap;
+    background: var(--status-neutral-bg, #EFECE8);
+    color: var(--status-neutral, #57534E);
+}
+.archive-status::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+}
+.archive-status-graduated {
+    background: var(--status-info-bg, #E5EEFB);
+    color: var(--status-info, #1D5FB8);
+}
+.archive-status-inactive {
+    background: var(--status-neutral-bg, #EFECE8);
+    color: var(--status-neutral, #57534E);
+}
+.archive-status-onleave {
+    background: var(--status-warning-bg, #FFF1D6);
+    color: var(--status-warning, #A35A00);
+}
+.archive-records {
+    justify-content: flex-end;
+}
+.archive-files-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--neutral-border-strong, #D6D0C9);
+    border-radius: 10px;
+    background: var(--neutral-surface, #ffffff);
+    color: var(--text-primary, #1C1917);
+    font-family: var(--font-sans, "Inter");
+    font-size: 13px;
+    font-weight: 500;
+}
+.archive-files-btn:hover,
+.archive-files-btn:focus,
+.archive-files-btn.show {
+    border-color: var(--brand-maroon, #7B1113);
+    background: var(--brand-maroon-50, #FBF1F1);
+    color: var(--brand-maroon, #7B1113);
+}
+.archive-drive-menu {
+    padding: 6px;
+    border: 1px solid var(--neutral-border, #E9E5E0);
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(28, 25, 23, 0.12);
+    font-family: var(--font-sans, "Inter");
+}
+.archive-drive-menu .dropdown-header {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--text-tertiary, #9C948D);
+}
+.archive-drive-menu .dropdown-item {
+    border-radius: 8px;
+    color: var(--text-primary, #1C1917);
+}
+.archive-drive-menu .dropdown-item:hover {
+    background: var(--brand-maroon-50, #FBF1F1);
+    color: var(--brand-maroon, #7B1113);
+}
+.archive-date {
+    font-size: 14px;
+    color: var(--text-primary, #1C1917);
+}
+.archive-time {
+    font-size: 12px;
+    color: var(--text-tertiary, #9C948D);
+}

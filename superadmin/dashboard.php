@@ -134,17 +134,6 @@ include 'navbar.php';
 <body>
 <div class="dash-container">
 
-    <div class="dash-header">
-        <div>
-            <h1 class="dash-title">Dashboard</h1>
-            <p class="dash-subtitle">Overview of student records</p>
-        </div>
-        <div class="dash-updated">
-            <i class="bi bi-arrow-repeat"></i>
-            Updated <span id="dashUpdatedAt"><?= htmlspecialchars($stats['updated_at']) ?></span>
-        </div>
-    </div>
-
     <?php if ($backupAlerts): ?>
         <a class="dash-alert" href="backup_logs.php#backups" role="alert">
             <i class="bi bi-exclamation-triangle-fill"></i>
@@ -156,55 +145,62 @@ include 'navbar.php';
         </a>
     <?php endif; ?>
 
-    <section class="dash-section">
-        <h2 class="dash-section-title">Student Statistics</h2>
-        <div class="dash-stats">
-            <div class="dash-stat">
-                <div class="dash-stat-icon"><i class="bi bi-people-fill"></i></div>
-                <div>
-                    <div class="dash-stat-label">Total Student Records</div>
-                    <div class="dash-stat-value" data-stat="total"><?= number_format($stats['total']) ?></div>
-                </div>
+    <section class="dash-stats" aria-label="Student statistics">
+        <div class="dash-stat">
+            <div class="dash-stat-head">
+                <div class="dash-stat-label">Total Student Records</div>
+                <div class="dash-stat-icon dash-icon-maroon"><i class="bi bi-people"></i></div>
             </div>
-            <div class="dash-stat">
-                <div class="dash-stat-icon"><i class="bi bi-person-check-fill"></i></div>
-                <div>
-                    <div class="dash-stat-label">Enrollees</div>
-                    <div class="dash-stat-value" data-stat="enrollees"><?= number_format($stats['enrollees']) ?></div>
-                </div>
+            <div class="dash-stat-value" data-stat="total"><?= number_format($stats['total']) ?></div>
+            <div class="dash-stat-note">All student records in the system</div>
+        </div>
+        <div class="dash-stat">
+            <div class="dash-stat-head">
+                <div class="dash-stat-label">Enrollees</div>
+                <div class="dash-stat-icon dash-icon-green"><i class="bi bi-person-check"></i></div>
             </div>
-            <div class="dash-stat">
-                <div class="dash-stat-icon"><i class="bi bi-mortarboard-fill"></i></div>
-                <div>
-                    <div class="dash-stat-label">Graduates</div>
-                    <div class="dash-stat-value" data-stat="graduates"><?= number_format($stats['graduates']) ?></div>
-                </div>
+            <div class="dash-stat-value" data-stat="enrollees"><?= number_format($stats['enrollees']) ?></div>
+            <div class="dash-stat-note">Students currently enrolled</div>
+        </div>
+        <div class="dash-stat">
+            <div class="dash-stat-head">
+                <div class="dash-stat-label">Graduates</div>
+                <div class="dash-stat-icon dash-icon-gold"><i class="bi bi-mortarboard"></i></div>
             </div>
+            <div class="dash-stat-value" data-stat="graduates"><?= number_format($stats['graduates']) ?></div>
+            <div class="dash-stat-note">Students who completed their program</div>
         </div>
     </section>
 
-    <section class="dash-section">
-        <h2 class="dash-section-title">Document Requirements <span>Enrollees</span></h2>
-        <div class="dash-panel">
+    <div class="dash-grid">
+        <section class="dash-panel">
+            <div class="dash-panel-head">
+                <div>
+                    <h2 class="dash-panel-title">Document requirements</h2>
+                    <p class="dash-panel-sub">Requirement completion of enrollees</p>
+                </div>
+            </div>
+
             <div class="dash-req-summary">
                 <div class="dash-req-count dash-req-complete">
-                    <i class="bi bi-check-circle-fill"></i>
+                    <span class="dash-req-icon"><i class="bi bi-check-circle"></i></span>
                     <div>
                         <div class="dash-req-number" data-stat="complete"><?= number_format($stats['complete']) ?></div>
                         <div class="dash-req-label">Complete</div>
                     </div>
                 </div>
                 <div class="dash-req-count dash-req-incomplete">
-                    <i class="bi bi-exclamation-circle-fill"></i>
+                    <span class="dash-req-icon"><i class="bi bi-exclamation-circle"></i></span>
                     <div>
                         <div class="dash-req-number" data-stat="incomplete"><?= number_format($stats['incomplete']) ?></div>
                         <div class="dash-req-label">Incomplete</div>
                     </div>
                 </div>
-                <div class="dash-req-percent">
-                    <span data-stat="percent"><?= $stats['percent'] ?></span>%
-                    <small>of enrollees have complete requirements</small>
-                </div>
+            </div>
+
+            <div class="dash-req-percent">
+                <span class="dash-req-percent-value"><span data-stat="percent"><?= $stats['percent'] ?></span>%</span>
+                <small>of enrollees have complete requirements</small>
             </div>
 
             <div class="dash-bar" id="dashReqBar" role="img"
@@ -217,26 +213,40 @@ include 'navbar.php';
                      title="Incomplete: <?= $stats['incomplete'] ?>"></div>
                 <div class="dash-bar-empty" id="dashBarEmpty" <?= $enrolleeTotal > 0 ? 'hidden' : '' ?>>No enrollees yet</div>
             </div>
-
-            <div class="dash-missing">
-                <div class="dash-missing-title">Most commonly missing documents</div>
-                <ul class="dash-missing-list" id="dashMissingList">
-                    <?php foreach ($stats['top_missing'] as $item): ?>
-                        <li>
-                            <span class="dash-missing-label"><?= htmlspecialchars($item['label']) ?></span>
-                            <span class="dash-missing-track">
-                                <span class="dash-missing-fill" data-percent="<?= $enrolleeTotal > 0 ? round($item['students'] / $enrolleeTotal * 100, 1) : 0 ?>"></span>
-                            </span>
-                            <span class="dash-missing-value"><?= $item['students'] ?> student<?= $item['students'] === 1 ? '' : 's' ?></span>
-                        </li>
-                    <?php endforeach; ?>
-                </ul>
-                <p class="dash-missing-empty" id="dashMissingEmpty" <?= $stats['top_missing'] ? 'hidden' : '' ?>>
-                    No missing documents.
-                </p>
+            <div class="dash-bar-legend">
+                <span><i class="dash-dot dash-dot-complete"></i>Complete</span>
+                <span><i class="dash-dot dash-dot-incomplete"></i>Incomplete</span>
             </div>
-        </div>
-    </section>
+        </section>
+
+        <section class="dash-panel dash-missing">
+            <div class="dash-panel-head">
+                <div>
+                    <h2 class="dash-panel-title dash-missing-title">Most commonly missing documents</h2>
+                    <p class="dash-panel-sub">Number of enrollees without the document</p>
+                </div>
+            </div>
+            <ul class="dash-missing-list" id="dashMissingList">
+                <?php foreach ($stats['top_missing'] as $item): ?>
+                    <li>
+                        <span class="dash-missing-label"><?= htmlspecialchars($item['label']) ?></span>
+                        <span class="dash-missing-track">
+                            <span class="dash-missing-fill" data-percent="<?= $enrolleeTotal > 0 ? round($item['students'] / $enrolleeTotal * 100, 1) : 0 ?>"></span>
+                        </span>
+                        <span class="dash-missing-value"><?= $item['students'] ?> student<?= $item['students'] === 1 ? '' : 's' ?></span>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+            <p class="dash-missing-empty" id="dashMissingEmpty" <?= $stats['top_missing'] ? 'hidden' : '' ?>>
+                No missing documents.
+            </p>
+        </section>
+    </div>
+
+    <div class="dash-updated">
+        <i class="bi bi-arrow-repeat"></i>
+        Updated <span id="dashUpdatedAt"><?= htmlspecialchars($stats['updated_at']) ?></span>
+    </div>
 
 </div>
 <script src="../js/dashboard-superadmin.js?v=<?= @filemtime(__DIR__ . '/../js/dashboard-superadmin.js') ?>"></script>

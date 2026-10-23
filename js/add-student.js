@@ -102,8 +102,7 @@ document.addEventListener('DOMContentLoaded', function () {
     function resetStudentPhoto() {
         const container = document.getElementById('photoContainer');
         container.innerHTML = `<div class="photo-placeholder">
-                        <i class="bi bi-person-circle"></i>
-                        <span>Student Photo</span>
+                        <i class="bi bi-person"></i>
                     </div>`;
 
         const hidden = document.getElementById('photoData');
@@ -908,6 +907,7 @@ document.addEventListener('DOMContentLoaded', function () {
         { name: 'first_name',     label: 'First Name' },
         { name: 'course',         label: 'Course' },
         { name: 'year_section',   label: 'Year & Section' },
+        { name: 'email',          label: 'Email Address' },
     ];
 
     function clearRequiredFieldErrors() {

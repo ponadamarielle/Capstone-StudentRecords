@@ -23,28 +23,35 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const dialog  = el('div', 'modal-dialog modal-dialog-centered modal-lg');
     const content = el('div', 'modal-content');
-    const header  = el('div', 'modal-header');
-    header.appendChild(el('h5', 'modal-title scan-title', 'Scan Document'));
+    const header  = el('div', 'modal-header scan-header');
+    const heading = el('div', 'scan-heading');
+    const headingIcon = el('span', 'scan-heading-icon');
+    headingIcon.appendChild(el('i', 'bi bi-printer'));
+    const headingText = el('div', 'scan-heading-text');
+    headingText.appendChild(el('h5', 'modal-title scan-title', 'Scan document'));
+    headingText.appendChild(el('p', 'scan-subtitle', 'Scan the student\'s documents using the connected scanner.'));
+    heading.appendChild(headingIcon);
+    heading.appendChild(headingText);
+    header.appendChild(heading);
     const closeX = el('button', 'btn-close');
     closeX.type = 'button';
     closeX.setAttribute('aria-label', 'Close');
-    header.appendChild(closeX);
 
     const body = el('div', 'modal-body');
     const instructions = el('div', 'scan-instructions');
-    instructions.appendChild(el('i', 'bi bi-printer'));
+    instructions.appendChild(el('i', 'bi bi-file-earmark-arrow-up'));
     const steps = el('ol', 'scan-steps');
     const STEPS = {
         naps2: [
-            'Insert the document face down into the Plustek scanner.',
-            'Wait until the scanner pulls the paper in slightly and holds it.',
+            'Place the document in the scanner.',
+            'Make sure the scanner is turned on and ready.',
             'Click START SCAN here.',
         ],
         folder: [
-            'Insert the document face down into the Plustek scanner.',
-            'The scanner scans it automatically.',
+            'Place the document in the scanner.',
+            'Start the scan using the scanner\'s button or its scanning app.',
             'The scanned document will appear here in a few seconds.',
-            'To add more pages, just insert the next page. It is added automatically.',
+            'To add more pages, just scan the next page. It is added automatically.',
         ],
     };
     function showSteps(mode) {
@@ -163,11 +170,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function waitingMessage() {
         if (currentToken) {
-            return 'To add another page to this document, insert it into the scanner now. For a different document, click NEXT DOCUMENT. Otherwise, click ' + useBtn.textContent + '.';
+            return 'To add another page to this document, scan it now. For a different document, click NEXT DOCUMENT. Otherwise, click ' + useBtn.textContent + '.';
         }
         return readyFiles.length
-            ? 'Waiting for the next document... insert it into the scanner now.'
-            : 'Waiting for the scanner... insert the document now.';
+            ? 'Waiting for the next document... scan it now.'
+            : 'Waiting for the scanner... scan the document now.';
     }
 
     async function waitForScan(append) {
@@ -188,7 +195,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (seq !== waitSeq) return;
             if (!currentToken && Date.now() - startedAt > WAIT_LIMIT_MS) {
                 stopWaiting();
-                setView('error', 'No scanned document was received. Insert the document and click START SCAN to try again.');
+                setView('error', 'No scanned document was received. Place the document in the scanner and click START SCAN to try again.');
                 return;
             }
             const poll = new FormData();
@@ -426,8 +433,9 @@ document.addEventListener('DOMContentLoaded', function () {
         if (result.connected) {
             deviceBox.className = 'scan-device scan-device-ok';
             deviceIcon.className = 'bi bi-check-circle-fill';
-            deviceText.textContent = 'Scanner connected: ' + result.device
-                + (result.warning ? ' — ' + result.warning : '');
+            deviceText.textContent = result.mode === 'folder' && result.plugged === null
+                ? 'Ready to receive scans from the scanner.'
+                : 'Scanner connected: ' + result.device;
         } else if (result.success && result.mode === 'folder' && result.message) {
             deviceBox.className = 'scan-device scan-device-bad';
             deviceIcon.className = 'bi bi-folder-x';
@@ -435,13 +443,13 @@ document.addEventListener('DOMContentLoaded', function () {
         } else if (result.success && result.driver && result.plugged === false) {
             deviceBox.className = 'scan-device scan-device-bad';
             deviceIcon.className = 'bi bi-plug-fill';
-            deviceText.textContent = 'Scanner not plugged in. Connect the Plustek scanner with its USB cable, then click Check again.';
+            deviceText.textContent = 'No scanner connected. Plug in the scanner and turn it on, then click Check again.';
         } else if (result.success) {
             deviceBox.className = 'scan-device scan-device-bad';
             deviceIcon.className = 'bi bi-x-circle-fill';
             deviceText.textContent = result.devices && result.devices.length
-                ? 'Plustek scanner not found. Detected: ' + result.devices.join(', ')
-                : 'No scanner detected. Check that the Plustek scanner is plugged in and turned on.';
+                ? 'The selected scanner was not found. Detected: ' + result.devices.join(', ')
+                : 'No scanner detected. Check that the scanner is plugged in and turned on.';
         } else {
             deviceBox.className = 'scan-device scan-device-bad';
             deviceIcon.className = 'bi bi-x-circle-fill';

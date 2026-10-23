@@ -17,6 +17,27 @@ if (confirmModal) {
     });
 }
 
+var resetModal = document.getElementById('resetPasswordModal');
+if (resetModal) {
+    resetModal.addEventListener('show.bs.modal', function (e) {
+        var btn = e.relatedTarget;
+        document.getElementById('resetPasswordInput').value = btn.getAttribute('data-email');
+        document.getElementById('resetPasswordEmail').textContent = btn.getAttribute('data-email');
+        document.getElementById('resetPasswordName').textContent = btn.getAttribute('data-name');
+        var confirmBtn = document.getElementById('resetPasswordConfirm');
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = 'Reset';
+    });
+    var resetForm = document.getElementById('resetPasswordForm');
+    if (resetForm) {
+        resetForm.addEventListener('submit', function () {
+            var confirmBtn = document.getElementById('resetPasswordConfirm');
+            confirmBtn.disabled = true;
+            confirmBtn.textContent = 'Sending...';
+        });
+    }
+}
+
 var NAME_INVALID = /[^\p{L} .'\-]/gu;
 var NAME_VALID = /^\p{L}[\p{L} .'\-]*$/u;
 var EMAIL_VALID = /^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/;

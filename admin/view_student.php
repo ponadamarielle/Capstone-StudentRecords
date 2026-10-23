@@ -1627,142 +1627,147 @@ include 'navbar.php';
     <link href="../css/view-student.css?v=<?= @filemtime(__DIR__ . '/../css/view-student.css') ?>" rel="stylesheet">
     <link href="../css/scanner.css?v=<?= @filemtime(__DIR__ . '/../css/scanner.css') ?>" rel="stylesheet">
     <link href="../css/student-report.css?v=<?= @filemtime(__DIR__ . '/../css/student-report.css') ?>" rel="stylesheet">
+    <link href="../css/student-profile.css?v=<?= @filemtime(__DIR__ . '/../css/student-profile.css') ?>" rel="stylesheet">
 </head>
 <body data-student-id="<?= (int) $studentId ?>">
-    <div class="view-container">
+    <div class="view-container profile-page">
 
-    <div class="arrow-add">
-        <a href="student_directory.php" class="back-arrow" title="Back to Student Directory">
-            <i class="bi bi-arrow-left"></i>
+        <a href="student_directory.php" class="profile-back" title="Back to Student Directory">
+            <i class="bi bi-arrow-left"></i> Back to Student Directory
         </a>
-        <button class="btn-add" type="button" data-bs-toggle="modal" data-bs-target="#addRecordsModal">
-            <i class="bi bi-pencil-square"></i> UPDATE
-        </button>
-    </div>
 
-        <div class="view-content">
-
-            <div class="view-sidebar">
-                <img src="<?= htmlspecialchars($photoUrl) ?>" alt="Student photo" class="view-photo">
-                <div class="view-name"><?= htmlspecialchars($student['name']) ?></div>
-                <div class="view-number"><?= htmlspecialchars($student['student_number']) ?></div>
-                <div class="view-course"><?= htmlspecialchars($student['course']) ?></div>
-                <button class="btn-add btn-report" type="button" id="generateReportBtn" data-student-id="<?= (int) $studentId ?>">
-                    <i class="bi bi-file-earmark-pdf"></i> GENERATE REPORT
+        <section class="profile-header">
+            <img src="<?= htmlspecialchars($photoUrl) ?>" alt="Student photo" class="profile-photo">
+            <div class="profile-identity">
+                <div class="profile-name-row">
+                    <h2 class="profile-name"><?= htmlspecialchars($student['name']) ?></h2>
+                    <span class="profile-status"><?= htmlspecialchars($statusLabel) ?></span>
+                </div>
+                <div class="profile-meta">
+                    <span><i class="bi bi-file-earmark-text"></i> <?= htmlspecialchars($student['student_number']) ?></span>
+                    <?php if (!empty($student['course'])): ?>
+                        <span><i class="bi bi-mortarboard"></i> <?= htmlspecialchars($student['course']) ?></span>
+                    <?php endif; ?>
+                    <?php if (!empty($student['year_section'])): ?>
+                        <span><i class="bi bi-people"></i> Year &amp; Section: <?= htmlspecialchars($student['year_section']) ?></span>
+                    <?php endif; ?>
+                </div>
+            </div>
+            <div class="profile-actions">
+                <button class="profile-btn profile-btn-secondary" type="button" id="generateReportBtn" data-student-id="<?= (int) $studentId ?>">
+                    <i class="bi bi-file-earmark-pdf"></i> Generate report
+                </button>
+                <button class="profile-btn profile-btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#addRecordsModal">
+                    <i class="bi bi-pencil"></i> Update record
                 </button>
             </div>
+        </section>
 
-            <div class="view-details">
-                <ul class="nav nav-tabs" id="viewTabs" role="tablist">
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link active" id="view-info-tab" data-bs-toggle="tab"
-                                data-bs-target="#view-info" type="button" role="tab" aria-selected="true">
-                            Student Information
-                        </button>
-                    </li>
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="view-docs-tab" data-bs-toggle="tab"
-                                data-bs-target="#view-docs" type="button" role="tab" aria-selected="false">
-                            Documents
-                        </button>
-                    </li>
-                </ul>
+        <section class="profile-card">
+            <ul class="nav profile-tabs" id="viewTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="view-info-tab" data-bs-toggle="tab"
+                            data-bs-target="#view-info" type="button" role="tab" aria-selected="true">
+                        Student information
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="view-docs-tab" data-bs-toggle="tab"
+                            data-bs-target="#view-docs" type="button" role="tab" aria-selected="false">
+                        Documents <span class="profile-tab-count"><?= count($orderedDocs) ?></span>
+                    </button>
+                </li>
+            </ul>
 
-                <div class="tab-content border border-top-0 p-3 pt-4 ps-4">
+            <div class="tab-content profile-tab-content">
 
-                    <div class="tab-pane fade show active" id="view-info" role="tabpanel">
-                        <?php
-                        $dobDisplay = !empty($student['date_of_birth']) && strtotime($student['date_of_birth'])
-                            ? date('F j, Y', strtotime($student['date_of_birth'])) : '';
-                        $infoLeft = [
-                            'Year & Section' => $student['year_section'] ?? '',
-                            'Gender'         => $student['sex'] ?? '',
-                            'Date of Birth'  => $dobDisplay,
-                            'Place of Birth' => $student['place_of_birth'] ?? '',
-                            'Mobile Number'  => $student['mobile_number'] ?? '',
-                            'Email Address'  => $student['email'] ?? '',
-                        ];
-                        $infoRight = [
-                            'Date Issued'         => $dateIssued,
+                <div class="tab-pane fade show active" id="view-info" role="tabpanel">
+                    <?php
+                    $dobDisplay = !empty($student['date_of_birth']) && strtotime($student['date_of_birth'])
+                        ? date('F j, Y', strtotime($student['date_of_birth'])) : '';
+                    $infoGroups = [
+                        ['Personal', 'bi-person', [
+                            'Gender'        => $student['sex'] ?? '',
+                            'Date of birth' => $dobDisplay,
+                            'Place of birth'=> $student['place_of_birth'] ?? '',
+                        ]],
+                        ['Contact', 'bi-telephone', [
+                            'Mobile number' => $student['mobile_number'] ?? '',
+                            'Email address' => $student['email'] ?? '',
+                            'Home address'  => $student['address'] ?? '',
+                        ]],
+                        ['Academic', 'bi-mortarboard', [
+                            'Year & section'      => $student['year_section'] ?? '',
+                            'Expected graduation' => $expectedGradYear !== null ? schoolYearLabel($expectedGradYear) : '',
+                            'Date issued'         => $dateIssued,
                             'Checked by'          => $issuedBy,
-                            'Status'              => $statusLabel,
-                            'Expected Graduation' => $expectedGradYear !== null ? schoolYearLabel($expectedGradYear) : '',
-                        ];
-                        $renderInfoField = function ($label, $value) {
-                            $id = 'view_' . preg_replace('/[^a-z0-9]+/', '_', strtolower($label));
-                            echo '<div class="d-flex align-items-center mb-3 view-info-field">'
-                                . '<label for="' . $id . '" class="form-label form-label-custom">' . htmlspecialchars($label) . ':</label>'
-                                . '<input type="text" id="' . $id . '" class="form-control input-custom view-readonly" readonly tabindex="-1" value="'
-                                . htmlspecialchars((string) $value) . '">'
-                                . '</div>';
-                        };
-                        ?>
-                        <div class="row">
-                            <div class="col-md-6">
-                                <?php foreach ($infoLeft as $label => $value) { $renderInfoField($label, $value); } ?>
-                                <div class="d-flex align-items-start mb-3 view-info-field">
-                                    <label for="view_address" class="form-label form-label-custom">Address:</label>
-                                    <textarea id="view_address" class="form-control input-custom view-readonly" rows="3" readonly tabindex="-1"><?= htmlspecialchars($student['address'] ?? '') ?></textarea>
-                                </div>
+                        ]],
+                    ];
+                    ?>
+                    <div class="profile-info-grid">
+                        <?php foreach ($infoGroups as [$groupTitle, $groupIcon, $groupFields]): ?>
+                            <div class="profile-info-card">
+                                <p class="profile-info-title"><i class="bi <?= $groupIcon ?>"></i> <?= htmlspecialchars($groupTitle) ?></p>
+                                <dl class="profile-info-list">
+                                    <?php foreach ($groupFields as $fieldLabel => $fieldValue): ?>
+                                        <dt><?= htmlspecialchars($fieldLabel) ?></dt>
+                                        <dd><?= (string) $fieldValue !== '' ? htmlspecialchars((string) $fieldValue) : '<span class="profile-empty">Not provided</span>' ?></dd>
+                                    <?php endforeach; ?>
+                                </dl>
                             </div>
-                            <div class="col-md-6">
-                                <?php foreach ($infoRight as $label => $value) { $renderInfoField($label, $value); } ?>
-                            </div>
-                        </div>
+                        <?php endforeach; ?>
                     </div>
-
-                    <div class="tab-pane fade" id="view-docs" role="tabpanel">
-                        <div class="requirement-summary">
-                            <div class="requirement-summary-head">
-                                <strong class="requirement-summary-title">REQUIREMENT STATUS</strong>
-                                <span data-requirement-badge><?= requirementStatusBadge($completion) ?></span>
-                            </div>
-                            <small class="requirement-status-detail text-muted" data-requirement-detail>
-                                <?= (int) $completion['fulfilled'] ?> of <?= (int) $completion['total'] ?> required documents<?= $completion['missing'] ? ' · Missing: ' . htmlspecialchars(implode(', ', $completion['missing'])) : '' ?>
-                            </small>
-                            <?php $emailSummary = studentNotificationSummary($conn, $studentId); ?>
-                            <?php $emailFailed = $emailSummary && !$emailSummary['success']; ?>
-                            <?php $emailPending = $emailFailed ? null : studentNotificationPending($conn, (int) $studentId, requirementsForClient()); ?>
-                            <small class="d-block mt-1 <?= $emailFailed || $emailPending ? 'text-danger' : 'text-muted' ?>" data-email-note<?= $emailSummary || $emailPending ? '' : ' hidden' ?>>
-                                <i class="bi bi-envelope"></i> <span data-email-note-text><?= $emailPending ? htmlspecialchars($emailPending['text']) : ($emailSummary ? htmlspecialchars($emailSummary['text']) : '') ?></span>
-                            </small>
-                            <button type="button" class="btn btn-sm btn-outline-danger mt-2" id="resendEmailBtn" data-student-id="<?= (int) $studentId ?>"<?= $emailFailed || $emailPending ? '' : ' hidden' ?>><i class="bi bi-send"></i> <?= $emailPending ? 'SEND EMAIL' : 'SEND EMAIL AGAIN' ?></button>
-                        </div>
-                        <div id="documentList" class="d-flex flex-column gap-2">
-                            <?php if (!empty($orderedDocs)): ?>
-                                <?php foreach ($orderedDocs as $doc): ?>
-                                    <div class="document-row requirement-view-row"
-                                         data-document-id="<?= (int) $doc['document_id'] ?>"
-                                         data-file-path="<?= htmlspecialchars($doc['file_path']) ?>">
-                                        <i class="bi bi-file-earmark-text req-status"></i>
-                                        <div class="req-body">
-                                            <div class="req-label"><?= htmlspecialchars(isStorableRequirement($doc['requirement_code'] ?? null) ? requirementLabel($doc['requirement_code']) : ($doc['document_type'] ?: 'Other Document')) ?></div>
-                                            <span class="document-name"><?= htmlspecialchars($doc['file_name']) ?></span>
-                                            <?php if (!empty($doc['uploaded_at'])): ?>
-                                                <small class="text-muted"> · <?= htmlspecialchars(date('M j, Y', strtotime($doc['uploaded_at']))) ?></small>
-                                            <?php endif; ?>
-                                        </div>
-                                        <div class="document-actions">
-                                            <button type="button" class="btn btn-sm btn-outline-secondary document-view-btn" title="Preview file">
-                                                <i class="bi bi-eye"></i>
-                                            </button>
-                                            <a href="<?= htmlspecialchars($doc['file_path']) ?>" download
-                                               class="btn btn-sm btn-outline-secondary" title="Download file">
-                                                <i class="bi bi-download"></i>
-                                            </a>
-                                        </div>
-                                    </div>
-                                <?php endforeach; ?>
-                            <?php else: ?>
-                                <div class="text-muted document-empty-state">No documents uploaded yet.</div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
                 </div>
 
+                <div class="tab-pane fade" id="view-docs" role="tabpanel">
+                    <div class="requirement-summary">
+                        <div class="requirement-summary-head">
+                            <strong class="requirement-summary-title">REQUIREMENT STATUS</strong>
+                            <span data-requirement-badge><?= requirementStatusBadge($completion) ?></span>
+                        </div>
+                        <small class="requirement-status-detail text-muted" data-requirement-detail>
+                            <?= (int) $completion['fulfilled'] ?> of <?= (int) $completion['total'] ?> required documents<?= $completion['missing'] ? ' · Missing: ' . htmlspecialchars(implode(', ', $completion['missing'])) : '' ?>
+                        </small>
+                        <?php $emailSummary = studentNotificationSummary($conn, $studentId); ?>
+                        <?php $emailFailed = $emailSummary && !$emailSummary['success']; ?>
+                        <?php $emailPending = $emailFailed ? null : studentNotificationPending($conn, (int) $studentId, requirementsForClient()); ?>
+                        <small class="d-block mt-1 <?= $emailFailed || $emailPending ? 'text-danger' : 'text-muted' ?>" data-email-note<?= $emailSummary || $emailPending ? '' : ' hidden' ?>>
+                            <i class="bi bi-envelope"></i> <span data-email-note-text><?= $emailPending ? htmlspecialchars($emailPending['text']) : ($emailSummary ? htmlspecialchars($emailSummary['text']) : '') ?></span>
+                        </small>
+                        <button type="button" class="btn btn-sm btn-outline-danger mt-2" id="resendEmailBtn" data-student-id="<?= (int) $studentId ?>"<?= $emailFailed || $emailPending ? '' : ' hidden' ?>><i class="bi bi-send"></i> <?= $emailPending ? 'SEND EMAIL' : 'SEND EMAIL AGAIN' ?></button>
+                    </div>
+                    <div id="documentList" class="d-flex flex-column gap-2">
+                        <?php if (!empty($orderedDocs)): ?>
+                            <?php foreach ($orderedDocs as $doc): ?>
+                                <div class="document-row requirement-view-row"
+                                     data-document-id="<?= (int) $doc['document_id'] ?>"
+                                     data-file-path="<?= htmlspecialchars($doc['file_path']) ?>">
+                                    <i class="bi bi-file-earmark-text req-status"></i>
+                                    <div class="req-body">
+                                        <div class="req-label"><?= htmlspecialchars(isStorableRequirement($doc['requirement_code'] ?? null) ? requirementLabel($doc['requirement_code']) : ($doc['document_type'] ?: 'Other Document')) ?></div>
+                                        <span class="document-name"><?= htmlspecialchars($doc['file_name']) ?></span>
+                                        <?php if (!empty($doc['uploaded_at'])): ?>
+                                            <small class="text-muted"> · <?= htmlspecialchars(date('M j, Y', strtotime($doc['uploaded_at']))) ?></small>
+                                        <?php endif; ?>
+                                    </div>
+                                    <div class="document-actions">
+                                        <button type="button" class="btn btn-sm btn-outline-secondary document-view-btn" title="Preview file">
+                                            <i class="bi bi-eye"></i>
+                                        </button>
+                                        <a href="<?= htmlspecialchars($doc['file_path']) ?>" download
+                                           class="btn btn-sm btn-outline-secondary" title="Download file">
+                                            <i class="bi bi-download"></i>
+                                        </a>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <div class="text-muted document-empty-state">No documents uploaded yet.</div>
+                        <?php endif; ?>
+                    </div>
+                </div>
             </div>
-        </div>
+        </section>
     </div>
 
     <!-- update student record modal -->
@@ -1771,7 +1776,13 @@ include 'navbar.php';
             <div class="modal-content">
 
                 <div class="modal-header add-header">
-                    <h5 class="modal-title add-title">Update Student Record</h5>
+                    <div class="add-heading">
+                        <span class="add-heading-icon"><i class="bi bi-pencil"></i></span>
+                        <div class="add-heading-text">
+                            <h5 class="modal-title add-title">Update student record</h5>
+                            <p class="add-subtitle">Scan or upload the student's documents to auto-fill the information.</p>
+                        </div>
+                    </div>
 
                     <div class="header-btn-group">
                         <button type="button" class="btn scan-document-btn">
@@ -1799,9 +1810,11 @@ include 'navbar.php';
                                 <div class="photo-container" id="photoContainer">
                                     <img src="<?= htmlspecialchars($photoUrl) ?>" alt="Student photo" class="photo-img" id="modalStudentPhoto">
                                 </div>
+                                <span class="photo-caption">Student photo</span>
+                                <small class="photo-hint">JPG or PNG</small>
                                 <input type="file" id="replacePhotoInput" name="photo" accept=".jpg,.jpeg,.png" hidden>
                                 <button type="button" class="btn btn-sm btn-outline-secondary replace-photo-btn" id="replacePhotoBtn">
-                                    <i class="bi bi-arrow-repeat"></i> Replace Photo
+                                    <i class="bi bi-arrow-repeat"></i> Replace photo
                                 </button>
                                 <small id="photoFeedback" class="text-danger d-block mt-2"></small>
                             </div>
@@ -1828,45 +1841,45 @@ include 'navbar.php';
                                         <div class="row">
                                             <div class="col-md-6">
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_last_name" class="form-label form-label-custom">Last Name:</label>
+                                                    <label for="edit_last_name" class="form-label form-label-custom">Last name <span class="req-mark">*</span></label>
                                                     <input type="text" id="edit_last_name" name="last_name" class="form-control input-custom" required pattern="[A-Za-zÑñ\s.,'\-]+"
                                                            value="<?= htmlspecialchars($editLastName) ?>">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_first_name" class="form-label form-label-custom">First Name:</label>
+                                                    <label for="edit_first_name" class="form-label form-label-custom">First name <span class="req-mark">*</span></label>
                                                     <input type="text" id="edit_first_name" name="first_name" class="form-control input-custom" required pattern="[A-Za-zÑñ\s.,'\-]+"
                                                            value="<?= htmlspecialchars($editFirstName) ?>">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_middle_name" class="form-label form-label-custom">Middle Name:</label>
+                                                    <label for="edit_middle_name" class="form-label form-label-custom">Middle name</label>
                                                     <input type="text" id="edit_middle_name" name="middle_name" class="form-control input-custom" pattern="[A-Za-zÑñ\s.,'\-]+"
                                                            value="<?= htmlspecialchars($editMiddleName) ?>" placeholder="(optional)">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_student_number" class="form-label form-label-custom">Student Number:</label>
+                                                    <label for="edit_student_number" class="form-label form-label-custom">Student number <span class="req-mark">*</span></label>
                                                     <input type="text" id="edit_student_number" name="student_number" class="form-control input-custom" required
                                                            value="<?= htmlspecialchars($student['student_number'] ?? '') ?>" maxlength="15" placeholder="0000-00000-BN-0" inputmode="numeric" autocomplete="off">
                                                 </div>
                                                 <small id="editStudentNumberFeedback" class="text-danger d-block mb-3" hidden></small>
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_course" class="form-label form-label-custom">Course:</label>
+                                                    <label for="edit_course" class="form-label form-label-custom">Course</label>
                                                     <input type="text" id="edit_course" name="course" class="form-control input-custom"
                                                            value="<?= htmlspecialchars($student['course'] ?? '') ?>" pattern="[A-Za-z\s\-]+" placeholder="BSIT">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_year_section" class="form-label form-label-custom">Year &amp; Section:</label>
+                                                    <label for="edit_year_section" class="form-label form-label-custom">Year &amp; section</label>
                                                     <input type="text" id="edit_year_section" name="year_section" class="form-control input-custom"
                                                            value="<?= htmlspecialchars($student['year_section'] ?? '') ?>" pattern="[0-9]-[0-9]" inputmode="numeric" maxlength="3" title="One number for the year and one for the section, e.g. 1-1" placeholder="1-1">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_sex" class="form-label form-label-custom">Gender:</label>
+                                                    <label for="edit_sex" class="form-label form-label-custom">Gender</label>
                                                     <input type="text" id="edit_sex" name="sex" class="form-control input-custom"
                                                            value="<?= htmlspecialchars($student['sex'] ?? '') ?>" pattern="[A-Za-z\s]+" placeholder="Female/Male">
                                                 </div>
                                             </div>
                                             <div class="col-md-6">
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_admission_track" class="form-label form-label-custom">Admission Type:</label>
+                                                    <label for="edit_admission_track" class="form-label form-label-custom">Admission type</label>
                                                     <select id="edit_admission_track" name="admission_track" class="form-select input-custom">
                                                         <?php foreach (getAdmissionTracks() as $trackValue => $trackLabel): ?>
                                                             <option value="<?= htmlspecialchars($trackValue) ?>" <?= $trackValue === $admissionTrack ? 'selected' : '' ?>><?= htmlspecialchars($trackLabel) ?></option>
@@ -1874,18 +1887,18 @@ include 'navbar.php';
                                                     </select>
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_date_of_birth" class="form-label form-label-custom">Date of Birth:</label>
+                                                    <label for="edit_date_of_birth" class="form-label form-label-custom">Date of birth</label>
                                                     <input type="date" id="edit_date_of_birth" name="date_of_birth" class="form-control input-custom"
                                                            value="<?= htmlspecialchars($student['date_of_birth'] ?? '') ?>" min="1900-01-01" max="<?= minimumBirthDate() ?>"
                                                            title="The student must turn at least 17 years old this year">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_place_of_birth" class="form-label form-label-custom">Place of Birth:</label>
+                                                    <label for="edit_place_of_birth" class="form-label form-label-custom">Place of birth</label>
                                                     <input type="text" id="edit_place_of_birth" name="place_of_birth" class="form-control input-custom"
                                                            value="<?= htmlspecialchars($student['place_of_birth'] ?? '') ?>" placeholder="City/Municipality, Province">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_graduation_year" class="form-label form-label-custom">Graduation SY:</label>
+                                                    <label for="edit_graduation_year" class="form-label form-label-custom">Graduation SY</label>
                                                     <select id="edit_graduation_year" name="graduation_year" class="form-select input-custom"
                                                             title="The student is moved to Archive as GRADUATE after July 31 at the end of this school year">
                                                         <?php $autoYear = entryYearFromStudentNumber($student['student_number'] ?? ''); ?>
@@ -1899,18 +1912,18 @@ include 'navbar.php';
                                                 </div>
                                                 <small id="editGraduationNote" class="text-danger d-block mb-3" hidden></small>
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_mobile_number" class="form-label form-label-custom">Mobile Number:</label>
+                                                    <label for="edit_mobile_number" class="form-label form-label-custom">Mobile number</label>
                                                     <input type="text" id="edit_mobile_number" name="mobile_number" class="form-control input-custom"
                                                            value="<?= htmlspecialchars($student['mobile_number'] ?? '') ?>" pattern="[0-9]{11}" maxlength="11" inputmode="numeric" placeholder="09XXXXXXXXX">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_email" class="form-label form-label-custom">Email Address:</label>
+                                                    <label for="edit_email" class="form-label form-label-custom">Email address</label>
                                                     <input type="email" id="edit_email" name="email" class="form-control input-custom"
                                                            value="<?= htmlspecialchars($student['email'] ?? '') ?>" pattern="[^@\s]+@[^@\s]+\.[^@\s]+" title="Enter a valid email address" placeholder="name@example.com">
                                                 </div>
                                                 <small id="editEmailFeedback" class="text-danger d-block mb-3"></small>
                                                 <div class="d-flex align-items-start mb-3">
-                                                    <label for="edit_address" class="form-label form-label-custom">Home Address:</label>
+                                                    <label for="edit_address" class="form-label form-label-custom">Home address</label>
                                                     <textarea id="edit_address" name="address" class="form-control input-custom" rows="3" placeholder="House/Unit No., Street Name, Barangay, City/Municipality, Province"><?= htmlspecialchars($student['address'] ?? '') ?></textarea>
                                                 </div>
                                             </div>
@@ -1970,7 +1983,8 @@ include 'navbar.php';
 
                     </div>
 
-                    <div class="modal-footer">
+                    <div class="modal-footer add-footer">
+                        <span class="add-footer-note"><i class="bi bi-info-circle"></i> Fields marked <span class="req-mark">*</span> are required</span>
                         <button type="button" class="btn btn-cancel" data-bs-dismiss="modal">CANCEL</button>
                         <button type="submit" class="btn btn-save" id="saveDocumentBtn">UPDATE</button>
                     </div>

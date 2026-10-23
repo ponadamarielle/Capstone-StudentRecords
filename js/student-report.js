@@ -18,13 +18,16 @@ document.addEventListener('DOMContentLoaded', function () {
     const dialog = el('div', 'modal-dialog modal-dialog-centered modal-xl');
     const content = el('div', 'modal-content');
 
-    const header = el('div', 'modal-header');
-    header.appendChild(el('h5', 'modal-title report-title', 'Student Record Report'));
-    const closeX = el('button', 'btn-close');
-    closeX.type = 'button';
-    closeX.setAttribute('data-bs-dismiss', 'modal');
-    closeX.setAttribute('aria-label', 'Close');
-    header.appendChild(closeX);
+    const header = el('div', 'modal-header report-header');
+    const heading = el('div', 'report-heading');
+    const headingIcon = el('span', 'report-heading-icon');
+    headingIcon.appendChild(el('i', 'bi bi-file-earmark-text'));
+    const headingText = el('div', 'report-heading-text');
+    headingText.appendChild(el('h5', 'modal-title report-title', 'Student record report'));
+    headingText.appendChild(el('p', 'report-subtitle', 'Preview the report. Use the viewer\'s download or print button to save a copy.'));
+    heading.appendChild(headingIcon);
+    heading.appendChild(headingText);
+    header.appendChild(heading);
 
     const body = el('div', 'modal-body');
     const status = el('div', 'report-status');
@@ -37,9 +40,15 @@ document.addEventListener('DOMContentLoaded', function () {
     body.appendChild(status);
     body.appendChild(frame);
 
+    const footer = el('div', 'modal-footer report-footer');
+    const closeBtn = el('button', 'btn report-secondary-btn', 'CLOSE');
+    closeBtn.type = 'button';
+    closeBtn.setAttribute('data-bs-dismiss', 'modal');
+    footer.appendChild(closeBtn);
 
     content.appendChild(header);
     content.appendChild(body);
+    content.appendChild(footer);
     dialog.appendChild(content);
     modalEl.appendChild(dialog);
     document.body.appendChild(modalEl);

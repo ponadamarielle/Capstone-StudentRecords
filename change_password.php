@@ -87,49 +87,97 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
     <link href="css/bootstrap.min.css" rel="stylesheet">
     <link href="css/bootstrap-icons.css" rel="stylesheet">
     <link href="css/font.css" rel="stylesheet">
-    <link href="css/change_password.css" rel="stylesheet">
+    <link href="css/change_password.css?v=<?= @filemtime(__DIR__ . '/css/change_password.css') ?>" rel="stylesheet">
 
 </head>
-<body>
+<body class="auth-body">
 
-    <div class="bg-wrapper"></div>
-
-    <div class="page-center">
-        <div class="login-card">
-
-            <img src="images/logo.png" class="brand-logo" alt="PUP Logo">
-            <div class="brand-name">
-                <span class="pup">PUP </span><span class="erecords">eRecords</span>
+    <main class="auth-page">
+        <aside class="auth-side">
+            <div class="auth-brand">
+                <img src="images/logo.png" class="auth-brand-logo" alt="PUP Logo">
+                <span class="auth-brand-name">PUP eRecords</span>
             </div>
-            <p class="card-subtitle">Change Password</p>
 
-            <form method="POST">
-                <input
-                    type="hidden"
-                    name="csrf_token"
-                    value="<?php echo $_SESSION['csrf_token']; ?>"
-                >
-                <div class="input-gap">
+            <div class="auth-side-content">
+                <p class="auth-eyebrow">First-time sign in</p>
+                <h1 class="auth-headline">Let's secure your account.</h1>
+                <p class="auth-lead">You're signing in with a temporary password. Choose a new one that only you know. You'll use it every time you access student records.</p>
+            </div>
 
-                    <input type="password" class="form-control" name="new_password" id="new_password" placeholder="New Password" required>
-                    <label class="pass-label">
-                        <i class="bi bi-lightbulb-fill" tip-icon></i>
-                        Password Tips: Minimum 8 chars, upper &amp; lowercase, number &amp; symbol
-                    </label>
-                    <small id="err_new" class="field-error"></small>
+            <p class="auth-copyright">&copy; <?= date('Y') ?> Polytechnic University of the Philippines</p>
+            <div class="auth-rings" aria-hidden="true"></div>
+        </aside>
 
-                    <input type="password" class="form-control" name="confirm_password" id="confirm_password" placeholder="Confirm New Password" required>
-                    <small id="err_confirm" class="field-error"></small>
-
+        <section class="auth-main">
+            <div class="auth-form-wrap">
+                <div class="auth-mobile-brand">
+                    <img src="images/logo.png" class="auth-brand-logo" alt="PUP Logo">
+                    <span class="auth-brand-name">PUP eRecords</span>
                 </div>
 
-                <button type="submit" class="btn-login" id="save-btn">Save Changes</button>
-            </form>
+                <h2 class="auth-title">Set up your password</h2>
+                <p class="auth-subtitle">Create a strong password before you continue.</p>
 
-        </div>
-    </div>
+                <form method="POST" class="auth-form">
+                    <input
+                        type="hidden"
+                        name="csrf_token"
+                        value="<?php echo $_SESSION['csrf_token']; ?>"
+                    >
+
+                    <label class="auth-label" for="new_password">New password</label>
+                    <div class="auth-input">
+                        <i class="bi bi-lock auth-input-icon"></i>
+                        <input type="password" class="form-control" name="new_password" id="new_password" placeholder="Enter a new password" autocomplete="new-password" required>
+                        <button type="button" class="auth-eye" data-toggle-password="new_password" aria-label="Show password">
+                            <i class="bi bi-eye-slash"></i>
+                        </button>
+                    </div>
+                    <small id="err_new" class="field-error"></small>
+
+                    <div class="auth-strength" id="passwordStrength">
+                        <div class="auth-strength-head">
+                            <span>Password strength</span>
+                            <span class="auth-strength-label" id="passwordStrengthLabel"></span>
+                        </div>
+                        <div class="auth-strength-bars">
+                            <span></span><span></span><span></span><span></span>
+                        </div>
+                    </div>
+
+                    <ul class="auth-rules" id="passwordRules">
+                        <li data-rule="length"><i class="bi bi-info-circle"></i> At least 8 characters</li>
+                        <li data-rule="case"><i class="bi bi-info-circle"></i> Upper and lowercase letters</li>
+                        <li data-rule="number"><i class="bi bi-info-circle"></i> At least one number</li>
+                        <li data-rule="symbol"><i class="bi bi-info-circle"></i> At least one symbol (e.g. ! @ #)</li>
+                    </ul>
+
+                    <label class="auth-label" for="confirm_password">Confirm new password</label>
+                    <div class="auth-input">
+                        <i class="bi bi-lock auth-input-icon"></i>
+                        <input type="password" class="form-control" name="confirm_password" id="confirm_password" placeholder="Re-enter the new password" autocomplete="new-password" required>
+                        <button type="button" class="auth-eye" data-toggle-password="confirm_password" aria-label="Show password">
+                            <i class="bi bi-eye-slash"></i>
+                        </button>
+                    </div>
+                    <small id="err_confirm" class="field-error"></small>
+
+                    <?php if($error != ''): ?>
+                        <div class="alert alert-danger auth-alert" role="alert">
+                            <i class="bi bi-exclamation-circle"></i>
+                            <span><?php echo htmlspecialchars($error); ?></span>
+                        </div>
+                    <?php endif; ?>
+
+                    <button type="submit" class="auth-submit" id="save-btn">Save and continue</button>
+                </form>
+            </div>
+        </section>
+    </main>
 
 <script src="js/change_password.js"></script>
+<script src="js/auth.js?v=<?= @filemtime(__DIR__ . '/js/auth.js') ?>"></script>
 
 </body>
 </html>

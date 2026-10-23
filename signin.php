@@ -198,59 +198,111 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PUP Student Records</title>
     <link href="css/bootstrap.min.css" rel="stylesheet">
+    <link href="css/bootstrap-icons.css" rel="stylesheet">
     <link href="css/font.css" rel="stylesheet">
-    <link href="css/signin.css" rel="stylesheet">
+    <link href="css/signin.css?v=<?= @filemtime(__DIR__ . '/css/signin.css') ?>" rel="stylesheet">
 </head>
-<body>
+<body class="auth-body">
 
-    <div class="bg-wrapper"></div>
-
-    <div class="page-center">
-        <div class="login-card">
-
-            <img src="images/logo.png" class="brand-logo" alt="PUP Logo">
-            <div class="brand-name">
-                <span class="pup">PUP </span><span class="erecords">eRecords</span>
+    <main class="auth-page">
+        <aside class="auth-side">
+            <div class="auth-brand">
+                <img src="images/logo.png" class="auth-brand-logo" alt="PUP Logo">
+                <span class="auth-brand-name">PUP eRecords</span>
             </div>
-            <p class="card-subtitle">Sign in to your account</p>
 
-            <form method="POST">
-            <input
-                type="hidden"
-                name="csrf_token"
-                value="<?php echo $_SESSION['csrf_token']; ?>"
-            >
-                <div class="input-gap">
-                    <input
-                        type="email"
-                        class="form-control"
-                        name="email"
-                        placeholder="Email"
-                        value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>"
-                        pattern="[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
-                        title="Please enter a valid email address"
-                        required
-                    >
-                    <input
-                        type="password"
-                        class="form-control"
-                        name="password"
-                        placeholder="Password"
-                        required
-                    >
+            <div class="auth-side-content">
+                <p class="auth-eyebrow">Admission and Registration Office</p>
+                <h1 class="auth-headline">Every student record, safe and easy to find.</h1>
+                <p class="auth-lead">Digitize, manage and back up student files in one secure place.</p>
+                <ul class="auth-features">
+                    <li><span class="auth-feature-icon"><i class="bi bi-file-earmark-text"></i></span>Digitized student files and documents</li>
+                    <li><span class="auth-feature-icon"><i class="bi bi-stars"></i></span>Smart extraction from uploaded PDFs</li>
+                    <li><span class="auth-feature-icon"><i class="bi bi-cloud-check"></i></span>Automatic scheduled backups</li>
+                </ul>
+            </div>
+
+            <p class="auth-copyright">&copy; <?= date('Y') ?> Polytechnic University of the Philippines</p>
+            <div class="auth-rings" aria-hidden="true"></div>
+        </aside>
+
+        <section class="auth-main">
+            <div class="auth-form-wrap">
+                <div class="auth-mobile-brand">
+                    <img src="images/logo.png" class="auth-brand-logo" alt="PUP Logo">
+                    <span class="auth-brand-name">PUP eRecords</span>
                 </div>
 
-                <?php if($error != ''): ?>
-                    <div class="alert alert-danger" role="alert">
-                        <?php echo htmlspecialchars($error); ?>
+                <h2 class="auth-title">Welcome back</h2>
+                <p class="auth-subtitle">Sign in to continue to PUP eRecords.</p>
+
+                <form method="POST" id="signinForm" class="auth-form">
+                    <input
+                        type="hidden"
+                        name="csrf_token"
+                        value="<?php echo $_SESSION['csrf_token']; ?>"
+                    >
+
+                    <label class="auth-label" for="signinEmail">Email address</label>
+                    <div class="auth-input">
+                        <i class="bi bi-envelope auth-input-icon"></i>
+                        <input
+                            type="email"
+                            class="form-control"
+                            id="signinEmail"
+                            name="email"
+                            placeholder="you@pup.edu.ph"
+                            value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>"
+                            pattern="[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+                            title="Please enter a valid email address"
+                            autocomplete="username"
+                            required
+                        >
                     </div>
-                <?php endif; ?>
 
-                <button type="submit" class="btn-login">Sign in</button>
-            </form>
+                    <label class="auth-label" for="signinPassword">Password</label>
+                    <div class="auth-input">
+                        <i class="bi bi-lock auth-input-icon"></i>
+                        <input
+                            type="password"
+                            class="form-control"
+                            id="signinPassword"
+                            name="password"
+                            placeholder="Enter your password"
+                            autocomplete="current-password"
+                            required
+                        >
+                        <button type="button" class="auth-eye" data-toggle-password="signinPassword" aria-label="Show password">
+                            <i class="bi bi-eye-slash"></i>
+                        </button>
+                    </div>
 
-        </div>
-    </div>
+                    <div class="auth-row">
+                        <label class="auth-check">
+                            <input type="checkbox" id="rememberMe">
+                            <span>Remember me</span>
+                        </label>
+                        <button type="button" class="auth-link" id="forgotPasswordBtn">Forgot password?</button>
+                    </div>
+                    <div class="auth-note" id="forgotPasswordNote" hidden>
+                        <i class="bi bi-info-circle"></i>
+                        <span>Passwords are managed by the Super Admin. Please contact the Super Admin to reset your password.</span>
+                    </div>
 
+                    <?php if($error != ''): ?>
+                        <div class="alert alert-danger auth-alert" role="alert">
+                            <i class="bi bi-exclamation-circle"></i>
+                            <span><?php echo htmlspecialchars($error); ?></span>
+                        </div>
+                    <?php endif; ?>
+
+                    <button type="submit" class="auth-submit">Sign in</button>
+                </form>
+
+            </div>
+        </section>
+    </main>
+
+<script src="js/auth.js?v=<?= @filemtime(__DIR__ . '/js/auth.js') ?>"></script>
 </body>
 </html>

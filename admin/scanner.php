@@ -535,11 +535,17 @@ function scanUsbPresent()
     if (PHP_OS_FAMILY !== 'Windows' || scanEnv('SCANNER_SKIP_USB_CHECK', '') === '1') {
         return [true, ''];
     }
-    $pattern = scanEnv('SCANNER_USB_MATCH', 'VID_07B3|Plustek|S410');
-    $script = '$p = ' . "'" . str_replace("'", "''", $pattern) . "'" . '; '
-        . 'Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | '
-        . 'Where-Object { $_.InstanceId -match $p -or $_.FriendlyName -match $p } | '
-        . 'ForEach-Object { $_.FriendlyName }';
+    $pattern = scanEnv('SCANNER_USB_MATCH', '');
+    if ($pattern === '') {
+        $script = 'Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | '
+            . 'Where-Object { $_.Class -eq ' . "'Image'" . ' -and $_.Status -eq ' . "'OK'" . ' -and $_.FriendlyName -notmatch ' . "'camera|webcam'" . ' } | '
+            . 'ForEach-Object { $_.FriendlyName }; exit 0';
+    } else {
+        $script = '$p = ' . "'" . str_replace("'", "''", $pattern) . "'" . '; '
+            . 'Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | '
+            . 'Where-Object { $_.InstanceId -match $p -or $_.FriendlyName -match $p } | '
+            . 'ForEach-Object { $_.FriendlyName }; exit 0';
+    }
     [$ok, $output] = scanRun(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', $script]);
     $names = array_values(array_filter(array_map('trim', preg_split('/\r?\n/', $output))));
     if (!$ok) {
@@ -552,13 +558,13 @@ function scanFriendlyError($output)
 {
     $text = strtolower($output);
     if ($text === '') {
-        return 'No page was scanned. Insert the document first and wait until the scanner holds the paper, then click START SCAN.';
+        return 'No page was scanned. Place the document in the scanner first, then click START SCAN.';
     }
     if (strpos($text, 'no scanned pages') !== false || strpos($text, 'no pages') !== false || strpos($text, 'paper') !== false || strpos($text, 'feeder') !== false) {
-        return 'No page was scanned. Insert the document first and wait until the scanner holds the paper, then click START SCAN.';
+        return 'No page was scanned. Place the document in the scanner first, then click START SCAN.';
     }
     if (strpos($text, 'not found') !== false || strpos($text, 'no device') !== false || strpos($text, 'offline') !== false || strpos($text, 'disconnected') !== false) {
-        return 'The scanner was not found. Check that the Plustek scanner is plugged in and turned on.';
+        return 'The scanner was not found. Check that the scanner is plugged in and turned on.';
     }
     if (strpos($text, 'in use') !== false || strpos($text, 'busy') !== false) {
         return 'The scanner is busy. Close other scanning programs and try again.';
@@ -645,7 +651,7 @@ if ($action === 'devices' && scanMode() === 'folder') {
         'connected' => $plugged !== false && $folderOk,
         'driver'    => true,
         'plugged'   => $plugged,
-        'device'    => $usbName !== '' ? $usbName : 'Plustek scanner',
+        'device'    => $usbName !== '' ? $usbName : 'Scanner',
         'devices'   => [],
         'folder'    => $folder,
         'warning'   => function_exists('imagecreatefromjpeg') ? '' : 'Black borders cannot be removed because the PHP GD extension is turned off. Enable extension=gd in php.ini and restart Apache.',
@@ -748,10 +754,10 @@ if ($action === 'devices') {
     @set_time_limit(120);
     [$ok, $output] = scanRun([$console, '--listdevices', '--driver', scanEnv('SCANNER_DRIVER', 'twain')]);
     $devices = array_values(array_filter(array_map('trim', preg_split('/\r?\n/', $output))));
-    $wanted = scanEnv('SCANNER_DEVICE', 'S410');
+    $wanted = scanEnv('SCANNER_DEVICE', '');
     $match = null;
     foreach ($devices as $device) {
-        if (stripos($device, $wanted) !== false) {
+        if ($wanted === '' || stripos($device, $wanted) !== false) {
             $match = $device;
             break;
         }
@@ -784,7 +790,7 @@ if ($action === 'scan') {
     [$plugged] = scanUsbPresent();
     if ($plugged === false) {
         session_write_close();
-        scanJson(['success' => false, 'message' => 'The scanner is not plugged in. Connect the Plustek scanner to this computer with its USB cable, then try again.']);
+        scanJson(['success' => false, 'message' => 'The scanner is not plugged in. Connect the scanner to this computer with its USB cable, then try again.']);
     }
 
     $appendToken = $_POST['append'] ?? '';
@@ -813,11 +819,22 @@ if ($action === 'scan') {
     @mkdir($dir, 0700, true);
     $dpi = (int) scanEnv('SCANNER_DPI', '300');
     $dpi = $dpi > 0 ? $dpi : 300;
+    $device = scanEnv('SCANNER_DEVICE', '');
+    if ($device === '') {
+        [, $listed] = scanRun([$console, '--listdevices', '--driver', scanEnv('SCANNER_DRIVER', 'twain')]);
+        $device = array_values(array_filter(array_map('trim', preg_split('/\r?\n/', $listed))))[0] ?? '';
+    }
+    if ($device === '') {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+        scanRemoveToken($token);
+        scanJson(['success' => false, 'message' => 'No scanner was found. Check that the scanner is plugged in and turned on.']);
+    }
     $command = [
         $console,
         '--noprofile',
         '--driver', scanEnv('SCANNER_DRIVER', 'twain'),
-        '--device', scanEnv('SCANNER_DEVICE', 'S410'),
+        '--device', $device,
         '--source', scanEnv('SCANNER_SOURCE', 'feeder'),
         '--dpi', (string) $dpi,
         '--bitdepth', scanEnv('SCANNER_COLOR', 'color'),

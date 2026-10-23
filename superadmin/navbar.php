@@ -12,51 +12,81 @@
 <link href="../css/bootstrap-icons.css" rel="stylesheet">
 <link href="../css/navbar-superadmin.css" rel="stylesheet">
 <script src="../js/bootstrap.bundle.min.js"></script>
+<script src="../js/sidebar.js"></script>
 
-<nav class="navbar navbar-expand-lg navbar">
-    <div class="container-fluid">
-        <a class="navbar-brand d-flex align-items-center" href="#">
-            <img src="../images/logo.png" alt="PUP Logo" class="logo">
-            <span class="pup">PUP <span class="erecords">eRecords</span></span>
-        </a>
+<?php
+    $pageTitles = [
+        'dashboard.php'       => ['Dashboard', 'Overview of student records and document requirements.'],
+        'user_management.php' => ['User Management', 'Manage admin accounts and control who can access records.'],
+        'backup_logs.php'     => ['Backup & Logs', 'Keep records safe and see who did what, and when.'],
+    ];
+    [$pageTitle, $pageSubtitle] = $pageTitles[$currentPage] ?? ['PUP eRecords', ''];
+    $nameParts = preg_split('/[\s,]+/', trim((string) $userName), -1, PREG_SPLIT_NO_EMPTY);
+    $userInitials = strtoupper(substr($nameParts[0] ?? '', 0, 1) . substr($nameParts[count($nameParts) - 1] ?? '', 0, 1));
+?>
 
-        <div class="collapse navbar-collapse" id="navbarMenu">
-            <ul class="navbar-nav navbar-menu">
-                <li class="nav-item me-4">
-                    <a class="nav-link <?php echo ($currentPage == 'dashboard.php') ? 'active' : ''; ?>" href="dashboard.php">Dashboard</a>
-                </li>
-                <li class="nav-item me-4">
-                    <a class="nav-link <?php echo ($currentPage == 'user_management.php') ? 'active' : ''; ?>" href="user_management.php">User Management</a>
-                </li>
-                <li class="nav-item me-4">
-                    <a class="nav-link <?php echo ($currentPage == 'backup_logs.php') ? 'active' : ''; ?>" href="backup_logs.php">Backup & Logs</a>
-                </li>
-            </ul>
+<aside class="offcanvas-lg offcanvas-start admin-sidebar" id="adminSidebar" tabindex="-1" aria-label="Main menu">
+    <button class="admin-collapse-toggle d-none d-lg-inline-flex" type="button" id="sidebarCollapseBtn" aria-controls="adminSidebar" aria-expanded="true" aria-label="Collapse sidebar" title="Collapse sidebar">
+        <i class="bi bi-chevron-double-left"></i>
+    </button>
+    <div class="admin-sidebar-inner">
+        <div class="admin-brand">
+            <img src="../images/logo.png" alt="PUP Logo" class="admin-brand-logo">
+            <div class="admin-brand-text">
+                <span class="admin-brand-name">PUP eRecords</span>
+                <span class="admin-brand-sub">Student Records System</span>
+            </div>
+            <button type="button" class="admin-sidebar-close d-lg-none" data-bs-dismiss="offcanvas" data-bs-target="#adminSidebar" aria-label="Close menu">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
 
-            <ul class="navbar-nav ms-auto align-items-center">
-                <!-- registrar info -->
-                <li class="nav-item d-flex flex-column text-start me-3">
-                    <span class="fw-bold text-white"><?php echo htmlspecialchars($userName); ?></span>
-                    <small class="text-white-50"><?php echo htmlspecialchars($userRole); ?></small>
-                </li>
+        <p class="admin-menu-label">Main menu</p>
+        <nav class="admin-menu">
+            <a class="admin-menu-item <?php echo ($currentPage == 'dashboard.php') ? 'active' : ''; ?>" href="dashboard.php" title="Dashboard">
+                <i class="bi bi-grid-1x2"></i><span>Dashboard</span>
+            </a>
+            <a class="admin-menu-item <?php echo ($currentPage == 'user_management.php') ? 'active' : ''; ?>" href="user_management.php" title="User Management">
+                <i class="bi bi-people"></i><span>User Management</span>
+            </a>
+            <a class="admin-menu-item <?php echo ($currentPage == 'backup_logs.php') ? 'active' : ''; ?>" href="backup_logs.php" title="Backup &amp; Logs">
+                <i class="bi bi-database"></i><span>Backup &amp; Logs</span>
+            </a>
+        </nav>
 
-                <!-- Icons -->
-                <li class="nav-item dropdown me-3 user-dropdown">
-                    <span class="nav-link user-icon" id="userDropdown" aria-haspopup="true">
-                        <i class="bi bi-person-fill"></i>
-                    </span>
-
-                    <!-- Dropdown Box -->
-                    <div class="dropdown-menu user-dropdown-menu p-3">
-                        <a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#logoutModal">
-                            <i class="bi bi-box-arrow-right me-2"></i> Sign Out
-                        </a>
-                    </div>
-                </li>
-            </ul>
+        <div class="admin-sidebar-bottom">
+            <div class="admin-privacy">
+                <p class="admin-privacy-title">Data Privacy Notice</p>
+                <p class="admin-privacy-text">Student records are protected under RA 10173. Handle with care.</p>
+            </div>
+            <a class="admin-logout" href="#" title="Log out" data-bs-toggle="modal" data-bs-target="#logoutModal">
+                <i class="bi bi-box-arrow-right"></i><span>Log out</span>
+            </a>
         </div>
     </div>
-</nav>
+</aside>
+
+<header class="admin-topbar">
+    <button class="admin-menu-toggle d-lg-none" type="button" data-bs-toggle="offcanvas" data-bs-target="#adminSidebar" aria-controls="adminSidebar" aria-label="Open menu">
+        <i class="bi bi-list"></i>
+    </button>
+    <div class="admin-topbar-title">
+        <h1 class="admin-page-title"><?php echo htmlspecialchars($pageTitle); ?></h1>
+        <?php if ($pageSubtitle !== ''): ?>
+            <p class="admin-page-subtitle"><?php echo htmlspecialchars($pageSubtitle); ?></p>
+        <?php endif; ?>
+    </div>
+
+    <div class="admin-user">
+        <span class="admin-user-trigger" id="userDropdown">
+            <span class="admin-avatar"><?php echo htmlspecialchars($userInitials); ?></span>
+            <span class="admin-user-text">
+                <span class="navbar-username"><?php echo htmlspecialchars($userName); ?></span>
+                <small class="navbar-role"><?php echo htmlspecialchars($userRole); ?></small>
+            </span>
+        </span>
+    </div>
+</header>
 
 <!-- Logout Modal -->
 <div class="modal fade" id="logoutModal" tabindex="-1" aria-hidden="true">

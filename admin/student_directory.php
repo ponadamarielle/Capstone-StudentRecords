@@ -760,6 +760,7 @@ function handleAddStudent($conn)
     if ($firstName === '')     $missing[] = 'First Name';
     if ($course === '')        $missing[] = 'Course';
     if ($yearSection === '')   $missing[] = 'Year & Section';
+    if (trim($_POST['email'] ?? '') === '') $missing[] = 'Email Address';
 
     if (!empty($missing)) {
         echo json_encode([
@@ -1157,13 +1158,14 @@ include 'navbar.php';
 
       <div class="add-filter">
         <button class="btn-add" type="button" data-bs-toggle="modal" data-bs-target="#addRecordsModal">
-            <i class="bi bi-plus-circle"></i>ADD
+            <i class="bi bi-plus-circle"></i>ADD STUDENT
         </button>
       
       <form method="GET" action="" class="filter-row" id="directoryFilterOnlyForm">
         <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
 
-        <select class="filter" id="courseFilterSelect" name="course">
+        <div class="filter-wrap">
+        <select class="filter<?= $courseFilter !== '' ? ' has-value' : '' ?>" id="courseFilterSelect" name="course">
             <option value="">Course</option>
             <?php foreach ($courseOptions as $courseValue => $courseLabel): ?>
                 <option value="<?= htmlspecialchars($courseValue) ?>" <?= $courseFilter === $courseValue ? 'selected' : '' ?>>
@@ -1171,8 +1173,13 @@ include 'navbar.php';
                 </option>
             <?php endforeach; ?>
         </select>
+        <?php if ($courseFilter !== ''): ?>
+            <a href="student_directory.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'year_section' => $yearSectionFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear course"><i class="bi bi-x-circle"></i></a>
+        <?php endif; ?>
+        </div>
 
-        <select class="filter filter-year-section" id="yearSectionFilterSelect" name="year_section">
+        <div class="filter-wrap filter-wrap-year-section">
+        <select class="filter filter-year-section<?= $yearSectionFilter !== '' ? ' has-value' : '' ?>" id="yearSectionFilterSelect" name="year_section">
             <option value="">Year & Section</option>
             <?php foreach ($yearSectionOptions as $yearSectionOption): ?>
                 <option value="<?= htmlspecialchars($yearSectionOption) ?>" <?= $yearSectionFilter === $yearSectionOption ? 'selected' : '' ?>>
@@ -1180,6 +1187,10 @@ include 'navbar.php';
                 </option>
             <?php endforeach; ?>
             </select>
+        <?php if ($yearSectionFilter !== ''): ?>
+            <a href="student_directory.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'course' => $courseFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear year &amp; section"><i class="bi bi-x-circle"></i></a>
+        <?php endif; ?>
+        </div>
       </form>
     </div>
 
@@ -1227,7 +1238,13 @@ include 'navbar.php';
         <div class="modal-content">
 
             <div class="modal-header add-header">
-                <h5 class="modal-title add-title">Add New Student Record</h5>
+                <div class="add-heading">
+                    <span class="add-heading-icon"><i class="bi bi-person-plus"></i></span>
+                    <div class="add-heading-text">
+                        <h5 class="modal-title add-title">Add new student record</h5>
+                        <p class="add-subtitle">Scan or upload the student's documents to auto-fill the information.</p>
+                    </div>
+                </div>
 
                 <div class="header-btn-group">
                     <button type="button" class="btn scan-document-btn">
@@ -1253,13 +1270,14 @@ include 'navbar.php';
                 <div class="student-sidebar">
                 <div class="photo-container" id="photoContainer">
                     <div class="photo-placeholder">
-                        <i class="bi bi-person-circle"></i>
-                        <span>Student Photo</span>
+                        <i class="bi bi-person"></i>
                     </div>
                 </div>
+                <span class="photo-caption">Student photo</span>
+                <small class="photo-hint">JPG or PNG</small>
                 <input type="file" id="replacePhotoInput" name="photo" accept=".jpg,.jpeg,.png" hidden>
                 <button type="button" class="btn btn-sm btn-outline-secondary replace-photo-btn" id="replacePhotoBtn">
-                    <i class="bi bi-upload"></i> Upload Photo
+                    <i class="bi bi-upload"></i> Upload photo
                 </button>
 
                 </div>
@@ -1303,7 +1321,7 @@ include 'navbar.php';
                     <div class="col-md-6">
                     <div class="d-flex align-items-center mb-3">
                         <label for="last_name" class="form-label form-label-custom">
-                            Last Name:
+                            Last name <span class="req-mark">*</span>
                         </label>
                         <input type="text" id="last_name" name="last_name" class="form-control input-custom" required
                                pattern="[A-Za-zÑñ\s.,'\-]+">
@@ -1311,7 +1329,7 @@ include 'navbar.php';
 
                     <div class="d-flex align-items-center mb-3">
                         <label for="first_name" class="form-label form-label-custom">
-                            First Name:
+                            First name <span class="req-mark">*</span>
                         </label>
                         <input type="text" id="first_name" name="first_name" class="form-control input-custom" required
                                pattern="[A-Za-zÑñ\s.,'\-]+">
@@ -1319,7 +1337,7 @@ include 'navbar.php';
 
                     <div class="d-flex align-items-center mb-3">
                         <label for="middle_name" class="form-label form-label-custom">
-                            Middle Name:
+                            Middle name
                         </label>
                         <input type="text" id="middle_name" name="middle_name" class="form-control input-custom"
                                pattern="[A-Za-zÑñ\s.,'\-]+" placeholder="(optional)">
@@ -1327,7 +1345,7 @@ include 'navbar.php';
 
                     <div class="d-flex align-items-center mb-3">
                         <label for="student_number" class="form-label form-label-custom">
-                            Student Number:
+                            Student number <span class="req-mark">*</span>
                         </label>
                         <input type="text" id="student_number" name="student_number" class="form-control input-custom" required
                                maxlength="15" placeholder="0000-00000-BN-0">
@@ -1336,7 +1354,7 @@ include 'navbar.php';
 
                     <div class="d-flex align-items-center mb-3">
                         <label for="course" class="form-label form-label-custom">
-                            Course:
+                            Course <span class="req-mark">*</span>
                         </label>
                         <input type="text" id="course" name="course" class="form-control input-custom"
                                pattern="[A-Za-z\s\-]+" placeholder="BSIT">
@@ -1344,7 +1362,7 @@ include 'navbar.php';
 
                     <div class="d-flex align-items-center mb-3">
                         <label for="year_section" class="form-label form-label-custom">
-                            Year & Section:
+                            Year & section <span class="req-mark">*</span>
                         </label>
                         <input type="text" id="year_section" name="year_section" class="form-control input-custom"
                                pattern="[0-9]-[0-9]" inputmode="numeric" maxlength="3"
@@ -1353,7 +1371,7 @@ include 'navbar.php';
 
                     <div class="d-flex align-items-center mb-3">
                         <label for="graduation_sy_display" class="form-label form-label-custom">
-                            Graduation SY:
+                            Graduation SY
                         </label>
                         <input type="text" id="graduation_sy_display" class="form-control input-custom graduation-display bg-light"
                                readonly tabindex="-1" placeholder="Based on the student number">
@@ -1362,7 +1380,7 @@ include 'navbar.php';
 
                     <div class="d-flex align-items-center mb-3">
                         <label for="sex" class="form-label form-label-custom">
-                            Gender:
+                            Gender
                         </label>
                         <input type="text" id="sex" name="sex" class="form-control input-custom"
                                pattern="[A-Za-z\s]+" placeholder="Female/Male">
@@ -1372,7 +1390,7 @@ include 'navbar.php';
                     <div class="col-md-6">
                     <div class="d-flex align-items-center mb-3">
                         <label for="admission_track" class="form-label form-label-custom">
-                            Admission Type:
+                            Admission type
                         </label>
                         <select id="admission_track" name="admission_track" class="form-select input-custom">
                             <?php foreach (getAdmissionTracks() as $trackValue => $trackLabel): ?>
@@ -1383,7 +1401,7 @@ include 'navbar.php';
 
                     <div class="d-flex align-items-center mb-3">
                         <label for="date_of_birth" class="form-label form-label-custom">
-                            Date of Birth:
+                            Date of birth
                         </label>
                         <input type="date" id="date_of_birth" name="date_of_birth" class="form-control input-custom"
                                min="1900-01-01" max="<?= minimumBirthDate() ?>"
@@ -1391,7 +1409,7 @@ include 'navbar.php';
                     </div>
                     <div class="d-flex align-items-center mb-3">
                         <label for="place_of_birth" class="form-label form-label-custom">
-                            Place of Birth:
+                            Place of birth
                         </label>
                         <input type="text" id="place_of_birth" name="place_of_birth" class="form-control input-custom"
                                placeholder="City/Municipality, Province">
@@ -1399,7 +1417,7 @@ include 'navbar.php';
 
                     <div class="d-flex align-items-center mb-3">
                         <label for="mobile_number" class="form-label form-label-custom">
-                            Mobile Number:
+                            Mobile number
                         </label>
                         <input type="text" id="mobile_number" name="mobile_number" class="form-control input-custom"
                                pattern="[0-9]{11}" maxlength="11" inputmode="numeric" placeholder="09XXXXXXXXX">
@@ -1407,16 +1425,16 @@ include 'navbar.php';
 
                     <div class="d-flex align-items-center mb-3">
                         <label for="email" class="form-label form-label-custom">
-                            Email Address:
+                            Email address <span class="req-mark">*</span>
                         </label>
-                        <input type="email" id="email" name="email" class="form-control input-custom"
+                        <input type="email" id="email" name="email" class="form-control input-custom" required
                                pattern="[^@\s]+@[^@\s]+\.[^@\s]+" title="Enter a valid email address" placeholder="name@example.com">
                     </div>
                     <small id="emailFeedback" class="text-danger d-block mb-3"></small>
 
                     <div class="d-flex align-items-start mb-3">
                         <label for="address" class="form-label form-label-custom">
-                            Address:
+                            Home address
                         </label>
                         <textarea id="address" name="address" class="form-control input-custom" rows="3"
                                   placeholder="House/Unit No., Street Name, Barangay, City/Municipality, Province"></textarea>
@@ -1461,7 +1479,8 @@ include 'navbar.php';
             </div>
                 </div>
 
-                <div class="modal-footer">
+                <div class="modal-footer add-footer">
+                    <span class="add-footer-note"><i class="bi bi-info-circle"></i> Fields marked <span class="req-mark">*</span> are required</span>
                     <button type="button" class="btn btn-cancel" data-bs-dismiss="modal">CANCEL</button>
                     <button type="button" class="btn btn-save" id="saveStudentBtn">SAVE</button>
                 </div>
@@ -1475,12 +1494,16 @@ include 'navbar.php';
 <div class="modal fade" id="confirmSaveModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Confirm New Student Record</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            <div class="modal-header confirm-header">
+                <div class="add-heading">
+                    <span class="add-heading-icon"><i class="bi bi-clipboard-check"></i></span>
+                    <div class="add-heading-text">
+                        <h5 class="modal-title confirm-title">Confirm new student record</h5>
+                        <p class="add-subtitle">Please review the details before saving.</p>
+                    </div>
+                </div>
             </div>
             <div class="modal-body">
-                <p>Please confirm the details before saving:</p>
                 <table class="table table-sm confirm-summary-table">
                     <tr><th>Student Number</th><td id="confirmSummaryNumber"></td></tr>
                     <tr><th>Name</th><td id="confirmSummaryName"></td></tr>
@@ -1493,7 +1516,7 @@ include 'navbar.php';
                     <tr><th>Missing Requirements</th><td id="confirmSummaryMissing"></td></tr>
                 </table>
             </div>
-            <div class="modal-footer">
+            <div class="modal-footer confirm-footer">
                 <button type="button" class="btn btn-cancel" data-bs-dismiss="modal">Back to Edit</button>
                 <button type="button" class="btn btn-save" id="confirmSaveBtn">Confirm & Save</button>
             </div>
