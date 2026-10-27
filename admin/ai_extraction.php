@@ -19,6 +19,121 @@ function groqModel()
     return getenv('GROQ_VISION_MODEL') ?: GROQ_DEFAULT_MODEL;
 }
 
+function groqModels()
+{
+    $models = [groqModel()];
+    foreach (explode(',', (string) getenv('GROQ_FALLBACK_MODELS')) as $model) {
+        $model = trim($model);
+        if ($model !== '') {
+            $models[] = $model;
+        }
+    }
+    return array_values(array_unique($models));
+}
+
+function groqCooldownFile()
+{
+    return rtrim(sys_get_temp_dir(), '/\\') . DIRECTORY_SEPARATOR . 'pup_erecords_groq_cooldown.json';
+}
+
+function groqCooldowns($set = null)
+{
+    $file = groqCooldownFile();
+    $data = is_file($file) ? json_decode((string) @file_get_contents($file), true) : [];
+    $data = is_array($data) ? $data : [];
+    $now = time();
+    $data = array_filter($data, fn($until) => (int) $until > $now);
+    if ($set !== null) {
+        foreach ($set as $model => $until) {
+            $data[$model] = max((int) ($data[$model] ?? 0), (int) $until);
+        }
+        @file_put_contents($file, json_encode($data), LOCK_EX);
+    }
+    return $data;
+}
+
+function groqPickModel(array $skip = [])
+{
+    $cooling = groqCooldowns();
+    $models = groqModels();
+    foreach ($models as $model) {
+        if (!in_array($model, $skip, true) && !isset($cooling[$model])) {
+            return $model;
+        }
+    }
+    $candidates = array_values(array_diff($models, $skip)) ?: $models;
+    usort($candidates, fn($a, $b) => ($cooling[$a] ?? 0) <=> ($cooling[$b] ?? 0));
+    return $candidates[0];
+}
+
+function groqUsage($tokens = null)
+{
+    $file = groqCooldownFile() . '.usage.json';
+    $data = is_file($file) ? json_decode((string) @file_get_contents($file), true) : [];
+    $data = is_array($data) ? $data : [];
+    $since = microtime(true) - 60;
+    $data = array_values(array_filter($data, fn($row) => is_array($row) && ($row[0] ?? 0) > $since));
+    if ($tokens !== null && $tokens > 0) {
+        $data[] = [microtime(true), (int) $tokens];
+        @file_put_contents($file, json_encode($data), LOCK_EX);
+    }
+    return $data;
+}
+
+function groqWouldExceed($requests)
+{
+    $usage = groqUsage();
+    $limit = (int) (getenv('GROQ_ITPM_LIMIT') ?: 7000);
+    $last = $usage ? (int) end($usage)[1] : 0;
+    $perRequest = max($last, (int) (getenv('GROQ_TOKENS_PER_PAGE') ?: 3800));
+    $now = microtime(true);
+    $used = 0.0;
+    foreach ($usage as [$time, $tokens]) {
+        $used += $tokens * max(0, 1 - ($now - $time) / 60);
+    }
+    return $used + $perRequest * max(1, $requests) > $limit;
+}
+
+function groqResetSeconds($value)
+{
+    $value = trim((string) $value);
+    $seconds = 0.0;
+    if (preg_match_all('/([\d.]+)\s*(ms|h|m|s)/i', $value, $parts, PREG_SET_ORDER)) {
+        foreach ($parts as $part) {
+            $unit = strtolower($part[2]);
+            $seconds += (float) $part[1] * ($unit === 'h' ? 3600 : ($unit === 'm' ? 60 : ($unit === 'ms' ? 0.001 : 1)));
+        }
+    } elseif (is_numeric($value)) {
+        $seconds = (float) $value;
+    }
+    return (int) ceil($seconds);
+}
+
+function groqNoteRemaining($model, $headers)
+{
+    if (!preg_match('/^x-ratelimit-remaining-tokens:\s*(\d+)/mi', (string) $headers, $remaining)) {
+        return;
+    }
+    $needed = (int) (getenv('GROQ_TOKENS_PER_PAGE') ?: 3800);
+    if ((int) $remaining[1] >= $needed) {
+        return;
+    }
+    $reset = preg_match('/^x-ratelimit-reset-tokens:\s*(\S+)/mi', (string) $headers, $m) ? groqResetSeconds($m[1]) : 10;
+    groqCooldowns([$model => time() + max(1, min($reset, 60))]);
+    error_log('Groq: only ' . $remaining[1] . ' tokens left on ' . $model . ', using the fallback for the next ' . max(1, min($reset, 60)) . 's.');
+}
+
+function groqApplyModel(array $payload, $model)
+{
+    $payload['model'] = $model;
+    if (stripos($model, 'qwen') !== false) {
+        $payload['reasoning_effort'] = 'none';
+    } else {
+        unset($payload['reasoning_effort']);
+    }
+    return $payload;
+}
+
 function aiExtractionError($message = null)
 {
     static $error = null;
@@ -28,6 +143,188 @@ function aiExtractionError($message = null)
     return $error;
 }
 
+function aiUsedSource($source = null)
+{
+    static $used = [];
+    if ($source !== null) {
+        $used[$source] = true;
+    }
+    return $used ? implode(' + ', array_keys($used)) : 'Groq (' . groqModel() . ')';
+}
+
+function geminiModels()
+{
+    $models = [];
+    foreach (explode(',', (string) (getenv('GEMINI_MODEL') ?: 'gemini-3.1-flash-lite,gemini-3.8-flash')) as $model) {
+        $model = trim($model);
+        if ($model !== '') {
+            $models[] = $model;
+        }
+    }
+    return array_values(array_unique($models));
+}
+
+function geminiModel()
+{
+    return geminiModels()[0] ?? 'gemini-3.8-flash';
+}
+
+function geminiReadyModels()
+{
+    if ((string) getenv('GEMINI_API_KEY') === '') {
+        return [];
+    }
+    $cooling = groqCooldowns();
+    return array_values(array_filter(geminiModels(), fn($model) => !isset($cooling['gemini:' . $model])));
+}
+
+function geminiAvailable()
+{
+    return geminiReadyModels() !== [];
+}
+
+function groqAllCooling()
+{
+    $cooling = groqCooldowns();
+    foreach (groqModels() as $model) {
+        if (!isset($cooling[$model])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function geminiBodyFromGroq($groqBody, $model, $effort)
+{
+    $payload = json_decode($groqBody, true) ?: [];
+    $body = [
+        'model'            => $model,
+        'messages'         => $payload['messages'] ?? [],
+        'temperature'      => 0,
+        'max_tokens'       => max(2048, ((int) ($payload['max_completion_tokens'] ?? 1024)) * 3),
+        'reasoning_effort' => $effort,
+    ];
+    return json_encode($body);
+}
+
+function geminiEffort($model)
+{
+    if (preg_match('/gemini-2\.5-(flash|flash-lite)/i', $model)) {
+        return 'none';
+    }
+    return isset(groqCooldowns()['gemini-low-only:' . $model]) ? 'low' : 'minimal';
+}
+
+function geminiSend(array $pending, $model, $effort)
+{
+    $url = rtrim(getenv('GEMINI_BASE_URL') ?: 'https://generativelanguage.googleapis.com/v1beta/openai', '/') . '/chat/completions';
+    $timeout = max(4, (int) (getenv('GEMINI_TIMEOUT') ?: 8));
+    $mh = curl_multi_init();
+    $handles = [];
+    foreach ($pending as $key => $body) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_POST           => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER     => [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . getenv('GEMINI_API_KEY'),
+            ],
+            CURLOPT_POSTFIELDS     => geminiBodyFromGroq($body, $model, $effort),
+            CURLOPT_ENCODING       => '',
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT        => $timeout,
+        ]);
+        curl_multi_add_handle($mh, $ch);
+        $handles[$key] = $ch;
+    }
+    do {
+        $status = curl_multi_exec($mh, $running);
+        if ($running) {
+            curl_multi_select($mh, 1.0);
+        }
+    } while ($running && $status === CURLM_OK);
+
+    $results = [];
+    $failures = [];
+    foreach ($handles as $key => $ch) {
+        $response = (string) curl_multi_getcontent($ch);
+        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr  = curl_error($ch);
+        curl_multi_remove_handle($mh, $ch);
+        curl_close($ch);
+        if ($httpCode === 200) {
+            $data = json_decode($response, true);
+            $content = $data['choices'][0]['message']['content'] ?? null;
+            if (is_string($content)) {
+                $content = trim(preg_replace('/<think>.*?<\/think>/s', '', $content));
+                $content = preg_replace('/^```(?:json)?\s*|\s*```$/i', '', $content);
+                $results[$key] = trim($content);
+                continue;
+            }
+        }
+        $failures[$key] = [$httpCode, $response, $curlErr];
+    }
+    curl_multi_close($mh);
+    return [$results, $failures];
+}
+
+function geminiChatMany(array $groqBodies)
+{
+    $results = [];
+    $pending = $groqBodies;
+
+    foreach (geminiReadyModels() as $model) {
+        if (!$pending) {
+            break;
+        }
+        $effort = geminiEffort($model);
+        [$done, $failures] = geminiSend($pending, $model, $effort);
+
+        if ($effort === 'minimal') {
+            $retryLow = [];
+            foreach ($failures as $key => [$code, $response]) {
+                if ($code === 400 && stripos($response, 'reasoning') !== false) {
+                    $retryLow[$key] = $pending[$key];
+                }
+            }
+            if ($retryLow) {
+                groqCooldowns(['gemini-low-only:' . $model => time() + 86400]);
+                [$doneLow, $failLow] = geminiSend($retryLow, $model, 'low');
+                $done += $doneLow;
+                $failures = array_diff_key($failures, $retryLow) + $failLow;
+            }
+        }
+
+        foreach ($done as $key => $reply) {
+            $results[$key] = $reply;
+            unset($pending[$key]);
+            aiUsedSource('Gemini (' . $model . ')');
+        }
+
+        $pause = 0;
+        foreach ($failures as [$httpCode, $response, $curlErr]) {
+            $geminiError = 'Gemini fallback failed (HTTP ' . $httpCode . ', model ' . $model . ')' . ($curlErr !== '' ? ' ' . $curlErr : '') . ': ' . substr($response, 0, 300);
+            error_log($geminiError);
+            @file_put_contents(groqCooldownFile() . '.gemini.txt', date('Y-m-d H:i:s') . ' ' . $geminiError);
+            if ($httpCode === 429) {
+                $pause = max($pause, 30);
+            } elseif (in_array($httpCode, [400, 401, 403, 404], true)) {
+                $pause = max($pause, 600);
+            } else {
+                $pause = max($pause, 60);
+            }
+        }
+        if ($pause > 0) {
+            groqCooldowns(['gemini:' . $model => time() + $pause]);
+        }
+    }
+    if ($results) {
+        error_log('Groq is rate-limited, read ' . count($results) . ' request(s) with ' . aiUsedSource() . '.');
+    }
+    return $results;
+}
+
 function groqRequestBody(array $messages, $jsonMode, $maxTokens)
 {
     $payload = [
@@ -35,12 +332,11 @@ function groqRequestBody(array $messages, $jsonMode, $maxTokens)
         'messages'              => $messages,
         'temperature'           => 0,
         'max_completion_tokens' => $maxTokens,
-        'reasoning_effort'      => 'none',
     ];
     if ($jsonMode) {
         $payload['response_format'] = ['type' => 'json_object'];
     }
-    return json_encode($payload);
+    return json_encode(groqApplyModel($payload, groqPickModel()));
 }
 
 function groqChatMany(array $bodies)
@@ -60,9 +356,17 @@ function groqChatMany(array $bodies)
     $queue = $bodies;
     $lastCode = 0;
     $waited = 0;
+    $tried = [];
+    if (geminiAvailable() && (groqAllCooling() || groqWouldExceed(count($queue)))) {
+        foreach (geminiChatMany($queue) as $key => $reply) {
+            $results[$key] = $reply;
+            unset($queue[$key]);
+        }
+    }
     for ($attempt = 1; $attempt <= 4 && $queue; $attempt++) {
         $retry = [];
         $retryAfter = 1;
+        $mustWait = false;
         foreach (array_chunk($queue, AI_MAX_PARALLEL, true) as $chunk) {
             $mh = curl_multi_init();
             $handles = [];
@@ -110,14 +414,46 @@ function groqChatMany(array $bodies)
                     $content = $data['choices'][0]['message']['content'] ?? null;
                     if (is_string($content)) {
                         $results[$key] = trim(preg_replace('/<think>.*?<\/think>/s', '', $content));
+                        $usedModel = json_decode($chunk[$key], true)['model'] ?? groqModel();
+                        groqUsage((int) ($data['usage']['prompt_tokens'] ?? 0));
+                        aiUsedSource('Groq (' . $usedModel . ')');
+                        groqNoteRemaining($usedModel, $headers[$key]);
                     } else {
                         error_log('Groq returned no message content: ' . substr($response, 0, 500));
                     }
                 } elseif ($httpCode === 429 || $httpCode >= 500 || $httpCode === 0) {
                     error_log("Groq attempt $attempt failed (HTTP $httpCode) $curlErr " . substr((string) $response, 0, 300));
-                    $retry[$key] = $chunk[$key];
+                    $payload = json_decode($chunk[$key], true);
+                    $model = $payload['model'] ?? groqModel();
+                    $after = 1;
                     if (preg_match('/^retry-after:\s*([\d.]+)/mi', $headers[$key], $m)) {
-                        $retryAfter = max($retryAfter, (int) ceil((float) $m[1]));
+                        $after = max(1, (int) ceil((float) $m[1]));
+                    }
+                    if ($httpCode === 429) {
+                        groqCooldowns([$model => time() + max($after, 5)]);
+                        $tried[$key][] = $model;
+                        $next = groqPickModel($tried[$key]);
+                        if ($next !== $model && !isset(groqCooldowns()[$next])) {
+                            error_log("Groq: $model is rate-limited, switching to $next.");
+                            $retry[$key] = json_encode(groqApplyModel($payload, $next));
+                            continue;
+                        }
+                    }
+                    $retry[$key] = $chunk[$key];
+                    $retryAfter = max($retryAfter, $after);
+                    $mustWait = true;
+                } elseif (($httpCode === 400 || $httpCode === 404) && count(groqModels()) > 1
+                    && stripos((string) $response, 'model') !== false) {
+                    $payload = json_decode($chunk[$key], true);
+                    $model = $payload['model'] ?? groqModel();
+                    error_log('Groq model ' . $model . ' cannot be used (HTTP ' . $httpCode . '): ' . substr((string) $response, 0, 300));
+                    groqCooldowns([$model => time() + 3600]);
+                    $tried[$key][] = $model;
+                    $next = groqPickModel($tried[$key]);
+                    if ($next !== $model && !in_array($next, $tried[$key], true)) {
+                        $retry[$key] = json_encode(groqApplyModel($payload, $next));
+                    } else {
+                        aiExtractionError('AI extraction failed (HTTP ' . $httpCode . '). Please fill in the fields manually.');
                     }
                 } else {
                     error_log('Groq request failed, HTTP ' . $httpCode . ': ' . substr((string) $response, 0, 500));
@@ -127,7 +463,22 @@ function groqChatMany(array $bodies)
             curl_multi_close($mh);
         }
         $queue = $retry;
-        if ($queue && $attempt < 4) {
+        if ($queue && $mustWait && !geminiAvailable()) {
+            error_log((string) getenv('GEMINI_API_KEY') === ''
+                ? 'Gemini fallback skipped: GEMINI_API_KEY is not set in .env.'
+                : 'Gemini fallback skipped: ' . implode(', ', geminiModels()) . ' paused after an earlier error. Last error: '
+                    . trim((string) @file_get_contents(groqCooldownFile() . '.gemini.txt')));
+        }
+        if ($queue && $mustWait && geminiAvailable()) {
+            foreach (geminiChatMany($queue) as $key => $reply) {
+                $results[$key] = $reply;
+                unset($queue[$key]);
+            }
+            if (!$queue) {
+                break;
+            }
+        }
+        if ($queue && $attempt < 4 && $mustWait) {
             $wait = min($retryAfter, 20, AI_MAX_WAIT - $waited);
             if ($wait <= 0) {
                 break;
@@ -472,6 +823,31 @@ function aiExtractStudentFields($text)
     return $json === null ? $empty : sanitizeAiStudentFields($json);
 }
 
+function aiTitleCase($text)
+{
+    $text = trim((string) $text);
+    if ($text === '') {
+        return '';
+    }
+    return preg_replace_callback('/[\p{L}\p{M}\d.]+/u', function ($m) {
+        $word = $m[0];
+        $upper = mb_strtoupper($word, 'UTF-8');
+        if (preg_match('/^(I{1,3}|IV|V|VI{0,3}|IX|X)$/', $upper)) {
+            return $upper;
+        }
+        if (preg_match('/^(\p{L}\.){2,}$/u', $word)) {
+            return $upper;
+        }
+        if (preg_match('/^\d+(st|nd|rd|th)$/i', $word)) {
+            return mb_strtolower($word, 'UTF-8');
+        }
+        if (preg_match('/^\d/', $word)) {
+            return $upper;
+        }
+        return mb_convert_case(mb_strtolower($word, 'UTF-8'), MB_CASE_TITLE, 'UTF-8');
+    }, $text);
+}
+
 function sanitizeAiStudentFields(array $raw)
 {
     $f = [];
@@ -492,7 +868,7 @@ function sanitizeAiStudentFields(array $raw)
 
     foreach (['last_name', 'first_name', 'middle_name'] as $key) {
         $part = preg_replace('/\S*\d\S*/u', ' ', $f[$key]);
-        $f[$key] = trim(preg_replace('/\s+/u', ' ', preg_replace("/[^A-Za-zÑñ\\s.'\\-]/u", '', $part)), " -'");
+        $f[$key] = aiTitleCase(trim(preg_replace('/\s+/u', ' ', preg_replace("/[^A-Za-zÑñ\\s.'\\-]/u", '', $part)), " -'"));
     }
 
     if (preg_match('/^\W*(nstp|cwts|ctws|cwst|lts|rotc|mts)\b/i', $f['course'])) {
@@ -540,7 +916,7 @@ function sanitizeAiStudentFields(array $raw)
 
     foreach (['place_of_birth', 'address'] as $key) {
         $f[$key] = preg_replace('/\s*;\s*/', ', ', $f[$key]);
-        $f[$key] = mb_substr($f[$key], 0, 255);
+        $f[$key] = mb_substr(aiTitleCase($f[$key]), 0, 255);
     }
 
     return $f;

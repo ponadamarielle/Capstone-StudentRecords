@@ -1038,9 +1038,10 @@ function handleAddStudent($conn)
 
 archiveGraduatedStudents($conn);
 updateYearLevels($conn);
+schoolYearReminderIfDue();
 runScheduledBackupIfDue();
 
-$search            = isset($_GET['search']) ? trim($_GET['search']) : '';
+$search            = isset($_GET['search']) ? trim(preg_replace('/\s+/u', ' ', preg_replace("/[^\\p{L}\\p{M}0-9\\s.,'\\-]/u", '', $_GET['search']))) : '';
 $courseFilter      = isset($_GET['course']) ? trim($_GET['course']) : '';
 $yearSectionFilter = isset($_GET['year_section']) ? trim($_GET['year_section']) : '';
 
@@ -1146,7 +1147,8 @@ include 'navbar.php';
 
       <form method="GET" action="" class="search-group" id="directoryFilterForm">
         <div class="search-input-wrapper">
-            <input type="text" name="search" class="searchbar" placeholder="STUDENT NUMBER / NAME" value="<?= htmlspecialchars($search) ?>" required>
+            <input type="text" name="search" class="searchbar" placeholder="STUDENT NUMBER / NAME" value="<?= htmlspecialchars($search) ?>" required
+                   maxlength="100" autocomplete="off" pattern="[A-Za-zÑñ0-9\s.,'\-]+" title="Letters, numbers, spaces, period, comma, hyphen (-) and apostrophe (') only">
             <?php if ($search !== ''): ?>
                 <a href="student_directory.php" class="clear-icon" title="Clear search"><i class="bi bi-x-circle"></i></a>
             <?php endif; ?>
@@ -1573,6 +1575,7 @@ include 'navbar.php';
     'requirements' => requirementsForClient(),
     'groups'       => getDocumentRequirementGroups(),
     'tracks'       => getAdmissionTracks(),
+    'current_sy_end' => currentSchoolYearEndYear(),
 ]), ENT_QUOTES, 'UTF-8') ?>"></div>
 <script src="../js/add-student.js?v=<?= @filemtime(__DIR__ . '/../js/add-student.js') ?>"></script>
 <script src="../js/student-directory-filters.js?v=<?= @filemtime(__DIR__ . '/../js/student-directory-filters.js') ?>"></script>

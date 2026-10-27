@@ -1900,7 +1900,8 @@ include 'navbar.php';
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_graduation_year" class="form-label form-label-custom">Graduation SY</label>
                                                     <select id="edit_graduation_year" name="graduation_year" class="form-select input-custom"
-                                                            title="The student is moved to Archive as GRADUATE after July 31 at the end of this school year">
+                                                            data-current-sy-end="<?= (int) currentSchoolYearEndYear() ?>"
+                                                            title="The student is moved to Archive as GRADUATE after the Year-End Commencement of the Graduation SY">
                                                         <?php $autoYear = entryYearFromStudentNumber($student['student_number'] ?? ''); ?>
                                                         <option value="" <?= $savedGradYear === null ? 'selected' : '' ?>>
                                                             Auto<?= $autoYear !== null ? ' (' . htmlspecialchars(schoolYearLabel($autoYear + PROGRAM_LENGTH_YEARS)) . ')' : '' ?>

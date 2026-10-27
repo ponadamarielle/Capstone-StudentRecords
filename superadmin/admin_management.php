@@ -280,7 +280,7 @@ if (isset($_POST['reset_password']) && $_POST['reset_password'] === '1') {
     }
 
     $_SESSION['um_reset_flash'] = $resetFlash;
-    header('Location: user_management.php' . (isset($_GET['status']) ? '?status=' . urlencode($_GET['status']) : ''));
+    header('Location: admin_management.php' . (isset($_GET['status']) ? '?status=' . urlencode($_GET['status']) : ''));
     exit();
 }
 
@@ -290,12 +290,12 @@ unset($_SESSION['um_reset_flash']);
 
 <html>
 <head>
-    <title>User Management</title>
+    <title>Admin Management</title>
     <link href="../css/bootstrap.min.css" rel="stylesheet">
     <link href="../css/bootstrap-icons.css" rel="stylesheet">
     <link href="../css/font.css" rel="stylesheet">
     <link href="../css/navbar-superadmin.css" rel="stylesheet">
-    <link href="../css/user_management.css" rel="stylesheet">
+    <link href="../css/admin_management.css" rel="stylesheet">
 </head>
 <body>
 
@@ -443,11 +443,6 @@ unset($_SESSION['um_reset_flash']);
                 </div>
             </div>
 
-            <div class="um-info">
-                <i class="bi bi-info-circle"></i>
-                <span>Admins can add, update and archive student records. Only the Super Admin can manage accounts.</span>
-            </div>
-
             <?php if (isset($error) && isset($_POST['add_admin']) && !isset($nameError) && !isset($emailError)): ?>
                 <div class="alert alert-danger um-alert"><?= htmlspecialchars($error) ?></div>
             <?php endif; ?>
@@ -536,6 +531,6 @@ unset($_SESSION['um_reset_flash']);
     data-show-add-modal="<?= (isset($error) && isset($_POST['add_admin'])) ? 'true' : 'false' ?>"
     data-show-toggle-error="<?= isset($toggleError) ? 'true' : 'false' ?>">
 </div>
-<script src="../js/user_management.js"></script>
+<script src="../js/admin_management.js"></script>
 </body>
 </html>

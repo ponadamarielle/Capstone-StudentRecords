@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/course_catalog.php';
 require_once __DIR__ . '/../activity_log.php';
+require_once __DIR__ . '/../school_year.php';
 
 if (!defined('DOCUMENTS_DIR')) {
     define('DOCUMENTS_DIR', '../uploads/documents/');
@@ -10,7 +11,6 @@ if (!defined('ARCHIVE_DIR')) {
 }
 
 const ARCHIVED_STATUSES     = ['graduated', 'inactive', 'onleave'];
-const SCHOOL_YEAR_END_DAY   = '07-31';
 const PROGRAM_LENGTH_YEARS  = 4;
 
 function studentColumns($conn)
@@ -285,13 +285,13 @@ function expectedGraduationYear(array $student)
 
 function schoolYearHasEnded($endYear)
 {
-    return date('Y-m-d') > sprintf('%04d-%s', (int) $endYear, SCHOOL_YEAR_END_DAY);
+    return date('Y-m-d') > schoolYearEndDate($endYear);
 }
 
 function currentSchoolYearEndYear()
 {
     $year = (int) date('Y');
-    return date('m-d') > SCHOOL_YEAR_END_DAY ? $year + 1 : $year;
+    return date('Y-m-d') > schoolYearEndDate($year) ? $year + 1 : $year;
 }
 
 function schoolYearLabel($endYear)
@@ -645,7 +645,7 @@ if ($action === 'restore_student') {
     exit();
 }
 
-$search            = isset($_GET['search']) ? trim($_GET['search']) : '';
+$search            = isset($_GET['search']) ? trim(preg_replace('/\s+/u', ' ', preg_replace("/[^\\p{L}\\p{M}0-9\\s.,'\\-]/u", '', $_GET['search']))) : '';
 $courseFilter      = isset($_GET['course']) ? trim($_GET['course']) : '';
 $yearSectionFilter = isset($_GET['year_section']) ? trim($_GET['year_section']) : '';
 
@@ -765,7 +765,8 @@ include 'navbar.php';
 
       <form method="GET" action="archive.php" class="search-group" id="archiveSearchForm">
         <div class="search-input-wrapper">
-            <input type="text" name="search" id="archiveSearchInput" class="searchbar" placeholder="STUDENT NUMBER / NAME" value="<?= htmlspecialchars($search) ?>" required>
+            <input type="text" name="search" id="archiveSearchInput" class="searchbar" placeholder="STUDENT NUMBER / NAME" value="<?= htmlspecialchars($search) ?>" required
+                   maxlength="100" autocomplete="off" pattern="[A-Za-zÑñ0-9\s.,'\-]+" title="Letters, numbers, spaces, period, comma, hyphen (-) and apostrophe (') only">
             <?php if ($search !== ''): ?>
                 <a href="archive.php" class="clear-icon" title="Clear search"><i class="bi bi-x-circle"></i></a>
             <?php endif; ?>
@@ -779,7 +780,8 @@ include 'navbar.php';
         <form method="GET" action="archive.php" class="filter-row" id="archiveFilterForm">
           <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
 
-          <select class="filter" id="archiveCourseFilter" name="course">
+          <div class="filter-wrap">
+          <select class="filter<?= $courseFilter !== '' ? ' has-value' : '' ?>" id="archiveCourseFilter" name="course">
               <option value="">Course</option>
               <?php foreach ($courseOptions as $courseValue => $courseLabel): ?>
                   <option value="<?= htmlspecialchars($courseValue) ?>" <?= $courseFilter === $courseValue ? 'selected' : '' ?>>
@@ -787,8 +789,13 @@ include 'navbar.php';
                   </option>
               <?php endforeach; ?>
           </select>
+          <?php if ($courseFilter !== ''): ?>
+              <a href="archive.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'year_section' => $yearSectionFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear course"><i class="bi bi-x-circle"></i></a>
+          <?php endif; ?>
+          </div>
 
-          <select class="filter filter-year-section" id="archiveYearSectionFilter" name="year_section">
+          <div class="filter-wrap filter-wrap-year-section">
+          <select class="filter filter-year-section<?= $yearSectionFilter !== '' ? ' has-value' : '' ?>" id="archiveYearSectionFilter" name="year_section">
               <option value="">Year & Section</option>
               <?php foreach ($yearSectionOptions as $yearSectionOption): ?>
                   <option value="<?= htmlspecialchars($yearSectionOption) ?>" <?= $yearSectionFilter === $yearSectionOption ? 'selected' : '' ?>>
@@ -796,6 +803,10 @@ include 'navbar.php';
                   </option>
               <?php endforeach; ?>
           </select>
+          <?php if ($yearSectionFilter !== ''): ?>
+              <a href="archive.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'course' => $courseFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear year &amp; section"><i class="bi bi-x-circle"></i></a>
+          <?php endif; ?>
+          </div>
         </form>
       </div>
 

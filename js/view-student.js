@@ -229,6 +229,8 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function editSchoolYearEnd() {
+        const fromServer = editGradSelect ? parseInt(editGradSelect.dataset.currentSyEnd, 10) : NaN;
+        if (fromServer) return fromServer;
         const now = new Date();
         return now.getFullYear() + (now.getMonth() > 6 ? 1 : 0);
     }

@@ -251,6 +251,8 @@ document.addEventListener('DOMContentLoaded', function () {
     const graduationNote = document.getElementById('graduationNote');
 
     function currentSchoolYearEnd() {
+        const fromServer = parseInt(PAGE_DATA.current_sy_end, 10);
+        if (fromServer) return fromServer;
         const now = new Date();
         const afterJuly = now.getMonth() > 6;
         return now.getFullYear() + (afterJuly ? 1 : 0);

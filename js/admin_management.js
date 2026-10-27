@@ -3,7 +3,7 @@ document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('.filter-tab').forEach(function (btn) {
         btn.addEventListener('click', function () {
             var filter = btn.getAttribute('data-filter');
-            window.location = 'user_management.php?status=' + filter;
+            window.location = 'admin_management.php?status=' + filter;
         });
     });
 

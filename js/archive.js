@@ -4,39 +4,21 @@
     const isDeleting = (e) => !!(e && e.inputType && e.inputType.indexOf('delete') === 0);
 
     function formatStudentNumber(value, e) {
-        const segments = [4, 5, 2, 1];
-        const types    = ['digit', 'digit', 'letter', 'digit'];
-        const raw      = value.toUpperCase().replace(/-/g, '');
-
-        let result   = '';
-        let segIndex = 0;
-        let segCount = 0;
-
-        for (const ch of raw) {
-            if (segIndex >= segments.length) break;
-
-            const valid = types[segIndex] === 'digit' ? /[0-9]/.test(ch) : /[A-Z]/.test(ch);
-            if (!valid) continue;
-
-            result += ch;
-            segCount++;
-
-            if (segCount === segments[segIndex]) {
-                segIndex++;
-                segCount = 0;
-                if (segIndex < segments.length) result += '-';
-            }
-        }
-
-        if (isDeleting(e) && result.endsWith('-')) {
-            result = result.slice(0, -1);
-        }
+        const digits = String(value || '').replace(/\D/g, '').slice(0, 10);
+        const deleting = isDeleting(e);
+        let result = digits.slice(0, 4);
+        if (digits.length > 4 || (digits.length === 4 && !deleting)) result += '-';
+        if (digits.length > 4) result += digits.slice(4, 9);
+        if (digits.length > 9 || (digits.length === 9 && !deleting)) result += '-BN-';
+        if (digits.length > 9) result += digits.slice(9, 10);
         return result;
     }
 
+    const SEARCH_NOT_ALLOWED = /[^A-Za-z\u00C0-\u024F0-9\s.,'\-]/g;
+
     function formatSearch(value, e) {
         const trimmed = value.replace(/^\s+/, '');
-        return /^[0-9]/.test(trimmed) ? formatStudentNumber(trimmed, e) : value;
+        return /^[0-9]/.test(trimmed) ? formatStudentNumber(trimmed, e) : value.replace(SEARCH_NOT_ALLOWED, '');
     }
 
     const searchInput = document.getElementById('archiveSearchInput');

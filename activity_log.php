@@ -11,6 +11,7 @@ const ACTIVITY_ACTIONS = [
     'account_created'        => ['Admin Account Created', 'authentication'],
     'password_changed'       => ['Password Changed', 'authentication'],
     'password_reset'         => ['Admin Password Reset', 'authentication'],
+    'school_year_end_set'    => ['School Year End Updated', 'audit'],
     'student_created'        => ['Student Record Created', 'data_modification'],
     'student_updated'        => ['Student Record Updated', 'data_modification'],
     'student_status_changed' => ['Student Status Changed', 'data_modification'],

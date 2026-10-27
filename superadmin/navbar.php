@@ -17,7 +17,7 @@
 <?php
     $pageTitles = [
         'dashboard.php'       => ['Dashboard', 'Overview of student records and document requirements.'],
-        'user_management.php' => ['User Management', 'Manage admin accounts and control who can access records.'],
+        'admin_management.php' => ['Admin Management', 'Manage admin accounts and control who can access records.'],
         'backup_logs.php'     => ['Backup & Logs', 'Keep records safe and see who did what, and when.'],
     ];
     [$pageTitle, $pageSubtitle] = $pageTitles[$currentPage] ?? ['PUP eRecords', ''];
@@ -46,8 +46,8 @@
             <a class="admin-menu-item <?php echo ($currentPage == 'dashboard.php') ? 'active' : ''; ?>" href="dashboard.php" title="Dashboard">
                 <i class="bi bi-grid-1x2"></i><span>Dashboard</span>
             </a>
-            <a class="admin-menu-item <?php echo ($currentPage == 'user_management.php') ? 'active' : ''; ?>" href="user_management.php" title="User Management">
-                <i class="bi bi-people"></i><span>User Management</span>
+            <a class="admin-menu-item <?php echo ($currentPage == 'admin_management.php') ? 'active' : ''; ?>" href="admin_management.php" title="Admin Management">
+                <i class="bi bi-people"></i><span>Admin Management</span>
             </a>
             <a class="admin-menu-item <?php echo ($currentPage == 'backup_logs.php') ? 'active' : ''; ?>" href="backup_logs.php" title="Backup &amp; Logs">
                 <i class="bi bi-database"></i><span>Backup &amp; Logs</span>

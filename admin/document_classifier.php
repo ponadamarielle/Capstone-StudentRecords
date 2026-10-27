@@ -617,7 +617,7 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     }
 
     $ai = $visionPages
-        ? ['pages' => $visionPages, 'error' => null, 'source' => 'Groq (' . groqModel() . ')']
+        ? ['pages' => $visionPages, 'error' => null, 'source' => aiUsedSource()]
         : aiClassifyPages($pageTexts);
     $timings['classify'] = microtime(true) - $mark;
     if ($ai['error'] !== null) {

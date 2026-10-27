@@ -166,6 +166,13 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
                 exit();
             }
         }
+    } elseif (!$row) {
+        logActivity('login_failed', 'Failed sign-in attempt for ' . $email . ' (email not registered)', [
+            'user_name' => $email,
+            'user_role' => 'Unknown account',
+            'details'   => ['email' => $email, 'reason' => 'Email not registered'],
+        ]);
+        $error = "Invalid email or password.";
     } else {
         $attempts  = recordFailedLogin($conn, $attemptKey);
         $remaining = MAX_LOGIN_ATTEMPTS - $attempts;
@@ -251,7 +258,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
                             class="form-control"
                             id="signinEmail"
                             name="email"
-                            placeholder="you@pup.edu.ph"
+                            placeholder="name@example.com"
                             value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>"
                             pattern="[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
                             title="Please enter a valid email address"

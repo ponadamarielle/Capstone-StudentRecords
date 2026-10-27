@@ -21,6 +21,9 @@ if (!function_exists('getDocumentRequirementsForClient')) {
 }
 require_once __DIR__ . '/../admin/requirement_status.php';
 require_once __DIR__ . '/../database_backup.php';
+require_once __DIR__ . '/../activity_log.php';
+require_once __DIR__ . '/../admin/archive.php';
+require_once __DIR__ . '/../school_year.php';
 
 $DBHost = "localhost";
 $DBUser = "root";
@@ -111,6 +114,70 @@ if ($isStatsRequest) {
     exit();
 }
 
+if (!isset($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sy_action'])) {
+    if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], (string) $_POST['csrf_token'])) {
+        die('CSRF validation failed.');
+    }
+    $currentEnd = currentSchoolYearEndYear();
+    $endYear    = (int) ($_POST['end_year'] ?? 0);
+    $flash      = ['type' => 'error', 'message' => 'Choose a valid school year.'];
+
+    if ($endYear === $currentEnd) {
+        $label  = schoolYearLabel($endYear);
+        $before = schoolYearEndIsSet($endYear) ? schoolYearEndDate($endYear) : '';
+        if ($_POST['sy_action'] === 'save') {
+            $date = trim((string) ($_POST['commencement_end'] ?? ''));
+            if (!preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $date, $m) || !checkdate((int) $m[2], (int) $m[3], (int) $m[1])) {
+                $flash = ['type' => 'error', 'message' => 'Enter a valid date.'];
+            } elseif ((int) $m[1] !== $endYear) {
+                $flash = ['type' => 'error', 'message' => 'The Year-End Commencement of ' . $label . ' must be in ' . $endYear . '.'];
+            } elseif (($error = schoolYearSaveEnd($endYear, $date, $_SESSION['name'] ?? '')) !== null) {
+                $flash = ['type' => 'error', 'message' => $error];
+            } else {
+                logActivity('school_year_end_set', 'Set the last day of the Year-End Commencement of ' . $label . ' to ' . date('F j, Y', strtotime($date)), [
+                    'details' => [
+                        'school_year' => $label,
+                        'changes'     => ['Year-End Commencement (last day)' => ['from' => $before, 'to' => $date]],
+                        'effect'      => 'Graduating students of ' . $label . ' are moved to Archive as GRADUATE after this date.',
+                    ],
+                ]);
+                $flash = ['type' => 'success', 'message' => 'Saved. Graduating students of ' . $label . ' will be archived after ' . date('F j, Y', strtotime($date)) . '.'];
+            }
+        } elseif ($_POST['sy_action'] === 'clear' && $before !== '') {
+            schoolYearClearEnd($endYear);
+            logActivity('school_year_end_set', 'Removed the Year-End Commencement date of ' . $label, [
+                'details' => [
+                    'school_year' => $label,
+                    'changes'     => ['Year-End Commencement (last day)' => ['from' => $before, 'to' => '']],
+                    'effect'      => 'The default date (' . date('F j', strtotime(schoolYearEndDate($endYear))) . ') is used if the date is still not set when the school year ends.',
+                ],
+            ]);
+            $flash = ['type' => 'success', 'message' => 'Removed the date of ' . $label . '.'];
+        }
+    }
+    $_SESSION['sy_flash'] = $flash;
+    header('Location: dashboard.php#school-year');
+    exit();
+}
+
+$syFlash = $_SESSION['sy_flash'] ?? null;
+unset($_SESSION['sy_flash']);
+
+schoolYearReminderIfDue();
+
+$syCurrentEnd   = currentSchoolYearEndYear();
+$syRows         = [];
+for ($y = $syCurrentEnd; $y <= $syCurrentEnd + 2; $y++) {
+    $syRows[$y] = schoolYearEndIsSet($y) ? schoolYearEndDate($y) : null;
+}
+$syCurrentDate  = schoolYearEndDate($syCurrentEnd);
+$syCurrentIsSet = $syRows[$syCurrentEnd] !== null;
+$syRemind       = !$syCurrentIsSet && strtotime($syCurrentDate) - time() <= 60 * 86400;
+
 runScheduledBackupIfDue();
 $backupConn   = backupConnection();
 $backupAlerts = $backupConn ? backupFailureAlerts($backupConn) : [];
@@ -145,6 +212,17 @@ include 'navbar.php';
         </a>
     <?php endif; ?>
 
+    <?php if ($syRemind): ?>
+        <a class="dash-alert dash-alert-warning" href="#school-year" role="alert">
+            <i class="bi bi-calendar-event"></i>
+            <span>
+                <strong>Set the Year-End Commencement date of <?= htmlspecialchars(schoolYearLabel($syCurrentEnd)) ?>.</strong>
+                Until it is set, graduating students are archived after <?= htmlspecialchars(date('F j, Y', strtotime($syCurrentDate))) ?> (default).
+            </span>
+            <i class="bi bi-chevron-right"></i>
+        </a>
+    <?php endif; ?>
+
     <section class="dash-stats" aria-label="Student statistics">
         <div class="dash-stat">
             <div class="dash-stat-head">
@@ -169,6 +247,37 @@ include 'navbar.php';
             </div>
             <div class="dash-stat-value" data-stat="graduates"><?= number_format($stats['graduates']) ?></div>
             <div class="dash-stat-note">Students who completed their program</div>
+        </div>
+        <div class="dash-stat dash-sy" id="school-year">
+            <div class="dash-stat-head">
+                <div class="dash-stat-label">School year end</div>
+                <div class="dash-stat-icon dash-icon-blue"><i class="bi bi-calendar-event"></i></div>
+            </div>
+            <div class="dash-sy-value"><?= htmlspecialchars(date('M j, Y', strtotime($syCurrentDate))) ?></div>
+            <div class="dash-stat-note">
+                <?= htmlspecialchars(schoolYearLabel($syCurrentEnd)) ?> &middot;
+                <?= $syCurrentIsSet ? 'Graduates are archived after this date' : 'Default date, not set yet' ?>
+            </div>
+
+            <?php if ($syFlash): ?>
+                <div class="dash-sy-flash dash-sy-flash-<?= $syFlash['type'] === 'success' ? 'success' : 'error' ?>" role="status">
+                    <i class="bi <?= $syFlash['type'] === 'success' ? 'bi-check-circle-fill' : 'bi-x-circle-fill' ?>"></i>
+                    <span><?= htmlspecialchars($syFlash['message']) ?></span>
+                </div>
+            <?php endif; ?>
+
+            <form method="POST" class="dash-sy-form">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($_SESSION['csrf_token']) ?>">
+                <input type="hidden" name="sy_action" value="save">
+                <input type="hidden" name="end_year" value="<?= $syCurrentEnd ?>">
+                <input type="text" class="form-control dash-sy-year" value="<?= htmlspecialchars(schoolYearLabel($syCurrentEnd)) ?>"
+                       aria-label="School year" readonly tabindex="-1">
+                <input type="date" name="commencement_end" id="syCommencementEnd" class="form-control" required
+                       aria-label="Last day of Year-End Commencement" title="Last day of Year-End Commencement"
+                       value="<?= htmlspecialchars($syCurrentDate) ?>"
+                       min="<?= $syCurrentEnd ?>-01-01" max="<?= $syCurrentEnd ?>-12-31">
+                <button type="submit" class="btn dash-sy-save">Save</button>
+            </form>
         </div>
     </section>
 
