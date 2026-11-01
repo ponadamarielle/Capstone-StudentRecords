@@ -724,8 +724,19 @@ if (!empty($studentIds)) {
 }
 
 $courseOptions = [];
-foreach (getCourseCatalog() as $catalogEntry) {
-    $courseOptions[$catalogEntry['code']] = $catalogEntry['code'];
+foreach (officialCourseCatalog() as $catalogEntry) {
+    $courseOptions[$catalogEntry['code']] = courseDisplayName($catalogEntry);
+}
+$extraCourseResult = mysqli_query($conn, "SELECT DISTINCT course FROM students WHERE status IN ('graduated', 'inactive', 'onleave') AND course IS NOT NULL AND course <> '' ORDER BY course ASC");
+if ($extraCourseResult) {
+    while ($row = mysqli_fetch_assoc($extraCourseResult)) {
+        $usedCourse = resolveCourse($row['course']);
+        if ($usedCourse === null && !isset($courseOptions[$row['course']])) {
+            $courseOptions[$row['course']] = $row['course'];
+        } elseif ($usedCourse !== null) {
+            $courseOptions[$usedCourse['code']] = courseDisplayName($usedCourse);
+        }
+    }
 }
 
 $yearSectionOptions = [];
@@ -756,6 +767,7 @@ include 'navbar.php';
     <link href="../css/navbar-admin.css" rel="stylesheet">
     <link href="../css/student-directory-admin.css" rel="stylesheet">
     <link href="../css/archive-admin.css" rel="stylesheet">
+    <link href="../css/course-filter.css" rel="stylesheet">
 </head>
 
 <body>
@@ -766,7 +778,7 @@ include 'navbar.php';
       <form method="GET" action="archive.php" class="search-group" id="archiveSearchForm">
         <div class="search-input-wrapper">
             <input type="text" name="search" id="archiveSearchInput" class="searchbar" placeholder="STUDENT NUMBER / NAME" value="<?= htmlspecialchars($search) ?>" required
-                   maxlength="100" autocomplete="off" pattern="[A-Za-zÑñ0-9\s.,'\-]+" title="Letters, numbers, spaces, period, comma, hyphen (-) and apostrophe (') only">
+                   maxlength="100" autocomplete="off" pattern="[A-Za-zÑñ0-9\s.,'\-]+">
             <?php if ($search !== ''): ?>
                 <a href="archive.php" class="clear-icon" title="Clear search"><i class="bi bi-x-circle"></i></a>
             <?php endif; ?>
@@ -847,7 +859,7 @@ include 'navbar.php';
                     <span class="archive-date"><?= htmlspecialchars(date('M j, Y', $archivedTs)) ?></span>
                     <span class="archive-time"><?= htmlspecialchars(date('g:i A', $archivedTs)) ?></span>
                 <?php else: ?>
-                    —
+                    -
                 <?php endif; ?>
             </td>
             <td>
@@ -914,5 +926,6 @@ include 'navbar.php';
 </div>
 
 <script src="../js/archive.js"></script>
+<script src="../js/course-filter.js"></script>
 </body>
 </html>

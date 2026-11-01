@@ -113,11 +113,21 @@ function scanIsPdf($path)
     return strpos((string) $head, '%PDF') !== false;
 }
 
-function scanImportFiles(array $files, $token, $appendToken)
+function scanSplitForReplace(array $previous, $replacePage)
+{
+    $replacePage = (int) $replacePage;
+    if ($replacePage < 1 || $replacePage > count($previous)) {
+        return [$previous, []];
+    }
+    return [array_slice($previous, 0, $replacePage - 1), array_slice($previous, $replacePage)];
+}
+
+function scanImportFiles(array $files, $token, $appendToken, $replacePage = 0)
 {
     $dir = scanTokenDir($token);
     @mkdir($dir, 0700, true);
     $pages = [];
+    $after = [];
     $nextPage = function () use ($dir, &$pages) {
         return $dir . DIRECTORY_SEPARATOR . sprintf('page_%03d.jpg', count($pages) + 1);
     };
@@ -127,6 +137,7 @@ function scanImportFiles(array $files, $token, $appendToken)
         if (!$previous) {
             return 'The previous pages could not be found. Please click RESCAN and scan again.';
         }
+        [$previous, $after] = scanSplitForReplace($previous, $replacePage);
         foreach ($previous as $file) {
             $target = $nextPage();
             if (@copy($file, $target)) {
@@ -153,7 +164,7 @@ function scanImportFiles(array $files, $token, $appendToken)
             }
             if (!$sources) {
                 error_log('Scanner: could not convert ' . $file . ' to images for border trimming.');
-                if (count($files) === 1 && !$pages) {
+                if (count($files) === 1 && !$pages && !$after) {
                     $passThroughPdf = $file;
                     continue;
                 }
@@ -179,6 +190,13 @@ function scanImportFiles(array $files, $token, $appendToken)
             if (strpos($source, $dir . DIRECTORY_SEPARATOR) === 0) {
                 @unlink($source);
             }
+        }
+    }
+
+    foreach ($after as $file) {
+        $target = $nextPage();
+        if (@copy($file, $target)) {
+            $pages[] = $target;
         }
     }
 
@@ -728,7 +746,7 @@ if ($action === 'watch_poll') {
 
     @set_time_limit(SCAN_TIMEOUT + 60);
     @ini_set('memory_limit', '512M');
-    $error = scanImportFiles(array_keys($new), $token, $appendToken);
+    $error = scanImportFiles(array_keys($new), $token, $appendToken, (int) ($_POST['replace_page'] ?? 0));
     if ($error !== null) {
         scanRemoveToken($token);
         scanJson(['success' => false, 'message' => $error]);
@@ -858,6 +876,7 @@ if ($action === 'scan') {
     }
 
     $pages = [];
+    [$previousPages, $afterPages] = scanSplitForReplace($previousPages, (int) ($_POST['replace_page'] ?? 0));
     foreach ($previousPages as $file) {
         $target = $dir . DIRECTORY_SEPARATOR . sprintf('page_%03d.jpg', count($pages) + 1);
         if (@copy($file, $target)) {
@@ -869,6 +888,12 @@ if ($action === 'scan') {
         scanAutoCrop($file, $target);
         @unlink($file);
         if (is_file($target)) {
+            $pages[] = $target;
+        }
+    }
+    foreach ($afterPages as $file) {
+        $target = $dir . DIRECTORY_SEPARATOR . sprintf('page_%03d.jpg', count($pages) + 1);
+        if (@copy($file, $target)) {
             $pages[] = $target;
         }
     }

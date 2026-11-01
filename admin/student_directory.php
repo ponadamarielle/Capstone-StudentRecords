@@ -751,7 +751,7 @@ function handleAddStudent($conn)
     $firstName     = trim($_POST['first_name'] ?? '');
     $middleName    = trim($_POST['middle_name'] ?? '');
     $name          = buildFullName($lastName, $firstName, $middleName);
-    $course        = normalizeCourseName($_POST['course'] ?? '');
+    $course        = normalizeCourseName($_POST['course'] ?? '', true);
     $yearSection   = trim($_POST['year_section'] ?? '');
 
     $missing = [];
@@ -1089,6 +1089,9 @@ $sql = "SELECT student_id, student_number, name, course, year_section, status, a
 if (!empty($conditions)) {
     $sql .= " WHERE " . implode(' AND ', $conditions);
 }
+$sql .= ($search !== '' || $courseFilter !== '' || $yearSectionFilter !== '')
+    ? " ORDER BY name ASC, student_id DESC"
+    : " ORDER BY student_id DESC";
 
 if (!empty($params)) {
     $stmt = mysqli_prepare($conn, $sql);
@@ -1112,8 +1115,19 @@ foreach ($studentRows as &$studentRow) {
 unset($studentRow);
 
 $courseOptions = [];
-foreach (getCourseCatalog() as $catalogEntry) {
-    $courseOptions[$catalogEntry['code']] = $catalogEntry['code'];
+foreach (officialCourseCatalog() as $catalogEntry) {
+    $courseOptions[$catalogEntry['code']] = courseDisplayName($catalogEntry);
+}
+$extraCourseResult = mysqli_query($conn, "SELECT DISTINCT course FROM students WHERE (status IN ('enrollee', 'active') OR status IS NULL OR status = '') AND course IS NOT NULL AND course <> '' ORDER BY course ASC");
+if ($extraCourseResult) {
+    while ($row = mysqli_fetch_assoc($extraCourseResult)) {
+        $usedCourse = resolveCourse($row['course']);
+        if ($usedCourse === null && !isset($courseOptions[$row['course']])) {
+            $courseOptions[$row['course']] = $row['course'];
+        } elseif ($usedCourse !== null) {
+            $courseOptions[$usedCourse['code']] = courseDisplayName($usedCourse);
+        }
+    }
 }
 
 $yearSectionOptions = [];
@@ -1139,6 +1153,7 @@ include 'navbar.php';
     <link href="../css/navbar-admin.css" rel="stylesheet">
     <link href="../css/student-directory-admin.css?v=<?= @filemtime(__DIR__ . '/../css/student-directory-admin.css') ?>" rel="stylesheet">
     <link href="../css/scanner.css?v=<?= @filemtime(__DIR__ . '/../css/scanner.css') ?>" rel="stylesheet">
+    <link href="../css/course-filter.css?v=<?= @filemtime(__DIR__ . '/../css/course-filter.css') ?>" rel="stylesheet">
 </head>
 
 <body>
@@ -1148,7 +1163,7 @@ include 'navbar.php';
       <form method="GET" action="" class="search-group" id="directoryFilterForm">
         <div class="search-input-wrapper">
             <input type="text" name="search" class="searchbar" placeholder="STUDENT NUMBER / NAME" value="<?= htmlspecialchars($search) ?>" required
-                   maxlength="100" autocomplete="off" pattern="[A-Za-zÑñ0-9\s.,'\-]+" title="Letters, numbers, spaces, period, comma, hyphen (-) and apostrophe (') only">
+                   maxlength="100" autocomplete="off" pattern="[A-Za-zÑñ0-9\s.,'\-]+">
             <?php if ($search !== ''): ?>
                 <a href="student_directory.php" class="clear-icon" title="Clear search"><i class="bi bi-x-circle"></i></a>
             <?php endif; ?>
@@ -1581,6 +1596,7 @@ include 'navbar.php';
 <script src="../js/student-directory-filters.js?v=<?= @filemtime(__DIR__ . '/../js/student-directory-filters.js') ?>"></script>
 <script src="../js/student-directory.js?v=<?= @filemtime(__DIR__ . '/../js/student-directory.js') ?>"></script>
 <script src="../js/scanner.js?v=<?= @filemtime(__DIR__ . '/../js/scanner.js') ?>"></script>
+<script src="../js/course-filter.js?v=<?= @filemtime(__DIR__ . '/../js/course-filter.js') ?>"></script>
     </div>
 </body>
 </html>

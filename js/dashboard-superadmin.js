@@ -1,5 +1,7 @@
 document.addEventListener('DOMContentLoaded', function () {
-    var REFRESH_MS = 30000;
+    var REFRESH_MS = 5000;
+    var loading = false;
+    var lastPayload = '';
 
     function formatNumber(n) {
         return Number(n || 0).toLocaleString('en-US');
@@ -81,13 +83,23 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function refresh() {
-        if (document.hidden) return;
+        if (document.hidden || loading) return;
+        loading = true;
         fetch('dashboard.php?action=stats', { cache: 'no-store' })
             .then(function (res) { return res.json(); })
             .then(function (data) {
-                if (data && data.success) render(data);
+                if (!data || !data.success) return;
+                var payload = JSON.stringify(Object.assign({}, data, { updated_at: '' }));
+                if (payload !== lastPayload) {
+                    lastPayload = payload;
+                    render(data);
+                } else {
+                    var updated = document.getElementById('dashUpdatedAt');
+                    if (updated && data.updated_at) updated.textContent = data.updated_at;
+                }
             })
-            .catch(function () {});
+            .catch(function () {})
+            .then(function () { loading = false; });
     }
 
     applyBars();
@@ -95,4 +107,5 @@ document.addEventListener('DOMContentLoaded', function () {
     document.addEventListener('visibilitychange', function () {
         if (!document.hidden) refresh();
     });
+    window.addEventListener('focus', refresh);
 });

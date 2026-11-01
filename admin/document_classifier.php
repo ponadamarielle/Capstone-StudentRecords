@@ -333,6 +333,7 @@ function aiClassifyPages(array $pageTexts)
         . "- A page that continues the previous page's document (back side of a card, second page of a certificate) "
         . "gets the same code as that previous page.\n"
         . "- For report cards, choose the grade level printed as the card's own level, not a 'promoted to Grade X' line.\n"
+        . "- The Grade or Grade Level field on a report card decides its type (Grade 10, 11 or 12), even when the form code says SF9-JHS.\n"
         . "- Use \"none\" for blank pages or documents that match no type.\n"
         . "- confidence: high = unmistakable; medium = probably right; low = a guess the admin should check.\n"
         . "- reason: at most 15 words, naming the evidence you used.\n"

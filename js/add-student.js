@@ -643,7 +643,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const other = document.createElement('option');
         other.value = '';
-        other.textContent = '— Other / unclassified -';
+        other.textContent = '- Other / unclassified -';
         select.appendChild(other);
 
         Object.keys(REQUIREMENT_GROUPS).forEach(function (groupKey) {
@@ -1000,19 +1000,19 @@ document.addEventListener('DOMContentLoaded', function () {
 
         document.getElementById('confirmSummaryNumber').textContent = summary.studentNumber;
         document.getElementById('confirmSummaryName').textContent = summary.name;
-        document.getElementById('confirmSummaryCourse').textContent = summary.course || '—';
-        document.getElementById('confirmSummarySection').textContent = summary.yearSection || '—';
+        document.getElementById('confirmSummaryCourse').textContent = summary.course || '-';
+        document.getElementById('confirmSummarySection').textContent = summary.yearSection || '-';
         document.getElementById('confirmSummaryDocs').textContent = summary.docCount + ' document(s)';
         const gradEl = document.getElementById('confirmSummaryGraduation');
         if (gradEl) {
             const info = graduationInfo();
-            gradEl.textContent = !info ? '—'
+            gradEl.textContent = !info ? '-'
                 : schoolYearLabel(info.endYear)
                     + (info.graduated ? ' (already ended: this student will be moved to Archive as GRADUATE after saving)' : '');
             gradEl.classList.toggle('text-danger', !!(info && info.graduated));
         }
         const trackEl = document.getElementById('confirmSummaryTrack');
-        if (trackEl) trackEl.textContent = ADMISSION_TRACKS[currentTrack()] || '—';
+        if (trackEl) trackEl.textContent = ADMISSION_TRACKS[currentTrack()] || '-';
         const missingEl = document.getElementById('confirmSummaryMissing');
         if (missingEl) {
             const missing = missingRequiredLabels();

@@ -105,8 +105,13 @@ document.addEventListener('DOMContentLoaded', function () {
     const useBtn = el('button', 'btn btn-save', 'USE THIS SCAN');
     const nextBtn = el('button', 'btn btn-outline-secondary scan-secondary-btn', 'NEXT DOCUMENT');
     [cancelBtn, rescanBtn, addPageBtn, startBtn, useBtn, nextBtn].forEach((b) => { b.type = 'button'; });
+    const rescanWrap = el('div', 'scan-rescan-wrap');
+    const rescanMenu = el('div', 'scan-rescan-menu');
+    rescanMenu.hidden = true;
+    rescanWrap.appendChild(rescanMenu);
+    rescanWrap.appendChild(rescanBtn);
     footer.appendChild(cancelBtn);
-    footer.appendChild(rescanBtn);
+    footer.appendChild(rescanWrap);
     footer.appendChild(addPageBtn);
     footer.appendChild(startBtn);
     footer.appendChild(nextBtn);
@@ -121,6 +126,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const modal = bootstrap.Modal.getOrCreateInstance(modalEl, { focus: false, backdrop: 'static' });
     let currentToken = null;
+    let currentPages = 0;
+    let replacePage = 0;
     let busy = false;
     let scannerReady = false;
     let scanMode = 'folder';
@@ -169,6 +176,9 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function waitingMessage() {
+        if (currentToken && replacePage) {
+            return 'Scan page ' + replacePage + ' again now. It will replace page ' + replacePage + ' of this document.';
+        }
         if (currentToken) {
             return 'To add another page to this document, scan it now. For a different document, click NEXT DOCUMENT. Otherwise, click ' + useBtn.textContent + '.';
         }
@@ -201,6 +211,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const poll = new FormData();
             poll.append('action', 'watch_poll');
             if (currentToken) poll.append('append', currentToken);
+            if (currentToken && replacePage) poll.append('replace_page', String(replacePage));
             pollPromise = fetch(SCANNER_URL, { method: 'POST', body: poll })
                 .then(readJson)
                 .catch(() => null);
@@ -213,6 +224,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (!result.success) {
                 if (seq !== waitSeq) return;
                 stopWaiting();
+                replacePage = 0;
                 if (!currentToken) {
                     setView('error', result.message || 'Scanning failed.');
                     return;
@@ -244,11 +256,55 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function showResult(result) {
+        const replaced = replacePage;
+        replacePage = 0;
         currentToken = result.token;
-        previewFrame.src = result.url + '&t=' + Date.now() + '#page=1&view=Fit&pagemode=none&toolbar=1';
-        previewInfo.textContent = result.pages + ' page' + (result.pages === 1 ? '' : 's')
+        currentPages = result.pages || 0;
+        previewFrame.src = result.url + '&t=' + Date.now() + '#page=' + (replaced || 1) + '&view=Fit&pagemode=none&toolbar=1';
+        previewInfo.textContent = (replaced ? 'Page ' + replaced + ' was rescanned. ' : '')
+            + result.pages + ' page' + (result.pages === 1 ? '' : 's')
             + ' scanned. Check that the scan is clear and complete before using it.';
         setView('preview');
+    }
+
+    function hideRescanMenu() {
+        rescanMenu.hidden = true;
+        rescanBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    function showRescanMenu() {
+        rescanMenu.innerHTML = '';
+        rescanMenu.appendChild(el('div', 'scan-rescan-title', 'Rescan which page?'));
+        const all = el('button', 'scan-rescan-option', 'Whole document (start over)');
+        all.type = 'button';
+        all.addEventListener('click', rescanAll);
+        rescanMenu.appendChild(all);
+        for (let n = 1; n <= currentPages; n++) {
+            const option = el('button', 'scan-rescan-option', 'Page ' + n + ' only');
+            option.type = 'button';
+            option.addEventListener('click', () => rescanPage(n));
+            rescanMenu.appendChild(option);
+        }
+        rescanMenu.hidden = false;
+        rescanBtn.setAttribute('aria-expanded', 'true');
+    }
+
+    async function rescanAll() {
+        hideRescanMenu();
+        if (busy) return;
+        stopWaiting();
+        await pollPromise;
+        replacePage = 0;
+        startScan(false);
+    }
+
+    async function rescanPage(n) {
+        hideRescanMenu();
+        if (busy || !currentToken) return;
+        stopWaiting();
+        await pollPromise;
+        replacePage = n;
+        startScan(true);
     }
 
     function startScan(append) {
@@ -273,6 +329,7 @@ document.addEventListener('DOMContentLoaded', function () {
         previewWrap.hidden = state !== 'preview' && !(busy && currentToken);
         startBtn.hidden = !!currentToken;
         rescanBtn.hidden = !currentToken;
+        if (busy || !currentToken) hideRescanMenu();
         addPageBtn.hidden = !currentToken;
         useBtn.hidden = !currentToken && !readyFiles.length;
         nextBtn.hidden = !currentToken;
@@ -293,6 +350,9 @@ document.addEventListener('DOMContentLoaded', function () {
     function resetScan() {
         discard(currentToken);
         currentToken = null;
+        currentPages = 0;
+        replacePage = 0;
+        hideRescanMenu();
         previewFrame.removeAttribute('src');
         previewInfo.textContent = '';
     }
@@ -311,12 +371,15 @@ document.addEventListener('DOMContentLoaded', function () {
         const data = new FormData();
         data.append('action', 'scan');
         if (append && currentToken) data.append('append', currentToken);
+        if (append && currentToken && replacePage) data.append('replace_page', String(replacePage));
         if (!append) resetScan();
-        setView('scanning', append ? 'Scanning the next page... please wait.' : 'Scanning... please wait.');
+        setView('scanning', append && replacePage ? 'Scanning page ' + replacePage + ' again... please wait.'
+            : append ? 'Scanning the next page... please wait.' : 'Scanning... please wait.');
         try {
             const res = await fetch(SCANNER_URL, { method: 'POST', body: data });
             const result = await readJson(res);
             if (!result.success) {
+                replacePage = 0;
                 setView(currentToken ? 'preview' : 'error', result.message || 'Scanning failed.');
                 checkDevice();
                 if (result.details) {
@@ -331,6 +394,7 @@ document.addEventListener('DOMContentLoaded', function () {
             }
             showResult(result);
         } catch (err) {
+            replacePage = 0;
             setView(currentToken ? 'preview' : 'error', 'Could not reach the scanner service. Please try again.');
             if (currentToken) {
                 errorBox.hidden = false;
@@ -467,11 +531,22 @@ document.addEventListener('DOMContentLoaded', function () {
         checkDevice();
     });
     startBtn.addEventListener('click', () => startScan(false));
-    rescanBtn.addEventListener('click', async () => {
+    rescanBtn.setAttribute('aria-haspopup', 'true');
+    rescanBtn.setAttribute('aria-expanded', 'false');
+    rescanBtn.addEventListener('click', () => {
         if (busy) return;
-        stopWaiting();
-        await pollPromise;
-        startScan(false);
+        if (currentPages > 1) {
+            if (rescanMenu.hidden) {
+                showRescanMenu();
+            } else {
+                hideRescanMenu();
+            }
+            return;
+        }
+        rescanAll();
+    });
+    document.addEventListener('click', (e) => {
+        if (!rescanMenu.hidden && !rescanWrap.contains(e.target)) hideRescanMenu();
     });
     addPageBtn.addEventListener('click', () => startScan(true));
     useBtn.addEventListener('click', useScan);

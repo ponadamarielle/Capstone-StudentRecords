@@ -218,7 +218,7 @@ function geminiEffort($model)
 function geminiSend(array $pending, $model, $effort)
 {
     $url = rtrim(getenv('GEMINI_BASE_URL') ?: 'https://generativelanguage.googleapis.com/v1beta/openai', '/') . '/chat/completions';
-    $timeout = max(4, (int) (getenv('GEMINI_TIMEOUT') ?: 8));
+    $timeout = max(4, (int) (getenv('GEMINI_TIMEOUT') ?: 6));
     $mh = curl_multi_init();
     $handles = [];
     foreach ($pending as $key => $body) {
@@ -284,7 +284,7 @@ function geminiChatMany(array $groqBodies)
         if ($effort === 'minimal') {
             $retryLow = [];
             foreach ($failures as $key => [$code, $response]) {
-                if ($code === 400 && stripos($response, 'reasoning') !== false) {
+                if ($code === 400 && preg_match('/reasoning|thinking/i', (string) $response)) {
                     $retryLow[$key] = $pending[$key];
                 }
             }
@@ -309,6 +309,8 @@ function geminiChatMany(array $groqBodies)
             @file_put_contents(groqCooldownFile() . '.gemini.txt', date('Y-m-d H:i:s') . ' ' . $geminiError);
             if ($httpCode === 429) {
                 $pause = max($pause, 30);
+            } elseif ($httpCode === 0) {
+                $pause = max($pause, 15);
             } elseif (in_array($httpCode, [400, 401, 403, 404], true)) {
                 $pause = max($pause, 600);
             } else {
@@ -318,9 +320,168 @@ function geminiChatMany(array $groqBodies)
         if ($pause > 0) {
             groqCooldowns(['gemini:' . $model => time() + $pause]);
         }
+        if ($failures && !array_filter($failures, fn($f) => $f[0] !== 0)) {
+            break;
+        }
     }
     if ($results) {
         error_log('Groq is rate-limited, read ' . count($results) . ' request(s) with ' . aiUsedSource() . '.');
+    }
+    return $results;
+}
+
+function cloudflareModel()
+{
+    return getenv('CLOUDFLARE_MODEL') ?: '@cf/qwen/qwen3.8-27b';
+}
+
+function cloudflareAvailable()
+{
+    if ((string) getenv('CLOUDFLARE_ACCOUNT_ID') === '' || (string) getenv('CLOUDFLARE_API_TOKEN') === '') {
+        return false;
+    }
+    return !isset(groqCooldowns()['cloudflare']);
+}
+
+function cloudflareBodyFromGroq($groqBody, $noThinkingFlag)
+{
+    $payload = json_decode($groqBody, true) ?: [];
+    $body = [
+        'model'                 => cloudflareModel(),
+        'messages'              => $payload['messages'] ?? [],
+        'temperature'           => 0,
+        'max_completion_tokens' => max(2048, ((int) ($payload['max_completion_tokens'] ?? 1024)) * 3),
+        'reasoning_effort'      => 'low',
+        'options'               => ['rejectIfBusy' => true],
+    ];
+    if (isset($payload['response_format'])) {
+        $body['response_format'] = $payload['response_format'];
+    }
+    if ($noThinkingFlag) {
+        $body['chat_template_kwargs'] = ['enable_thinking' => false];
+    }
+    return json_encode($body);
+}
+
+function cloudflareSend(array $pending, $noThinkingFlag)
+{
+    $url = 'https://api.cloudflare.com/client/v4/accounts/' . rawurlencode((string) getenv('CLOUDFLARE_ACCOUNT_ID')) . '/ai/v1/chat/completions';
+    $timeout = max(4, (int) (getenv('CLOUDFLARE_TIMEOUT') ?: 15));
+    $mh = curl_multi_init();
+    $handles = [];
+    foreach ($pending as $key => $body) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_POST           => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER     => [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . getenv('CLOUDFLARE_API_TOKEN'),
+            ],
+            CURLOPT_POSTFIELDS     => cloudflareBodyFromGroq($body, $noThinkingFlag),
+            CURLOPT_ENCODING       => '',
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT        => $timeout,
+        ]);
+        curl_multi_add_handle($mh, $ch);
+        $handles[$key] = $ch;
+    }
+    do {
+        $status = curl_multi_exec($mh, $running);
+        if ($running) {
+            curl_multi_select($mh, 1.0);
+        }
+    } while ($running && $status === CURLM_OK);
+
+    $results = [];
+    $failures = [];
+    foreach ($handles as $key => $ch) {
+        $response = (string) curl_multi_getcontent($ch);
+        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr  = curl_error($ch);
+        $took     = (float) curl_getinfo($ch, CURLINFO_TOTAL_TIME);
+        curl_multi_remove_handle($mh, $ch);
+        curl_close($ch);
+        if ($httpCode === 200) {
+            $data = json_decode($response, true);
+            $content = $data['choices'][0]['message']['content'] ?? null;
+            error_log(sprintf('Cloudflare speed: %.2fs, %d input tokens, %d output tokens, reasoning %s.',
+                $took,
+                (int) ($data['usage']['prompt_tokens'] ?? 0),
+                (int) ($data['usage']['completion_tokens'] ?? 0),
+                trim((string) ($data['choices'][0]['message']['reasoning_content'] ?? $data['choices'][0]['message']['reasoning'] ?? '')) !== '' ? 'ON' : 'off'));
+            if (is_string($content) && trim($content) !== '') {
+                $content = trim(preg_replace('/<think>.*?<\/think>/s', '', $content));
+                $content = preg_replace('/^```(?:json)?\s*|\s*```$/i', '', $content);
+                $results[$key] = trim($content);
+                continue;
+            }
+        }
+        $failures[$key] = [$httpCode, $response, $curlErr];
+    }
+    curl_multi_close($mh);
+    return [$results, $failures];
+}
+
+function cloudflareChatMany(array $groqBodies)
+{
+    if (!cloudflareAvailable() || !$groqBodies) {
+        return [];
+    }
+    $noThinkingFlag = !isset(groqCooldowns()['cloudflare-no-kwargs']);
+    [$results, $failures] = cloudflareSend($groqBodies, $noThinkingFlag);
+
+    if ($noThinkingFlag) {
+        $retry = [];
+        foreach ($failures as $key => [$code, $response]) {
+            if ($code === 400 && preg_match('/chat_template_kwargs|enable_thinking/i', (string) $response)) {
+                $retry[$key] = $groqBodies[$key];
+            }
+        }
+        if ($retry) {
+            groqCooldowns(['cloudflare-no-kwargs' => time() + 86400]);
+            [$doneRetry, $failRetry] = cloudflareSend($retry, false);
+            $results += $doneRetry;
+            $failures = array_diff_key($failures, $retry) + $failRetry;
+        }
+    }
+
+    $pause = 0;
+    foreach ($failures as [$httpCode, $response, $curlErr]) {
+        $error = 'Cloudflare fallback failed (HTTP ' . $httpCode . ', model ' . cloudflareModel() . ')' . ($curlErr !== '' ? ' ' . $curlErr : '') . ': ' . substr($response, 0, 300);
+        error_log($error);
+        @file_put_contents(groqCooldownFile() . '.cloudflare.txt', date('Y-m-d H:i:s') . ' ' . $error);
+        if ($httpCode === 429) {
+            $pause = max($pause, 300);
+        } elseif ($httpCode === 0) {
+            $pause = max($pause, 15);
+        } elseif (in_array($httpCode, [400, 401, 403, 404], true)) {
+            $pause = max($pause, 600);
+        } else {
+            $pause = max($pause, 60);
+        }
+    }
+    if ($pause > 0) {
+        groqCooldowns(['cloudflare' => time() + $pause]);
+    }
+    if ($results) {
+        aiUsedSource('Cloudflare (' . cloudflareModel() . ')');
+        error_log('Groq is rate-limited, read ' . count($results) . ' request(s) with Cloudflare (' . cloudflareModel() . ').');
+    }
+    return $results;
+}
+
+function aiFallbackAvailable()
+{
+    return cloudflareAvailable() || geminiAvailable();
+}
+
+function aiFallbackChatMany(array $groqBodies)
+{
+    $results = geminiAvailable() ? geminiChatMany($groqBodies) : [];
+    $pending = array_diff_key($groqBodies, $results);
+    if ($pending) {
+        $results += cloudflareChatMany($pending);
     }
     return $results;
 }
@@ -357,8 +518,8 @@ function groqChatMany(array $bodies)
     $lastCode = 0;
     $waited = 0;
     $tried = [];
-    if (geminiAvailable() && (groqAllCooling() || groqWouldExceed(count($queue)))) {
-        foreach (geminiChatMany($queue) as $key => $reply) {
+    if (aiFallbackAvailable() && (groqAllCooling() || groqWouldExceed(count($queue)))) {
+        foreach (aiFallbackChatMany($queue) as $key => $reply) {
             $results[$key] = $reply;
             unset($queue[$key]);
         }
@@ -463,14 +624,14 @@ function groqChatMany(array $bodies)
             curl_multi_close($mh);
         }
         $queue = $retry;
-        if ($queue && $mustWait && !geminiAvailable()) {
-            error_log((string) getenv('GEMINI_API_KEY') === ''
-                ? 'Gemini fallback skipped: GEMINI_API_KEY is not set in .env.'
-                : 'Gemini fallback skipped: ' . implode(', ', geminiModels()) . ' paused after an earlier error. Last error: '
-                    . trim((string) @file_get_contents(groqCooldownFile() . '.gemini.txt')));
+        if ($queue && $mustWait && !aiFallbackAvailable()) {
+            error_log('AI fallback skipped. Cloudflare: '
+                . ((string) getenv('CLOUDFLARE_API_TOKEN') === '' ? 'CLOUDFLARE_API_TOKEN is not set in .env' : 'paused, last error ' . trim((string) @file_get_contents(groqCooldownFile() . '.cloudflare.txt')))
+                . '. Gemini: '
+                . ((string) getenv('GEMINI_API_KEY') === '' ? 'GEMINI_API_KEY is not set in .env' : implode(', ', geminiModels()) . ' paused, last error ' . trim((string) @file_get_contents(groqCooldownFile() . '.gemini.txt'))));
         }
-        if ($queue && $mustWait && geminiAvailable()) {
-            foreach (geminiChatMany($queue) as $key => $reply) {
+        if ($queue && $mustWait && aiFallbackAvailable()) {
+            foreach (aiFallbackChatMany($queue) as $key => $reply) {
                 $results[$key] = $reply;
                 unset($queue[$key]);
             }
@@ -627,15 +788,17 @@ function aiPageReadMessages(array $dataUrls)
 {
     $types = aiDocTypeList();
     $system = "You read scanned Philippine university student documents and reply with ONLY a JSON object:\n"
-        . "{\"doc_type\": \"\", \"doc_confidence\": \"high\", \"fields\": {\"student_number\": \"\", \"last_name\": \"\", \"first_name\": \"\", \"middle_name\": \"\", \"course\": \"\", \"year_section\": \"\", \"sex\": \"\", "
+        . "{\"doc_type\": \"\", \"doc_confidence\": \"high\", \"grade_level\": \"\", \"fields\": {\"student_number\": \"\", \"last_name\": \"\", \"first_name\": \"\", \"middle_name\": \"\", \"course\": \"\", \"year_section\": \"\", \"sex\": \"\", "
         . "\"date_of_birth\": \"\", \"place_of_birth\": \"\", \"address\": \"\", \"mobile_number\": \"\", \"email\": \"\"}, \"text\": \"...\"}\n"
         . ($types !== ''
             ? "\"doc_type\": the code of what this page IS (not documents it merely mentions), or \"none\" for a blank page, "
               . "a back side or continuation page, or a document matching no type. For report cards use the card's own grade level: "
               . "a card with four quarterly grade columns and learning areas such as Araling Panlipunan, EsP, TLE and MAPEH is grade_10_card (Junior High School); "
               . "a card with 1st/2nd semester and Core, Applied or Specialized subjects is grade_11_card or grade_12_card. "
+              . "The Grade or Grade Level written on the card decides: Grade 10 is grade_10_card, Grade 11 is grade_11_card, Grade 12 is grade_12_card, "
+              . "even when the form code says SF9-JHS or the page only shows attendance and signatures. "
               . "Pages may be scanned sideways or upside down; read the rotated text.\n"
-              . "\"doc_confidence\": high, medium or low.\nDocument types (code: name. description):\n" . $types
+              . "\"doc_confidence\": high, medium or low.\n\"grade_level\": for a report card, only the number written in its Grade or Grade Level field (for example 11), otherwise empty.\nDocument types (code: name. description):\n" . $types
             : '')
         . "\"fields\": the student's details found on this page.\n"
         . "\"text\": only the form code and the document title printed on the page (use \\n between them), at most 200 characters. No markdown.\n"
@@ -643,7 +806,7 @@ function aiPageReadMessages(array $dataUrls)
 
     $intro = count($dataUrls) > 1
         ? 'Image 1 is the whole page. Image 2 is a zoomed-in view of the top of the same page; read handwritten values from image 2.'
-        : 'This image is the top part of the page. Read it carefully, including handwriting.';
+        : 'This image is the page, or the top part of it. Read it carefully, including handwriting and sideways text.';
     $content = [['type' => 'text', 'text' => $intro]];
     foreach ($dataUrls as $url) {
         $content[] = ['type' => 'image_url', 'image_url' => ['url' => $url]];
@@ -698,6 +861,12 @@ function aiReadImages(array $imagePaths)
             'doc_type'       => is_string($json['doc_type'] ?? null) ? trim($json['doc_type']) : null,
             'doc_confidence' => in_array($json['doc_confidence'] ?? '', ['high', 'medium', 'low'], true) ? $json['doc_confidence'] : 'low',
         ];
+        $gradeLevel = preg_replace('/\D/', '', (string) ($json['grade_level'] ?? ''));
+        $read['grade_level'] = $gradeLevel;
+        error_log('AI page read: doc_type=' . ($read['doc_type'] ?? '') . ', grade_level=' . ($json['grade_level'] ?? '') . ', text=' . str_replace("\n", ' | ', $text));
+        if (in_array($gradeLevel, ['10', '11', '12'], true) && in_array((string) $read['doc_type'], ['grade_10_card', 'grade_11_card', 'grade_12_card', 'none', ''], true)) {
+            $read['doc_type'] = 'grade_' . $gradeLevel . '_card';
+        }
         if ($hashes[$key]) {
             $byFile[$hashes[$key]] = $read;
         }
@@ -742,12 +911,84 @@ function aiRunCommandsParallel(array $commands, $limit = 6)
     }
 }
 
-function aiReadPdfPages($pdfPath, array $pages, $workDir)
+function aiPageFullRenderCommand($pdfPath, $page, $outDir)
 {
+    $base = rtrim($outDir, '/\\') . '/' . uniqid('aifull_', true);
+    $cmd = escapeshellarg(PDFTOPPM_BIN) . ' -jpeg -jpegopt quality=80 -scale-to ' . AI_ZOOM_WIDTH
+        . ' -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+        . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($base);
+    return [$cmd, $base . '.jpg'];
+}
+
+function aiSidewaysPages($pdfPath, array $pages, $workDir)
+{
+    if (!function_exists('readPgmFile')) {
+        return [];
+    }
     $commands = [];
     $files = [];
     foreach ($pages as $page) {
-        [$cmd, $file] = aiPageRenderCommand($pdfPath, $page, $workDir, true);
+        $base = rtrim($workDir, '/\\') . '/' . uniqid('aiorient_', true);
+        $commands[$page] = escapeshellarg(PDFTOPPM_BIN) . ' -gray -scale-to 800 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+            . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($base);
+        $files[$page] = $base . '.pgm';
+    }
+    aiRunCommandsParallel($commands);
+
+    $sideways = [];
+    foreach ($files as $page => $file) {
+        $img = readPgmFile($file);
+        @unlink($file);
+        if ($img === null) {
+            continue;
+        }
+        $w = $img['width'];
+        $h = $img['height'];
+        $x0 = (int) ($w * 0.05);
+        $x1 = $w - $x0;
+        $y0 = (int) ($h * 0.05);
+        $y1 = $h - $y0;
+        $rows = array_fill(0, $y1 - $y0, 0);
+        $cols = array_fill(0, $x1 - $x0, 0);
+        for ($y = $y0; $y < $y1; $y++) {
+            $offset = $y * $w;
+            for ($x = $x0; $x < $x1; $x++) {
+                if (ord($img['data'][$offset + $x]) < 128) {
+                    $rows[$y - $y0]++;
+                    $cols[$x - $x0]++;
+                }
+            }
+        }
+        $total = array_sum($rows);
+        if ($total < 500) {
+            continue;
+        }
+        $change = function (array $values) use ($total) {
+            $sum = 0;
+            for ($i = 1, $n = count($values); $i < $n; $i++) {
+                $sum += abs($values[$i] - $values[$i - 1]);
+            }
+            return $sum / $total;
+        };
+        if ($change($cols) > $change($rows) * 1.25) {
+            $sideways[$page] = true;
+        }
+    }
+    return $sideways;
+}
+
+function aiReadPdfPages($pdfPath, array $pages, $workDir)
+{
+    $sideways = aiSidewaysPages($pdfPath, $pages, $workDir);
+    if ($sideways) {
+        error_log('AI: page(s) ' . implode(', ', array_keys($sideways)) . ' scanned sideways, sending the whole page.');
+    }
+    $commands = [];
+    $files = [];
+    foreach ($pages as $page) {
+        [$cmd, $file] = isset($sideways[$page])
+            ? aiPageFullRenderCommand($pdfPath, $page, $workDir)
+            : aiPageRenderCommand($pdfPath, $page, $workDir, true);
         $commands[$page] = $cmd;
         $files[$page][] = $file;
     }
@@ -766,6 +1007,35 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir)
     foreach (aiReadImages($images) as $page => $read) {
         if ($read !== null) {
             $results[$page] = $read + $results[$page];
+        }
+    }
+
+    $cardCodes = ['grade_10_card', 'grade_11_card', 'grade_12_card'];
+    $fullCommands = [];
+    foreach ($results as $page => $read) {
+        $gradeKnown = in_array($read['grade_level'] ?? '', ['10', '11', '12'], true);
+        $looksLikeCard = in_array((string) $read['doc_type'], $cardCodes, true)
+            || ((string) $read['doc_type'] === 'none' && preg_match('/\bSF\s*-?\s*9\b|F\s*-?\s*138|report\s*card|progress\s*report|attendance\s*record/i', (string) $read['text']));
+        if (!$gradeKnown && $looksLikeCard && !isset($sideways[$page])) {
+            [$fullCommands[$page], $fullFile] = aiPageFullRenderCommand($pdfPath, $page, $workDir);
+            $files[$page][] = $fullFile;
+        }
+    }
+    if ($fullCommands) {
+        aiRunCommandsParallel($fullCommands);
+        $fullImages = [];
+        foreach (array_keys($fullCommands) as $page) {
+            $file = end($files[$page]);
+            if (file_exists($file)) {
+                $fullImages[$page] = [$file];
+            }
+        }
+        error_log('AI report card re-check (full page) for page(s): ' . implode(', ', array_keys($fullImages)));
+        foreach (aiReadImages($fullImages) as $page => $read) {
+            if ($read !== null && in_array((string) $read['doc_type'], $cardCodes, true)) {
+                $results[$page]['doc_type'] = $read['doc_type'];
+                $results[$page]['doc_confidence'] = $read['doc_confidence'];
+            }
         }
     }
     foreach ($files as $set) {

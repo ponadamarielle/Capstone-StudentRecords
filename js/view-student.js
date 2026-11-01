@@ -802,7 +802,7 @@ document.addEventListener('DOMContentLoaded', function () {
         select.innerHTML = '';
         const other = document.createElement('option');
         other.value = '';
-        other.textContent = '— Other / unclassified —';
+        other.textContent = '- Other / unclassified -';
         select.appendChild(other);
 
         Object.keys(REQUIREMENT_GROUPS).forEach((groupKey) => {
@@ -916,7 +916,7 @@ document.addEventListener('DOMContentLoaded', function () {
             row.dataset.index = index;
             row.innerHTML = `
                 <div class="document-row-body flex-grow-1">
-                    <div class="document-row-title ${doc.requirement_code ? '' : 'text-danger'}">${escapeHtml(doc.requirement_code ? requirementLabel(doc.requirement_code) : 'Unclassified — choose a type below')}</div>
+                    <div class="document-row-title ${doc.requirement_code ? '' : 'text-danger'}">${escapeHtml(doc.requirement_code ? requirementLabel(doc.requirement_code) : 'Unclassified - choose a type below')}</div>
                     <span class="document-name d-block text-muted small">${escapeHtml(doc.file_name)}</span>
                     ${doc.needs_manual_type
                         ? '<select class="form-select form-select-sm document-type-select" aria-label="Document type"></select>'
@@ -1385,11 +1385,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
         document.getElementById('confirmSummaryNumber').textContent = summary.studentNumber;
         document.getElementById('confirmSummaryName').textContent = summary.name;
-        document.getElementById('confirmSummaryCourse').textContent = summary.course || '—';
-        document.getElementById('confirmSummarySection').textContent = summary.yearSection || '—';
+        document.getElementById('confirmSummaryCourse').textContent = summary.course || '-';
+        document.getElementById('confirmSummarySection').textContent = summary.yearSection || '-';
         document.getElementById('confirmSummaryDocs').textContent = summary.docCount + ' document(s)';
         const trackEl = document.getElementById('confirmSummaryTrack');
-        if (trackEl) trackEl.textContent = ADMISSION_TRACKS[currentTrack()] || '—';
+        if (trackEl) trackEl.textContent = ADMISSION_TRACKS[currentTrack()] || '-';
         const missingEl = document.getElementById('confirmSummaryMissing');
         if (missingEl) {
             const missingDocs = missingRequiredLabels();

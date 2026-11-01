@@ -796,7 +796,7 @@ function handleUpdateStudentInfo($conn)
         echo json_encode(['success' => false, 'message' => 'Invalid student number format. Use 0000-00000-BN-0 (e.g. 2021-00123-BN-0).']);
         return;
     }
-    $course      = normalizeCourseName($_POST['course'] ?? '');
+    $course      = normalizeCourseName($_POST['course'] ?? '', true);
     $yearSection = trim($_POST['year_section'] ?? '');
     if ($yearSection !== '' && !preg_match('/^\d-\d$/', $yearSection)) {
         echo json_encode(['success' => false, 'message' => 'Year & Section must be one number, a dash, and one number (e.g. 1-1).']);
@@ -1814,7 +1814,11 @@ include 'navbar.php';
                                 <small class="photo-hint">JPG or PNG</small>
                                 <input type="file" id="replacePhotoInput" name="photo" accept=".jpg,.jpeg,.png" hidden>
                                 <button type="button" class="btn btn-sm btn-outline-secondary replace-photo-btn" id="replacePhotoBtn">
-                                    <i class="bi bi-arrow-repeat"></i> Replace photo
+                                    <?php if ($photoUrl !== $defaultAvatarUri): ?>
+                                        <i class="bi bi-arrow-repeat"></i> Replace photo
+                                    <?php else: ?>
+                                        <i class="bi bi-upload"></i> Upload photo
+                                    <?php endif; ?>
                                 </button>
                                 <small id="photoFeedback" class="text-danger d-block mt-2"></small>
                             </div>
