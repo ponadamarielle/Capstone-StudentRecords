@@ -797,8 +797,8 @@ function handleAddStudent($conn)
         echo json_encode(['success' => false, 'message' => 'Date of Birth is too recent. The student must turn at least 17 years old this year.']);
         return;
     }
-    $placeOfBirth     = trim($_POST['place_of_birth'] ?? '');
-    $address          = trim($_POST['address'] ?? '');
+    $placeOfBirth     = trim(preg_replace('/\s+/u', ' ', preg_replace("/[^\\p{L}\\p{M} .,'\\-]/u", '', (string) ($_POST['place_of_birth'] ?? ''))));
+    $address          = trim(preg_replace('/\s+/u', ' ', preg_replace("/[^\\p{L}\\p{M}0-9\\s.,'\\-#\\/()]/u", '', (string) ($_POST['address'] ?? ''))));
     $mobileNumber    = trim($_POST['mobile_number'] ?? '');
     $email            = trim($_POST['email'] ?? '');
     $status           = 'enrollee';

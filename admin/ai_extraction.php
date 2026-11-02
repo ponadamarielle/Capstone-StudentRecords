@@ -366,7 +366,7 @@ function cloudflareBodyFromGroq($groqBody, $noThinkingFlag)
 function cloudflareSend(array $pending, $noThinkingFlag)
 {
     $url = 'https://api.cloudflare.com/client/v4/accounts/' . rawurlencode((string) getenv('CLOUDFLARE_ACCOUNT_ID')) . '/ai/v1/chat/completions';
-    $timeout = max(4, (int) (getenv('CLOUDFLARE_TIMEOUT') ?: 15));
+    $timeout = max(4, (int) (getenv('CLOUDFLARE_TIMEOUT') ?: 10));
     $mh = curl_multi_init();
     $handles = [];
     foreach ($pending as $key => $body) {

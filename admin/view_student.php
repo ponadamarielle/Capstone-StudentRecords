@@ -808,10 +808,10 @@ function handleUpdateStudentInfo($conn)
         echo json_encode(['success' => false, 'message' => 'Date of Birth is too recent. The student must turn at least 17 years old this year.']);
         return;
     }
-    $pob         = trim($_POST['place_of_birth'] ?? '');
+    $pob         = trim(preg_replace('/\s+/u', ' ', preg_replace("/[^\\p{L}\\p{M} .,'\\-]/u", '', (string) ($_POST['place_of_birth'] ?? ''))));
     $mobile      = trim($_POST['mobile_number'] ?? '');
     $email       = trim($_POST['email'] ?? '');
-    $address     = trim($_POST['address'] ?? '');
+    $address     = trim(preg_replace('/\s+/u', ' ', preg_replace("/[^\\p{L}\\p{M}0-9\\s.,'\\-#\\/()]/u", '', (string) ($_POST['address'] ?? ''))));
     $track       = normalizeAdmissionTrack($_POST['admission_track'] ?? '');
 
     if ($studentNum !== '') {
@@ -1940,6 +1940,11 @@ include 'navbar.php';
                                         <div class="documents-tab-layout">
                                             <div class="documents-list-col">
                                                 <div id="requirementChecklist" class="requirement-checklist"></div>
+                                                <div class="documents-section-label">New uploads (saved when you click UPDATE)</div>
+                                                <div id="scannedFilePreview" class="d-flex flex-column gap-2 mb-3">
+                                                    <div class="text-muted document-empty-state">No new file attached yet.</div>
+                                                </div>
+                                                <small id="addDocumentFeedback" class="text-danger d-block mb-3"></small>
                                                 <div class="documents-section-label">On file</div>
                                                 <div id="modalDocumentList" class="d-flex flex-column gap-2 mb-3">
                                                     <?php if (!empty($documentRows)): ?>
@@ -1972,11 +1977,6 @@ include 'navbar.php';
 
                                                 <input type="file" id="replaceDocumentInput" accept=".pdf" hidden>
 
-                                                <div class="documents-section-label">New uploads (saved when you click UPDATE)</div>
-                                                <div id="scannedFilePreview" class="d-flex flex-column gap-2 mb-3">
-                                                    <div class="text-muted document-empty-state">No new file attached yet.</div>
-                                                </div>
-                                                <small id="addDocumentFeedback" class="text-danger d-block mb-3"></small>
                                             </div>
 
                                         </div>

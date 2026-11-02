@@ -250,11 +250,13 @@ function logStudentUpdate($conn, $studentId, ?array $before, $photoChanged = fal
         $changes['Photo'] = ['from' => 'Previous photo', 'to' => 'New photo'];
     }
 
+    if (!$changes) {
+        return;
+    }
+
     $opts  = activityStudentOpts($conn, $studentId, $after);
     $label = activityStudentLabel($opts);
-    $description = $changes
-        ? 'Updated ' . $label . ': ' . implode(', ', array_keys($changes))
-        : 'Saved ' . $label . ' (no field changes)';
+    $description = 'Updated ' . $label . ': ' . implode(', ', array_keys($changes));
 
     logActivity('student_updated', $description, $opts + [
         'target_type' => 'student',

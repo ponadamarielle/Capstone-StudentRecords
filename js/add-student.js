@@ -1,4 +1,22 @@
 document.addEventListener('DOMContentLoaded', function () {
+
+    const PLACE_NOT_ALLOWED = /[^\p{L}\p{M} .,'\-]/gu;
+    const ADDRESS_NOT_ALLOWED = /[^\p{L}\p{M}0-9\s.,'\-#\/()]/gu;
+    function guardTextField(id, pattern) {
+        const field = document.getElementById(id);
+        if (!field) return;
+        const clean = function () {
+            const cleaned = field.value.replace(pattern, '');
+            if (cleaned === field.value) return;
+            const pos = Math.max(0, (field.selectionStart || 0) - (field.value.length - cleaned.length));
+            field.value = cleaned;
+            if (document.activeElement === field) field.setSelectionRange(pos, pos);
+        };
+        field.addEventListener('input', clean);
+        field.addEventListener('blur', clean);
+    }
+    guardTextField('place_of_birth', PLACE_NOT_ALLOWED);
+    guardTextField('address', ADDRESS_NOT_ALLOWED);
     const ACTIONS_URL = 'student_directory.php';
     let studentPhotoSet = false;
     let currentPhotoDocIndex = null;
@@ -47,6 +65,18 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    function shrinkPageForPreview(on) {
+        const desktop = window.matchMedia('(min-width: 769px)').matches;
+        document.querySelectorAll('.admin-topbar, .main-container').forEach(function (el) {
+            if (on && desktop) {
+                el.style.transition = 'margin-right 0.2s ease';
+                el.style.marginRight = 'var(--doc-preview-width)';
+            } else {
+                el.style.removeProperty('margin-right');
+            }
+        });
+    }
+
     function openDocumentPreview(filePath, fileName) {
         if (!previewPanel || !previewFrame) {
             window.open(filePath, '_blank');
@@ -58,6 +88,7 @@ document.addEventListener('DOMContentLoaded', function () {
         previewPanel.classList.add('is-open');
         previewPanel.setAttribute('aria-hidden', 'false');
         document.body.classList.add('has-document-preview');
+        shrinkPageForPreview(true);
     }
 
     function closeDocumentPreview() {
@@ -67,6 +98,7 @@ document.addEventListener('DOMContentLoaded', function () {
         previewFrame.src = 'about:blank';
         currentPreviewFilePath = '';
         document.body.classList.remove('has-document-preview');
+        shrinkPageForPreview(false);
     }
 
     if (previewCloseBtn) {
@@ -720,8 +752,21 @@ document.addEventListener('DOMContentLoaded', function () {
         const changeBtn = node.querySelector('.document-change-btn');
         if (changeBtn) {
             changeBtn.addEventListener('click', function () {
-                pendingReplaceIndex = index;
-                uploadInput.click();
+                const pickFile = function () {
+                    pendingReplaceIndex = index;
+                    uploadInput.click();
+                };
+                if (!window.pupScanner) {
+                    pickFile();
+                    return;
+                }
+                window.pupScanner.chooseReplace(changeBtn, pickFile, function (file) {
+                    pendingReplaceIndex = index;
+                    const transfer = new DataTransfer();
+                    transfer.items.add(file);
+                    uploadInput.files = transfer.files;
+                    uploadInput.dispatchEvent(new Event('change', { bubbles: true }));
+                });
             });
         }
 

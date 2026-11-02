@@ -647,7 +647,8 @@ if ($action === 'restore_student') {
 
 $search            = isset($_GET['search']) ? trim(preg_replace('/\s+/u', ' ', preg_replace("/[^\\p{L}\\p{M}0-9\\s.,'\\-]/u", '', $_GET['search']))) : '';
 $courseFilter      = isset($_GET['course']) ? trim($_GET['course']) : '';
-$yearSectionFilter = isset($_GET['year_section']) ? trim($_GET['year_section']) : '';
+$gradYearFilter    = preg_match('/^\d{4}$/', (string) ($_GET['grad_year'] ?? '')) ? (string) $_GET['grad_year'] : '';
+$hasGradColumn     = in_array('graduation_year', studentColumns($conn), true);
 
 $conditions = ["s.status IN ('graduated', 'inactive', 'onleave')"];
 $params     = [];
@@ -683,13 +684,11 @@ if ($courseFilter !== '') {
     }
 }
 
-if ($yearSectionFilter !== '') {
-    $conditions[] = 's.year_section = ?';
-    $params[] = $yearSectionFilter;
-    $types   .= 's';
+if ($gradYearFilter !== '') {
+    $conditions[] = "s.status = 'graduated'";
 }
 
-$sql = "SELECT s.student_id, s.student_number, s.name, s.course, s.year_section, s.status,
+$sql = "SELECT s.student_id, s.student_number, s.name, s.course, s.year_section, s.status," . ($hasGradColumn ? ' s.graduation_year,' : '') . "
                COUNT(d.document_id) AS doc_count,
                " . (studentHasArchivedAt($conn) ? "COALESCE(s.archived_at, MAX(d.archived_at))" : "MAX(d.archived_at)") . " AS archived_at
         FROM students s
@@ -707,13 +706,21 @@ if (!empty($params)) {
     $result = mysqli_query($conn, $sql);
 }
 $students = $result ? mysqli_fetch_all($result, MYSQLI_ASSOC) : [];
+foreach ($students as &$studentRow) {
+    $studentRow['grad_year'] = $studentRow['status'] === 'graduated' ? expectedGraduationYear($studentRow) : null;
+}
+unset($studentRow);
+if ($gradYearFilter !== '') {
+    $students = array_values(array_filter($students, fn($studentRow) => (string) $studentRow['grad_year'] === $gradYearFilter));
+}
 
 $studentFiles = [];
 $studentIds = array_map('intval', array_column($students, 'student_id'));
 if (!empty($studentIds)) {
+    require_once __DIR__ . '/document_classifier.php';
     $idList = implode(',', $studentIds);
     $filesResult = mysqli_query($conn,
-        "SELECT student_id, file_name, file_path FROM documents
+        "SELECT student_id, file_name, file_path, requirement_code FROM documents
          WHERE student_id IN ($idList)
          ORDER BY document_id ASC");
     if ($filesResult) {
@@ -739,16 +746,19 @@ if ($extraCourseResult) {
     }
 }
 
-$yearSectionOptions = [];
-$yearSectionResult = mysqli_query($conn,
-    "SELECT DISTINCT year_section FROM students
-     WHERE status IN ('graduated', 'inactive', 'onleave') AND year_section IS NOT NULL AND year_section <> ''
-     ORDER BY year_section ASC");
-if ($yearSectionResult) {
-    while ($row = mysqli_fetch_assoc($yearSectionResult)) {
-        $yearSectionOptions[] = $row['year_section'];
+$gradYearOptions = [];
+$gradYearResult = mysqli_query($conn,
+    "SELECT student_number" . ($hasGradColumn ? ", graduation_year" : "") . " FROM students WHERE status = 'graduated'");
+if ($gradYearResult) {
+    while ($row = mysqli_fetch_assoc($gradYearResult)) {
+        $year = expectedGraduationYear($row);
+        if ($year !== null) {
+            $gradYearOptions[(string) $year] = true;
+        }
     }
 }
+$gradYearOptions = array_keys($gradYearOptions);
+rsort($gradYearOptions);
 
 $statusLabels = ['enrollee' => 'ENROLLEE', 'active' => 'ENROLLEE', 'graduated' => 'GRADUATE', 'inactive' => 'IN-ACTIVE', 'onleave' => 'ON-LEAVE'];
 
@@ -802,21 +812,21 @@ include 'navbar.php';
               <?php endforeach; ?>
           </select>
           <?php if ($courseFilter !== ''): ?>
-              <a href="archive.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'year_section' => $yearSectionFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear course"><i class="bi bi-x-circle"></i></a>
+              <a href="archive.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'grad_year' => $gradYearFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear course"><i class="bi bi-x-circle"></i></a>
           <?php endif; ?>
           </div>
 
           <div class="filter-wrap filter-wrap-year-section">
-          <select class="filter filter-year-section<?= $yearSectionFilter !== '' ? ' has-value' : '' ?>" id="archiveYearSectionFilter" name="year_section">
-              <option value="">Year & Section</option>
-              <?php foreach ($yearSectionOptions as $yearSectionOption): ?>
-                  <option value="<?= htmlspecialchars($yearSectionOption) ?>" <?= $yearSectionFilter === $yearSectionOption ? 'selected' : '' ?>>
-                      <?= htmlspecialchars($yearSectionOption) ?>
+          <select class="filter filter-year-section<?= $gradYearFilter !== '' ? ' has-value' : '' ?>" id="archiveYearSectionFilter" name="grad_year">
+              <option value="">Year Graduated</option>
+              <?php foreach ($gradYearOptions as $gradYearOption): ?>
+                  <option value="<?= htmlspecialchars((string) $gradYearOption) ?>" <?= $gradYearFilter === (string) $gradYearOption ? 'selected' : '' ?>>
+                      <?= htmlspecialchars((string) $gradYearOption) ?>
                   </option>
               <?php endforeach; ?>
           </select>
-          <?php if ($yearSectionFilter !== ''): ?>
-              <a href="archive.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'course' => $courseFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear year &amp; section"><i class="bi bi-x-circle"></i></a>
+          <?php if ($gradYearFilter !== ''): ?>
+              <a href="archive.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'course' => $courseFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear year graduated"><i class="bi bi-x-circle"></i></a>
           <?php endif; ?>
           </div>
         </form>
@@ -831,7 +841,7 @@ include 'navbar.php';
         <th>Student Number</th>
         <th>Name</th>
         <th>Course</th>
-        <th>Year & Section</th>
+        <th>Year Graduated</th>
         <th>Status</th>
         <th>Date Archived</th>
         <th>Records</th>
@@ -847,7 +857,7 @@ include 'navbar.php';
             <td><?= htmlspecialchars($row['student_number']) ?></td>
             <td><?= htmlspecialchars($row['name']) ?></td>
             <td><?= htmlspecialchars($row['course']) ?></td>
-            <td><?= htmlspecialchars($row['year_section']) ?></td>
+            <td><?= $row['grad_year'] !== null ? (int) $row['grad_year'] : '-' ?></td>
             <td>
                 <span class="archive-status archive-status-<?= htmlspecialchars($row['status']) ?>">
                     <?= htmlspecialchars($statusLabels[$row['status']] ?? strtoupper((string) $row['status'])) ?>
@@ -873,15 +883,20 @@ include 'navbar.php';
                             <ul class="dropdown-menu dropdown-menu-end archive-drive-menu">
                                 <li><h6 class="dropdown-header">Archived documents</h6></li>
                                 <?php foreach ($files as $file): ?>
-                                    <?php $exists = ($file['file_path'] ?? '') !== '' && is_file($file['file_path']); ?>
+                                    <?php
+                                        $exists = ($file['file_path'] ?? '') !== '' && is_file($file['file_path']);
+                                        $fileLabel = ($file['requirement_code'] ?? '') !== '' && function_exists('requirementLabel')
+                                            ? requirementLabel($file['requirement_code'])
+                                            : $file['file_name'];
+                                    ?>
                                     <li>
                                         <?php if ($exists): ?>
-                                            <a class="dropdown-item" href="<?= htmlspecialchars(fileUrl($file['file_path'])) ?>" target="_blank" rel="noopener">
-                                                <i class="bi bi-file-earmark-pdf"></i> <?= htmlspecialchars($file['file_name']) ?>
+                                            <a class="dropdown-item archive-file-link" href="<?= htmlspecialchars(fileUrl($file['file_path'])) ?>" target="_blank" rel="noopener" title="<?= htmlspecialchars($file['file_name']) ?>" data-file-label="<?= htmlspecialchars($fileLabel) ?>" data-file-name="<?= htmlspecialchars($file['file_name']) ?>">
+                                                <i class="bi bi-file-earmark-pdf"></i> <?= htmlspecialchars($fileLabel) ?>
                                             </a>
                                         <?php else: ?>
                                             <span class="dropdown-item disabled text-muted" title="File is missing on the server">
-                                                <i class="bi bi-exclamation-triangle"></i> <?= htmlspecialchars($file['file_name']) ?> (missing)
+                                                <i class="bi bi-exclamation-triangle"></i> <?= htmlspecialchars($fileLabel) ?> (missing)
                                             </span>
                                         <?php endif; ?>
                                     </li>
@@ -924,6 +939,21 @@ include 'navbar.php';
         </div>
     </div>
 </div>
+
+<aside id="documentPreviewPanel" class="document-preview-panel" aria-hidden="true" aria-label="Document preview" inert>
+    <div class="document-preview-resize-handle" id="documentPreviewResize" title="Drag to resize"></div>
+    <div class="document-preview-header">
+        <span class="document-preview-title" id="documentPreviewTitle">Document Preview</span>
+        <div class="document-preview-header-actions">
+            <a id="documentPreviewOpenTab" href="#" target="_blank" rel="noopener"
+               class="btn btn-sm btn-outline-secondary" title="Open full size in a new tab">
+                <i class="bi bi-arrows-angle-expand"></i>
+            </a>
+            <button type="button" id="documentPreviewClose" class="btn-close" aria-label="Close preview"></button>
+        </div>
+    </div>
+    <div class="document-preview-body" id="documentPreviewBody"></div>
+</aside>
 
 <script src="../js/archive.js"></script>
 <script src="../js/course-filter.js"></script>

@@ -1,4 +1,22 @@
 document.addEventListener('DOMContentLoaded', function () {
+
+    const PLACE_NOT_ALLOWED = /[^\p{L}\p{M} .,'\-]/gu;
+    const ADDRESS_NOT_ALLOWED = /[^\p{L}\p{M}0-9\s.,'\-#\/()]/gu;
+    function guardTextField(id, pattern) {
+        const field = document.getElementById(id);
+        if (!field) return;
+        const clean = function () {
+            const cleaned = field.value.replace(pattern, '');
+            if (cleaned === field.value) return;
+            const pos = Math.max(0, (field.selectionStart || 0) - (field.value.length - cleaned.length));
+            field.value = cleaned;
+            if (document.activeElement === field) field.setSelectionRange(pos, pos);
+        };
+        field.addEventListener('input', clean);
+        field.addEventListener('blur', clean);
+    }
+    guardTextField('edit_place_of_birth', PLACE_NOT_ALLOWED);
+    guardTextField('edit_address', ADDRESS_NOT_ALLOWED);
     const ACTIONS_URL = 'view_student.php';
 
     let faceModelsPromise = null;
@@ -629,6 +647,17 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
+    function shrinkPageForPreview(on) {
+        document.querySelectorAll('.admin-topbar, .main-container, .view-container').forEach((el) => {
+            if (on && !mobileQuery.matches) {
+                el.style.transition = 'margin-right 0.2s ease';
+                el.style.marginRight = 'var(--doc-preview-width)';
+            } else {
+                el.style.removeProperty('margin-right');
+            }
+        });
+    }
+
     function openDocumentPreview(filePath, fileName) {
         if (!previewPanel || !filePath) return;
 
@@ -663,6 +692,7 @@ document.addEventListener('DOMContentLoaded', function () {
         previewPanel.setAttribute('aria-hidden', 'false');
         previewPanel.classList.add('is-open');
         document.body.classList.add('has-document-preview');
+        shrinkPageForPreview(true);
         setModalFocusTrap(false);
     }
 
@@ -673,6 +703,7 @@ document.addEventListener('DOMContentLoaded', function () {
         previewPanel.setAttribute('aria-hidden', 'true');
         previewPanel.setAttribute('inert', '');
         document.body.classList.remove('has-document-preview');
+        shrinkPageForPreview(false);
         currentPreviewPath = null;
         setModalFocusTrap(true);
 
@@ -1799,9 +1830,23 @@ document.addEventListener('DOMContentLoaded', function () {
 
             const changeBtn = e.target.closest('.document-change-btn');
             if (changeBtn) {
-                activeRowForReplace = changeBtn.closest('.document-row');
+                const row = changeBtn.closest('.document-row');
                 const input = document.getElementById('replaceDocumentInput');
-                if (input) input.click();
+                const pickFile = () => {
+                    activeRowForReplace = row;
+                    if (input) input.click();
+                };
+                if (!window.pupScanner || !input) {
+                    pickFile();
+                    return;
+                }
+                window.pupScanner.chooseReplace(changeBtn, pickFile, (file) => {
+                    activeRowForReplace = row;
+                    const transfer = new DataTransfer();
+                    transfer.items.add(file);
+                    input.files = transfer.files;
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                });
                 return;
             }
 

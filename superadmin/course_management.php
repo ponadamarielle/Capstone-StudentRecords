@@ -46,18 +46,18 @@ function cmCourseById($id)
 function cmValidateCourse($code, $name, array $aliases, $excludeId = 0)
 {
     $errors = [];
-    if (!preg_match('/^[A-Z0-9][A-Z0-9\-]{1,29}$/', $code)) {
-        $errors['code'] = 'Use 2 to 30 capital letters, numbers or hyphens (e.g. BSA or BSBA-MM).';
+    if (!preg_match('/^[A-Z][A-Z\-]{1,29}$/', $code)) {
+        $errors['code'] = $code === '' ? 'This field is required.' : 'Enter a valid code.';
     }
-    if (!preg_match("/^[\p{L}0-9][\p{L}0-9 .,'&()\-]{4,254}$/u", $name)) {
-        $errors['name'] = 'Enter the full program name (e.g. Bachelor of Science in Accountancy).';
+    if (!preg_match("/^\p{L}[\p{L}\p{M} .,'&()\-]{4,254}$/u", $name)) {
+        $errors['name'] = $name === '' ? 'This field is required.' : 'Enter a valid program name.';
     }
     if (count($aliases) > 10) {
         $errors['aliases'] = 'Up to 10 other names only.';
     } else {
         foreach ($aliases as $alias) {
-            if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9 .\-]{0,39}$/', $alias)) {
-                $errors['aliases'] = 'Other names can only use letters, numbers, spaces, periods and hyphens, separated by commas.';
+            if (!preg_match('/^[A-Za-z][A-Za-z .\-]{0,39}$/', $alias)) {
+                $errors['aliases'] = 'Enter valid other names.';
                 break;
             }
         }
@@ -200,7 +200,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $aliasAdded = false;
         $alias = cmCleanText($raw);
-        if (!empty($_POST['remember_alias']) && preg_match('/^[A-Za-z0-9][A-Za-z0-9 .\-]{0,39}$/', $alias)
+        if (!empty($_POST['remember_alias']) && preg_match('/^[A-Za-z][A-Za-z .\-]{0,39}$/', $alias)
             && !isset(courseIndexes()['full'][courseKey($alias)]) && count($course['aliases']) < 10) {
             $aliasText = implode(', ', array_merge($course['aliases'], [$alias]));
             $stmt = mysqli_prepare($conn, "UPDATE courses SET aliases = ? WHERE course_id = ?");
@@ -314,7 +314,7 @@ $formAction = htmlspecialchars('course_management.php' . ($view !== 'all' ? '?vi
     </tr>
     <?php foreach ($unrecognized as $raw => $total):
         $parsed = parseNewCourse($raw);
-        $suggestCode = $parsed ? $parsed[0] : (preg_match('/^[A-Za-z0-9\-]{2,30}$/', $raw) ? strtoupper($raw) : '');
+        $suggestCode = $parsed ? $parsed[0] : (preg_match('/^[A-Za-z\-]{2,30}$/', $raw) ? strtoupper($raw) : '');
         $suggestName = $parsed ? $parsed[1] : '';
     ?>
     <tr>
@@ -346,7 +346,6 @@ $formAction = htmlspecialchars('course_management.php' . ($view !== 'all' ? '?vi
     <tr>
         <th>Code</th>
         <th>Program name</th>
-        <th>Students</th>
         <th>Status</th>
         <th>Actions</th>
     </tr>
@@ -359,7 +358,6 @@ $formAction = htmlspecialchars('course_management.php' . ($view !== 'all' ? '?vi
         <td>
             <?= htmlspecialchars($entry['name']) ?>
         </td>
-        <td><?= $total ?></td>
         <td><span class="cm-status <?= $isActive ? 'cm-status-active' : 'cm-status-inactive' ?>"><?= $isActive ? 'Offered' : 'Not offered' ?></span></td>
         <td>
             <div class="cm-actions">
@@ -382,7 +380,7 @@ $formAction = htmlspecialchars('course_management.php' . ($view !== 'all' ? '?vi
     </tr>
     <?php endforeach; ?>
     <?php if (!$shown): ?>
-    <tr><td colspan="5" class="cm-empty">No courses found.</td></tr>
+    <tr><td colspan="4" class="cm-empty">No courses found.</td></tr>
     <?php endif; ?>
 </table>
 <div class="cm-table-footer">Showing <?= count($shown) ?> course<?= count($shown) === 1 ? '' : 's' ?></div>

@@ -126,6 +126,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const modal = bootstrap.Modal.getOrCreateInstance(modalEl, { focus: false, backdrop: 'static' });
     let currentToken = null;
+    let replaceCallback = null;
     let currentPages = 0;
     let replacePage = 0;
     let busy = false;
@@ -178,6 +179,9 @@ document.addEventListener('DOMContentLoaded', function () {
     function waitingMessage() {
         if (currentToken && replacePage) {
             return 'Scan page ' + replacePage + ' again now. It will replace page ' + replacePage + ' of this document.';
+        }
+        if (currentToken && replaceCallback) {
+            return 'To add another page to this document, scan it now. Otherwise, click ' + useBtn.textContent + '.';
         }
         if (currentToken) {
             return 'To add another page to this document, scan it now. For a different document, click NEXT DOCUMENT. Otherwise, click ' + useBtn.textContent + '.';
@@ -332,7 +336,7 @@ document.addEventListener('DOMContentLoaded', function () {
         if (busy || !currentToken) hideRescanMenu();
         addPageBtn.hidden = !currentToken;
         useBtn.hidden = !currentToken && !readyFiles.length;
-        nextBtn.hidden = !currentToken;
+        nextBtn.hidden = !currentToken || !!replaceCallback;
         updateReady();
         [startBtn, rescanBtn, addPageBtn, useBtn, nextBtn, cancelBtn, closeX].forEach((b) => { b.disabled = busy; });
         startBtn.hidden = !!currentToken || (scanMode === 'folder' && waiting);
@@ -442,6 +446,24 @@ document.addEventListener('DOMContentLoaded', function () {
         stopWaiting();
         await pollPromise;
         if (!currentToken && !readyFiles.length) return;
+        if (replaceCallback) {
+            setView('loading', 'Preparing the scanned document...');
+            try {
+                const file = currentToken ? await currentScanFile() : readyFiles[0];
+                const done = replaceCallback;
+                replaceCallback = null;
+                readyFiles = [];
+                resetScan();
+                busy = false;
+                modal.hide();
+                done(file);
+            } catch (err) {
+                setView('preview');
+                errorBox.hidden = false;
+                errorBox.textContent = 'The scanned document could not be loaded. Please rescan.';
+            }
+            return;
+        }
         setView('loading', 'Preparing the scanned document...');
         try {
             const files = readyFiles.slice();
@@ -522,13 +544,96 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     deviceRetry.addEventListener('click', checkDevice);
 
-    scanBtn.addEventListener('click', function () {
+    function setReplaceMode(on) {
+        heading.querySelector('.scan-title').textContent = on ? 'Scan replacement' : 'Scan document';
+        heading.querySelector('.scan-subtitle').textContent = on
+            ? 'Scan the new copy of this document. It replaces the current file.'
+            : 'Scan the student\'s documents using the connected scanner.';
+    }
+
+    function openScanner() {
         stopWaiting();
         readyFiles = [];
         resetScan();
+        setReplaceMode(!!replaceCallback);
         setView('idle');
         modal.show();
         checkDevice();
+    }
+
+    const chooser = el('div', 'replace-chooser');
+    chooser.hidden = true;
+    chooser.setAttribute('role', 'menu');
+    const chooseUpload = el('button', 'replace-chooser-option');
+    chooseUpload.type = 'button';
+    chooseUpload.setAttribute('role', 'menuitem');
+    chooseUpload.appendChild(el('i', 'bi bi-upload'));
+    chooseUpload.appendChild(el('span', '', 'Upload file'));
+    const chooseScan = el('button', 'replace-chooser-option');
+    chooseScan.type = 'button';
+    chooseScan.setAttribute('role', 'menuitem');
+    chooseScan.appendChild(el('i', 'bi bi-printer'));
+    chooseScan.appendChild(el('span', '', 'Scan document'));
+    chooser.appendChild(chooseUpload);
+    chooser.appendChild(chooseScan);
+    document.body.appendChild(chooser);
+    let chooserHandlers = null;
+    let chooserAnchor = null;
+
+    function closeChooser() {
+        chooser.hidden = true;
+        chooserHandlers = null;
+        chooserAnchor = null;
+    }
+
+    function placeChooser() {
+        if (!chooserAnchor) return;
+        const rect = chooserAnchor.getBoundingClientRect();
+        const width = chooser.offsetWidth || 180;
+        chooser.style.top = (rect.bottom + 6) + 'px';
+        chooser.style.left = Math.max(8, Math.min(rect.right - width, document.documentElement.clientWidth - width - 8)) + 'px';
+    }
+
+    chooseUpload.addEventListener('click', () => {
+        const handlers = chooserHandlers;
+        closeChooser();
+        if (handlers) handlers.onUpload();
+    });
+    chooseScan.addEventListener('click', () => {
+        const handlers = chooserHandlers;
+        closeChooser();
+        if (!handlers) return;
+        replaceCallback = handlers.onScan;
+        openScanner();
+    });
+    document.addEventListener('click', (e) => {
+        if (!chooser.hidden && !chooser.contains(e.target) && e.target !== chooserAnchor && !(chooserAnchor && chooserAnchor.contains(e.target))) closeChooser();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !chooser.hidden) closeChooser();
+    });
+    window.addEventListener('resize', closeChooser);
+    document.addEventListener('scroll', (e) => {
+        if (!chooser.hidden && !chooser.contains(e.target)) placeChooser();
+    }, true);
+
+    window.pupScanner = {
+        chooseReplace: function (anchor, onUpload, onScan) {
+            if (!chooser.hidden && chooserAnchor === anchor) {
+                closeChooser();
+                return;
+            }
+            chooserHandlers = { onUpload: onUpload, onScan: onScan };
+            chooserAnchor = anchor;
+            chooser.hidden = false;
+            placeChooser();
+            chooseUpload.focus();
+        },
+    };
+
+    scanBtn.addEventListener('click', function () {
+        replaceCallback = null;
+        openScanner();
     });
     startBtn.addEventListener('click', () => startScan(false));
     rescanBtn.setAttribute('aria-haspopup', 'true');
@@ -559,6 +664,12 @@ document.addEventListener('DOMContentLoaded', function () {
         modal.hide();
     }));
     modalEl.addEventListener('hide.bs.modal', stopWaiting);
+    modalEl.addEventListener('hidden.bs.modal', function () {
+        if (replaceCallback) {
+            replaceCallback = null;
+            setReplaceMode(false);
+        }
+    });
 
     modalEl.addEventListener('shown.bs.modal', function () {
         const backdrops = document.querySelectorAll('.modal-backdrop');

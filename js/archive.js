@@ -158,3 +158,145 @@
 
     if (restoreConfirmBtn) restoreConfirmBtn.addEventListener('click', restoreStudent);
 })();
+
+document.addEventListener('DOMContentLoaded', function () {
+    const panel     = document.getElementById('documentPreviewPanel');
+    const title     = document.getElementById('documentPreviewTitle');
+    const body      = document.getElementById('documentPreviewBody');
+    const openTab   = document.getElementById('documentPreviewOpenTab');
+    const closeBtn  = document.getElementById('documentPreviewClose');
+    const handle    = document.getElementById('documentPreviewResize');
+    if (!panel || !title || !body) return;
+
+    const MIN_WIDTH = 320;
+    const MAX_WIDTH = 900;
+    const mobileQuery = window.matchMedia('(max-width: 768px)');
+    let widthPx = null;
+    let activeLink = null;
+    const shrinkAreas = document.querySelectorAll('.admin-topbar, .main-container');
+
+    function shrinkMain(on) {
+        shrinkAreas.forEach(function (el) {
+            if (on && !mobileQuery.matches) {
+                el.style.transition = 'margin-right 0.2s ease';
+                el.style.marginRight = 'var(--doc-preview-width)';
+            } else {
+                el.style.removeProperty('margin-right');
+            }
+        });
+    }
+
+    function clampWidth(px) {
+        const maxByViewport = window.innerWidth * 0.7;
+        return Math.round(Math.max(MIN_WIDTH, Math.min(px, MAX_WIDTH, maxByViewport)));
+    }
+
+    function applyWidth() {
+        const root = document.documentElement;
+        if (mobileQuery.matches) {
+            root.style.removeProperty('--doc-preview-width');
+            return;
+        }
+        const width = clampWidth(widthPx !== null ? widthPx : window.innerWidth * 0.3);
+        root.style.setProperty('--doc-preview-width', width + 'px');
+    }
+
+    function openPreview(link) {
+        const url = link.getAttribute('href');
+        const label = link.dataset.fileLabel || link.dataset.fileName || url.split('/').pop();
+        const ext = ((link.dataset.fileName || url).split('?')[0].split('.').pop() || '').toLowerCase();
+
+        if (activeLink) activeLink.classList.remove('active');
+        activeLink = link;
+        link.classList.add('active');
+
+        title.textContent = label;
+        title.title = link.dataset.fileName || label;
+        if (openTab) openTab.href = url;
+        body.innerHTML = '';
+
+        if (['jpg', 'jpeg', 'png'].includes(ext)) {
+            const img = document.createElement('img');
+            img.src = url;
+            img.alt = label;
+            body.appendChild(img);
+        } else if (ext === 'pdf') {
+            const frame = document.createElement('iframe');
+            frame.src = url + (url.indexOf('#') === -1 ? '#view=FitH' : '');
+            frame.title = label;
+            body.appendChild(frame);
+        } else {
+            const note = document.createElement('div');
+            note.className = 'document-preview-fallback text-muted';
+            note.textContent = 'Preview not available for this file type. Use "Open in new tab".';
+            body.appendChild(note);
+        }
+
+        applyWidth();
+        panel.removeAttribute('inert');
+        panel.setAttribute('aria-hidden', 'false');
+        panel.classList.add('is-open');
+        document.body.classList.add('has-document-preview');
+        shrinkMain(true);
+    }
+
+    function hidePreview() {
+        if (!panel.classList.contains('is-open')) return;
+        panel.classList.remove('is-open');
+        panel.setAttribute('aria-hidden', 'true');
+        panel.setAttribute('inert', '');
+        document.body.classList.remove('has-document-preview');
+        shrinkMain(false);
+        if (activeLink) activeLink.classList.remove('active');
+        activeLink = null;
+        setTimeout(function () {
+            if (!panel.classList.contains('is-open')) body.innerHTML = '';
+        }, 250);
+    }
+
+    document.addEventListener('click', function (e) {
+        const link = e.target.closest('.archive-file-link');
+        if (!link) return;
+        if (e.ctrlKey || e.metaKey || e.shiftKey || e.button === 1) return;
+        e.preventDefault();
+        openPreview(link);
+    });
+
+    if (closeBtn) closeBtn.addEventListener('click', hidePreview);
+
+    if (handle) {
+        handle.addEventListener('pointerdown', function (e) {
+            e.preventDefault();
+            handle.setPointerCapture(e.pointerId);
+            panel.classList.add('is-resizing');
+            document.body.classList.add('is-resizing-preview');
+        });
+        handle.addEventListener('pointermove', function (e) {
+            if (!handle.hasPointerCapture(e.pointerId)) return;
+            widthPx = clampWidth(window.innerWidth - e.clientX);
+            applyWidth();
+        });
+        const stopResize = function (e) {
+            if (handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId);
+            panel.classList.remove('is-resizing');
+            document.body.classList.remove('is-resizing-preview');
+        };
+        handle.addEventListener('pointerup', stopResize);
+        handle.addEventListener('pointercancel', stopResize);
+    }
+
+    window.addEventListener('resize', function () {
+        if (panel.classList.contains('is-open')) applyWidth();
+    });
+    mobileQuery.addEventListener('change', function () {
+        if (panel.classList.contains('is-open')) {
+            applyWidth();
+            shrinkMain(true);
+        }
+    });
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && panel.classList.contains('is-open') && !document.body.classList.contains('modal-open')) {
+            hidePreview();
+        }
+    });
+});
