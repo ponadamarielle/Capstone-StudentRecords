@@ -505,3 +505,8 @@
     border-radius: 10px;
     box-shadow: none;
 }
+.admin-table .um-status-note {
+    font-size: 13px;
+    color: var(--text-tertiary, #9C948D);
+    white-space: nowrap;
+}

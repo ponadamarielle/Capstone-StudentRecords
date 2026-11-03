@@ -93,7 +93,7 @@
         if (!row) return;
         const body = row.parentElement;
         row.remove();
-        if (body && !body.querySelector('.archive-restore-btn')) {
+        if (body && !body.querySelector('.archive-status')) {
             const emptyRow = document.createElement('tr');
             emptyRow.innerHTML = '<td colspan="7" class="no-students-message">No archived records found.</td>';
             body.appendChild(emptyRow);
@@ -300,3 +300,54 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 });
+
+document.querySelectorAll('.archive-status-withdrawn').forEach((badge) => {
+    badge.style.background = '#FDECEC';
+    badge.style.color = '#B42318';
+});
+document.querySelectorAll('.archive-status-transferred').forEach((badge) => {
+    badge.style.background = '#F1ECFB';
+    badge.style.color = '#6B3FA0';
+});
+document.querySelectorAll('.archive-restore-btn').forEach((btn) => {
+    btn.style.display = 'inline-flex';
+    btn.style.alignItems = 'center';
+    btn.style.gap = '6px';
+    btn.style.height = '32px';
+    btn.style.padding = '0 12px';
+    btn.style.borderRadius = '10px';
+});
+
+(function () {
+    const modalEl = document.getElementById('archiveRestoreModal');
+    if (!modalEl) return;
+    const applyStyles = (el, styles) => { if (el) Object.assign(el.style, styles); };
+    applyStyles(modalEl.querySelector('.modal-dialog'), { maxWidth: '520px' });
+    applyStyles(modalEl.querySelector('.modal-content'), {
+        border: 'none', borderRadius: '16px', boxShadow: '0 24px 64px rgba(28, 25, 23, 0.24)',
+        fontFamily: 'var(--font-sans, "Inter")', overflow: 'hidden',
+    });
+    applyStyles(modalEl.querySelector('.confirm-header'), { padding: '20px 24px', borderBottom: '1px solid var(--neutral-border, #E9E5E0)' });
+    applyStyles(modalEl.querySelector('.confirm-title'), {
+        margin: '0', fontFamily: 'var(--font-sans, "Inter")', fontSize: '18px', lineHeight: '26px',
+        fontWeight: '700', letterSpacing: '-0.2px', color: 'var(--text-primary, #1C1917)',
+    });
+    applyStyles(modalEl.querySelector('.modal-body'), { padding: '20px 24px', fontSize: '15px', lineHeight: '24px', color: 'var(--text-primary, #1C1917)' });
+    applyStyles(modalEl.querySelector('.confirm-footer'), {
+        gap: '10px', padding: '16px 24px', borderTop: '1px solid var(--neutral-border, #E9E5E0)',
+        background: 'var(--neutral-subtle, #FAF9F7)',
+    });
+    const cancelBtn = document.getElementById('archiveRestoreCancelBtn');
+    const confirmBtn = document.getElementById('archiveRestoreConfirmBtn');
+    [cancelBtn, confirmBtn].forEach((btn) => applyStyles(btn, {
+        width: 'auto', minWidth: '120px', height: '40px', padding: '0 16px', margin: '0', borderRadius: '10px',
+        fontFamily: 'var(--font-sans, "Inter")', fontSize: '14px', fontWeight: '600', whiteSpace: 'nowrap',
+    }));
+    applyStyles(cancelBtn, {
+        backgroundColor: 'var(--neutral-surface, #ffffff)', color: 'var(--text-primary, #1C1917)',
+        border: '1px solid var(--neutral-border-strong, #D6D0C9)',
+    });
+    applyStyles(confirmBtn, {
+        backgroundColor: 'var(--brand-maroon, #7B1113)', color: '#ffffff', border: '1px solid var(--brand-maroon, #7B1113)',
+    });
+})();

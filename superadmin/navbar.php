@@ -50,8 +50,8 @@
             <a class="admin-menu-item <?php echo ($currentPage == 'admin_management.php') ? 'active' : ''; ?>" href="admin_management.php" title="Admin Management">
                 <i class="bi bi-people"></i><span>Admin Management</span>
             </a>
-            <a class="admin-menu-item <?php echo ($currentPage == 'course_management.php') ? 'active' : ''; ?>" href="course_management.php" title="Course Management">
-                <i class="bi bi-mortarboard"></i><span>Course Management</span>
+            <a class="admin-menu-item <?php echo ($currentPage == 'course_management.php') ? 'active' : ''; ?>" href="course_management.php" title="Programs Offered">
+                <i class="bi bi-mortarboard"></i><span>Programs Offered</span>
             </a>
             <a class="admin-menu-item <?php echo ($currentPage == 'backup_logs.php') ? 'active' : ''; ?>" href="backup_logs.php" title="Backup &amp; Logs">
                 <i class="bi bi-database"></i><span>Backup &amp; Logs</span>

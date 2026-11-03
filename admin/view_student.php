@@ -115,6 +115,9 @@ if ($action !== '') {
         case 'notify_requirements':
             handleNotifyRequirements($conn);
             break;
+        case 'change_status':
+            handleChangeStatus($conn);
+            break;
         default:
             echo json_encode(['success' => false, 'message' => 'Invalid action.']);
     }
@@ -166,19 +169,28 @@ function isArchivedStatus($status)
 function isArchivedStudent($conn, $studentId)
 {
     $id   = (int) $studentId;
-    $stmt = mysqli_prepare($conn, 'SELECT status FROM students WHERE student_id = ?');
+    $stmt = mysqli_prepare($conn, 'SELECT status' . (ensureStudentArchivedAt($conn) ? ', archived_at' : '') . ' FROM students WHERE student_id = ?');
     mysqli_stmt_bind_param($stmt, 'i', $id);
     mysqli_stmt_execute($stmt);
     $row = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
-    return $row && isArchivedStatus($row['status']);
+    return $row && isStudentArchived($row);
 }
 
 function rejectIfArchived($conn, $studentId)
 {
-    if (!isArchivedStudent($conn, $studentId)) {
+    if (isArchivedStudent($conn, $studentId)) {
+        echo json_encode(['success' => false, 'message' => 'This student is archived. Archived records can no longer be edited.']);
+        return true;
+    }
+    $id   = (int) $studentId;
+    $stmt = mysqli_prepare($conn, 'SELECT status FROM students WHERE student_id = ?');
+    mysqli_stmt_bind_param($stmt, 'i', $id);
+    mysqli_stmt_execute($stmt);
+    $row = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    if (($row['status'] ?? '') !== 'graduated') {
         return false;
     }
-    echo json_encode(['success' => false, 'message' => 'This student is archived. Archived records can no longer be edited.']);
+    echo json_encode(['success' => false, 'message' => 'This student has already graduated. Graduate records can no longer be updated.']);
     return true;
 }
 
@@ -935,6 +947,7 @@ function handleUpdateStudentInfo($conn)
             }
         }
         applyYearLevel($conn, (int) $studentId);
+        syncGraduateStatus($conn, (int) $studentId);
         if ($newPhotoPath !== null && $oldPhotoPath && $oldPhotoPath !== $newPhotoPath
             && strpos($oldPhotoPath, '../uploads/photos/') === 0 && is_file($oldPhotoPath)) {
             @unlink($oldPhotoPath);
@@ -990,7 +1003,7 @@ function handleCheckEditStudentNumber($conn)
 function studentHasGraduated($conn, $studentId)
 {
     $student = activityFetchStudent($conn, $studentId);
-    if (!$student || isArchivedStatus($student['status'] ?? '')) {
+    if (!$student || isArchivedStudent($conn, $studentId)) {
         return false;
     }
     $endYear = expectedGraduationYear($student);
@@ -1008,6 +1021,57 @@ function handleNotifyRequirements($conn)
     echo json_encode(['success' => true, 'notification' => $notification, 'last' => studentNotificationSummary($conn, (int) $studentId)]);
 }
 
+function handleChangeStatus($conn)
+{
+    $studentId = $_POST['student_id'] ?? '';
+    $status    = $_POST['status'] ?? '';
+    $labels    = ['withdrawn' => 'WITHDRAWN', 'onleave' => 'ON-LEAVE', 'transferred' => 'TRANSFERRED'];
+    if ($studentId === '' || !ctype_digit((string) $studentId)) {
+        echo json_encode(['success' => false, 'message' => 'Invalid student.']);
+        return;
+    }
+    if (!isset($labels[$status])) {
+        echo json_encode(['success' => false, 'message' => 'Choose WITHDRAWN, ON-LEAVE or TRANSFERRED.']);
+        return;
+    }
+    $studentId = (int) $studentId;
+    if (rejectIfArchived($conn, $studentId)) {
+        return;
+    }
+    $before = activityFetchStudent($conn, $studentId);
+    if (!$before) {
+        echo json_encode(['success' => false, 'message' => 'Student not found.']);
+        return;
+    }
+
+    $outcome = archiveStudentRecord($conn, $studentId, $status);
+    if (empty($outcome['success'])) {
+        echo json_encode(['success' => false, 'message' => $outcome['message'] ?? 'Could not change the status.']);
+        return;
+    }
+
+    $reason = trim(preg_replace('/\s+/u', ' ', (string) ($_POST['reason'] ?? '')));
+    $reason = mb_substr($reason, 0, 255);
+    $studentOpts = activityStudentOpts($conn, $studentId);
+    logActivity('student_status_changed',
+        'Changed status of ' . activityStudentLabel($studentOpts) . ' to ' . $labels[$status] . ' and moved the record to Archive',
+        $studentOpts + [
+            'target_type' => 'student',
+            'target_id'   => $studentId,
+            'details'     => array_filter([
+                'changes'         => ['Status' => ['from' => (string) ($before['status'] ?? 'enrollee'), 'to' => $status]],
+                'documents_moved' => $outcome['documents'] ?? 0,
+                'reason'          => $reason,
+            ], fn($v) => $v !== '' && $v !== null),
+        ]);
+
+    echo json_encode([
+        'success'  => true,
+        'message'  => 'Status changed to ' . $labels[$status] . '. The record was moved to Archive.',
+        'redirect' => 'archive.php',
+    ]);
+}
+
 function handleArchiveIfGraduated($conn)
 {
     $studentId = $_POST['student_id'] ?? '';
@@ -1021,11 +1085,22 @@ function handleArchiveIfGraduated($conn)
         return;
     }
 
+    syncGraduateStatus($conn, $studentId);
     $student = activityFetchStudent($conn, $studentId);
     $endYear = expectedGraduationYear($student);
-    $outcome = archiveStudentRecord($conn, $studentId, 'graduated');
+    if (!schoolYearHasEnded($endYear + GRADUATE_ARCHIVE_YEARS)) {
+        echo json_encode([
+            'success'   => true,
+            'archived'  => false,
+            'graduated' => true,
+            'message'   => 'This student has already graduated. The status is now GRADUATE and the record stays in the Student Directory.',
+        ]);
+        return;
+    }
+
+    $outcome = archiveStudentRecord($conn, $studentId, 'graduated', true);
     if (empty($outcome['success'])) {
-        echo json_encode(['success' => false, 'incomplete' => !empty($outcome['incomplete']), 'message' => $outcome['message'] ?? 'Could not move the student to Archive.']);
+        echo json_encode(['success' => false, 'message' => $outcome['message'] ?? 'Could not move the student to Archive.']);
         return;
     }
 
@@ -1036,17 +1111,17 @@ function handleArchiveIfGraduated($conn)
             'target_type' => 'student',
             'target_id'   => $studentId,
             'details'     => [
-                'new_status'        => 'graduated',
-                'school_year_ended' => schoolYearLabel($endYear),
-                'documents_moved'   => $outcome['documents'] ?? 0,
-                'reason'            => 'Expected graduation school year has ended.',
+                'new_status'      => 'graduated',
+                'year_graduated'  => $endYear,
+                'documents_moved' => $outcome['documents'] ?? 0,
+                'reason'          => 'Graduated ' . GRADUATE_ARCHIVE_YEARS . ' or more years ago.',
             ],
         ]);
 
     echo json_encode([
         'success'  => true,
         'archived' => true,
-        'message'  => 'This student has already graduated and was moved to Archive as GRADUATE.',
+        'message'  => 'This student graduated ' . GRADUATE_ARCHIVE_YEARS . ' or more years ago and was moved to Archive.',
     ]);
 }
 
@@ -1206,6 +1281,11 @@ function handleReplaceDocument($conn)
     $result = processDocumentUpload($destPath, $originalName, $uploadDir);
     if (empty($result['success'])) {
         echo json_encode(['success' => false, 'message' => $result['message'] ?? 'Could not read the file.']);
+        return;
+    }
+    if (empty($result['documents']) && !empty($result['extract_only'])) {
+        discardUploadResult($result);
+        echo json_encode(['success' => false, 'message' => 'The Health Information Form is only used to fill in the student information and is not stored, so it cannot replace a document.']);
         return;
     }
     if (count($result['documents']) !== 1) {
@@ -1534,6 +1614,7 @@ if ($studentId === '' || !ctype_digit((string) $studentId)) {
     exit();
 }
 
+ensureStudentArchivedAt($conn);
 $sql  = "SELECT * FROM students WHERE student_id = ?";
 $stmt = mysqli_prepare($conn, $sql);
 mysqli_stmt_bind_param($stmt, "i", $studentId);
@@ -1545,7 +1626,7 @@ if (!$student) {
     exit();
 }
 
-if (isArchivedStatus($student['status'] ?? '')) {
+if (isStudentArchived($student)) {
     header("Location: archive.php");
     exit();
 }
@@ -1590,7 +1671,7 @@ if (!empty($issuedInfo['uploaded_at'])) {
 }
 $issuedBy = $issuedInfo['added_by'] ?? '';
 
-$statusLabels = ['enrollee' => 'Enrollee', 'active' => 'Enrollee', 'graduated' => 'Graduate', 'inactive' => 'In-active', 'onleave' => 'On-leave'];
+$statusLabels = ['enrollee' => 'Enrollee', 'active' => 'Enrollee', 'graduated' => 'Graduate', 'withdrawn' => 'Withdrawn', 'inactive' => 'Withdrawn', 'onleave' => 'On-leave', 'transferred' => 'Transferred'];
 $savedGradYear    = !empty($student['graduation_year']) ? (int) $student['graduation_year'] : null;
 $expectedGradYear = expectedGraduationYear($student);
 $gradYearOptions  = range(currentSchoolYearEndYear() - 1, currentSchoolYearEndYear() + 6);
@@ -1628,6 +1709,7 @@ include 'navbar.php';
     <link href="../css/scanner.css?v=<?= @filemtime(__DIR__ . '/../css/scanner.css') ?>" rel="stylesheet">
     <link href="../css/student-report.css?v=<?= @filemtime(__DIR__ . '/../css/student-report.css') ?>" rel="stylesheet">
     <link href="../css/student-profile.css?v=<?= @filemtime(__DIR__ . '/../css/student-profile.css') ?>" rel="stylesheet">
+    <link href="../css/course-filter.css?v=<?= @filemtime(__DIR__ . '/../css/course-filter.css') ?>" rel="stylesheet">
 </head>
 <body data-student-id="<?= (int) $studentId ?>">
     <div class="view-container profile-page">
@@ -1641,14 +1723,30 @@ include 'navbar.php';
             <div class="profile-identity">
                 <div class="profile-name-row">
                     <h2 class="profile-name"><?= htmlspecialchars($student['name']) ?></h2>
-                    <span class="profile-status"><?= htmlspecialchars($statusLabel) ?></span>
+                    <?php if (($student['status'] ?? '') === 'graduated'): ?>
+                    <span class="profile-status profile-status-graduate"><?= htmlspecialchars($statusLabel) ?></span>
+                    <?php else: ?>
+                    <div class="dropdown status-dropdown">
+                        <button type="button" class="profile-status status-dropdown-toggle dropdown-toggle" aria-haspopup="true" aria-expanded="false" aria-label="Change status">
+                            <?= htmlspecialchars($statusLabel) ?>
+                        </button>
+                        <div class="course-filter-menu status-dropdown-menu" role="listbox" hidden>
+                            <div class="course-filter-option is-selected" role="option" aria-selected="true" tabindex="-1"><?= htmlspecialchars($statusLabel) ?></div>
+                            <div class="course-filter-option status-option" role="option" tabindex="-1" data-status="withdrawn">Withdrawn</div>
+                            <div class="course-filter-option status-option" role="option" tabindex="-1" data-status="onleave">On-leave</div>
+                            <div class="course-filter-option status-option" role="option" tabindex="-1" data-status="transferred">Transferred</div>
+                        </div>
+                    </div>
+                    <?php endif; ?>
                 </div>
                 <div class="profile-meta">
                     <span><i class="bi bi-file-earmark-text"></i> <?= htmlspecialchars($student['student_number']) ?></span>
                     <?php if (!empty($student['course'])): ?>
                         <span><i class="bi bi-mortarboard"></i> <?= htmlspecialchars($student['course']) ?></span>
                     <?php endif; ?>
-                    <?php if (!empty($student['year_section'])): ?>
+                    <?php if (($student['status'] ?? '') === 'graduated' && $expectedGradYear !== null): ?>
+                        <span><i class="bi bi-mortarboard-fill"></i> Graduated <?= (int) $expectedGradYear ?></span>
+                    <?php elseif (!empty($student['year_section'])): ?>
                         <span><i class="bi bi-people"></i> Year &amp; Section: <?= htmlspecialchars($student['year_section']) ?></span>
                     <?php endif; ?>
                 </div>
@@ -1657,9 +1755,11 @@ include 'navbar.php';
                 <button class="profile-btn profile-btn-secondary" type="button" id="generateReportBtn" data-student-id="<?= (int) $studentId ?>">
                     <i class="bi bi-file-earmark-pdf"></i> Generate report
                 </button>
+                <?php if (($student['status'] ?? '') !== 'graduated'): ?>
                 <button class="profile-btn profile-btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#addRecordsModal">
                     <i class="bi bi-pencil"></i> Update record
                 </button>
+                <?php endif; ?>
             </div>
         </section>
 
@@ -1697,10 +1797,10 @@ include 'navbar.php';
                             'Home address'  => $student['address'] ?? '',
                         ]],
                         ['Academic', 'bi-mortarboard', [
-                            'Year & section'      => $student['year_section'] ?? '',
-                            'Expected graduation' => $expectedGradYear !== null ? schoolYearLabel($expectedGradYear) : '',
+                            (($student['status'] ?? '') === 'graduated' ? 'Last year & section' : 'Year & section') => $student['year_section'] ?? '',
+                            'Year of graduation'  => $expectedGradYear !== null ? (string) $expectedGradYear : '',
                             'Date issued'         => $dateIssued,
-                            'Checked by'          => $issuedBy,
+                            'Prepared by'         => $issuedBy,
                         ]],
                     ];
                     ?>
@@ -1867,8 +1967,24 @@ include 'navbar.php';
                                                 <small id="editStudentNumberFeedback" class="text-danger d-block mb-3" hidden></small>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_course" class="form-label form-label-custom">Course</label>
-                                                    <input type="text" id="edit_course" name="course" class="form-control input-custom"
-                                                           value="<?= htmlspecialchars($student['course'] ?? '') ?>" pattern="[A-Za-z\s\-]+" placeholder="BSIT">
+                                                    <?php
+                                                        $currentCourse = normalizeCourseName($student['course'] ?? '');
+                                                        $courseChoices = [];
+                                                        foreach (getCourseCatalog() as $courseEntry) {
+                                                            if (($courseEntry['status'] ?? 'active') === 'active') {
+                                                                $courseChoices[] = courseDisplayName($courseEntry);
+                                                            }
+                                                        }
+                                                        if ($currentCourse !== '' && !in_array($currentCourse, $courseChoices, true)) {
+                                                            $courseChoices[] = $currentCourse;
+                                                        }
+                                                    ?>
+                                                    <select id="edit_course" name="course" class="form-select input-custom">
+                                                        <option value="">Select course</option>
+                                                        <?php foreach ($courseChoices as $courseChoice): ?>
+                                                            <option value="<?= htmlspecialchars($courseChoice) ?>" <?= $courseChoice === $currentCourse ? 'selected' : '' ?>><?= htmlspecialchars($courseChoice) ?></option>
+                                                        <?php endforeach; ?>
+                                                    </select>
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_year_section" class="form-label form-label-custom">Year &amp; section</label>
@@ -1890,6 +2006,7 @@ include 'navbar.php';
                                                         <?php endforeach; ?>
                                                     </select>
                                                 </div>
+                                                <small id="trackChangeNote" class="text-danger d-block mb-3" hidden></small>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_date_of_birth" class="form-label form-label-custom">Date of birth</label>
                                                     <input type="date" id="edit_date_of_birth" name="date_of_birth" class="form-control input-custom"
@@ -1902,16 +2019,16 @@ include 'navbar.php';
                                                            value="<?= htmlspecialchars($student['place_of_birth'] ?? '') ?>" placeholder="City/Municipality, Province">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_graduation_year" class="form-label form-label-custom">Graduation SY</label>
+                                                    <label for="edit_graduation_year" class="form-label form-label-custom">Year of Graduation</label>
                                                     <select id="edit_graduation_year" name="graduation_year" class="form-select input-custom"
                                                             data-current-sy-end="<?= (int) currentSchoolYearEndYear() ?>"
-                                                            title="The student is moved to Archive as GRADUATE after the Year-End Commencement of the Graduation SY">
+                                                            title="The status changes to GRADUATE after the Year-End Commencement of the Year of Graduation">
                                                         <?php $autoYear = entryYearFromStudentNumber($student['student_number'] ?? ''); ?>
                                                         <option value="" <?= $savedGradYear === null ? 'selected' : '' ?>>
-                                                            Auto<?= $autoYear !== null ? ' (' . htmlspecialchars(schoolYearLabel($autoYear + PROGRAM_LENGTH_YEARS)) . ')' : '' ?>
+                                                            Auto<?= $autoYear !== null ? ' (' . (int) ($autoYear + PROGRAM_LENGTH_YEARS) . ')' : '' ?>
                                                         </option>
                                                         <?php foreach ($gradYearOptions as $gradOption): ?>
-                                                            <option value="<?= (int) $gradOption ?>" <?= $savedGradYear === $gradOption ? 'selected' : '' ?>><?= htmlspecialchars(schoolYearLabel($gradOption)) ?></option>
+                                                            <option value="<?= (int) $gradOption ?>" <?= $savedGradYear === $gradOption ? 'selected' : '' ?>><?= (int) $gradOption ?></option>
                                                         <?php endforeach; ?>
                                                     </select>
                                                 </div>
@@ -2027,6 +2144,32 @@ include 'navbar.php';
             </div>
         </div>
     </div>
+
+    <?php if (($student['status'] ?? '') !== 'graduated'): ?>
+    <div class="modal fade" id="changeStatusModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header confirm-header">
+                    <div class="add-heading">
+                        <span class="add-heading-icon"><i class="bi bi-arrow-left-right"></i></span>
+                        <div class="add-heading-text">
+                            <h5 class="modal-title confirm-title" id="changeStatusTitle">Change status</h5>
+                            <p class="add-subtitle" id="changeStatusNote"></p>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-0" id="changeStatusMessage" data-student-name="<?= htmlspecialchars($student['name']) ?>"></p>
+                    <div id="changeStatusError" class="alert alert-danger small mt-3 mb-0 d-none"></div>
+                </div>
+                <div class="modal-footer confirm-footer">
+                    <button type="button" class="btn btn-cancel" id="changeStatusCancelBtn" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-save" id="changeStatusConfirmBtn">Confirm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
 
     <!-- confirm delete document modal -->
     <div class="modal fade" id="confirmDeleteDocModal" tabindex="-1" aria-hidden="true" data-bs-focus="false">

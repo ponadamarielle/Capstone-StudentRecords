@@ -224,7 +224,6 @@ document.querySelectorAll('.view-btn').forEach((btn) => {
     bindFilter('last_name', (v) => v.replace(/[^A-Za-zÑñ\s.,'\-]/g, ''));
     bindFilter('first_name', (v) => v.replace(/[^A-Za-zÑñ\s.,'\-]/g, ''));
     bindFilter('middle_name', (v) => v.replace(/[^A-Za-zÑñ\s.,'\-]/g, ''));
-    bindFilter('course', (v) => v.replace(/[^A-Za-z\s\-]/g, ''));
     bindFilter('sex', lettersOnly);
     bindFilter('mobile_number', (v) => digitsOnly(v).slice(0, 11));
     bindFilter('year_section', formatYearSection);
@@ -318,3 +317,11 @@ document.querySelectorAll('.view-btn').forEach((btn) => {
         });
     }
 })();
+const statusFilterSelect = document.getElementById('statusFilterSelect');
+if (statusFilterSelect) {
+    statusFilterSelect.addEventListener('change', () => statusFilterSelect.form.submit());
+}
+
+document.querySelectorAll('.status-graduate').forEach((cell) => {
+    cell.style.color = '#1D5FB8';
+});

@@ -527,6 +527,7 @@ function groqChatMany(array $bodies)
     for ($attempt = 1; $attempt <= 4 && $queue; $attempt++) {
         $retry = [];
         $retryAfter = 1;
+        $hardFail = false;
         $mustWait = false;
         foreach (array_chunk($queue, AI_MAX_PARALLEL, true) as $chunk) {
             $mh = curl_multi_init();
@@ -602,6 +603,9 @@ function groqChatMany(array $bodies)
                     }
                     $retry[$key] = $chunk[$key];
                     $retryAfter = max($retryAfter, $after);
+                    if ($httpCode !== 429) {
+                        $hardFail = true;
+                    }
                     $mustWait = true;
                 } elseif (($httpCode === 400 || $httpCode === 404) && count(groqModels()) > 1
                     && stripos((string) $response, 'model') !== false) {
@@ -630,7 +634,11 @@ function groqChatMany(array $bodies)
                 . '. Gemini: '
                 . ((string) getenv('GEMINI_API_KEY') === '' ? 'GEMINI_API_KEY is not set in .env' : implode(', ', geminiModels()) . ' paused, last error ' . trim((string) @file_get_contents(groqCooldownFile() . '.gemini.txt'))));
         }
-        if ($queue && $mustWait && aiFallbackAvailable()) {
+        $groqBackSoon = !$hardFail && $retryAfter <= max(1, (int) (getenv('GROQ_SHORT_WAIT') ?: 4));
+        if ($queue && $mustWait && $groqBackSoon) {
+            error_log('Groq is busy for only ' . $retryAfter . 's, waiting for Groq instead of the fallback.');
+        }
+        if ($queue && $mustWait && !$groqBackSoon && aiFallbackAvailable()) {
             foreach (aiFallbackChatMany($queue) as $key => $reply) {
                 $results[$key] = $reply;
                 unset($queue[$key]);
@@ -1133,7 +1141,7 @@ function sanitizeAiStudentFields(array $raw)
     $sn = strtoupper(preg_replace('/\s+/', '', $f['student_number']));
     $sn = preg_replace('/[\x{2010}-\x{2015}]/u', '-', $sn);
     $f['student_number'] = preg_match('/^(\d{4})-?([\dO]{4,5})-?([A-Z]{2})-?([0-9O])$/', $sn, $m)
-        ? $m[1] . '-' . str_replace('O', '0', $m[2]) . '-' . $m[3] . '-' . str_replace('O', '0', $m[4])
+        ? $m[1] . '-' . str_pad(str_replace('O', '0', $m[2]), 5, '0', STR_PAD_LEFT) . '-' . $m[3] . '-' . str_replace('O', '0', $m[4])
         : '';
 
     foreach (['last_name', 'first_name', 'middle_name'] as $key) {

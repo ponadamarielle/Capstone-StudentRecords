@@ -177,7 +177,6 @@ document.addEventListener('DOMContentLoaded', function () {
     bindFilter('edit_last_name', (v) => v.replace(/[^A-Za-zÑñ\s.,'\-]/g, ''));
     bindFilter('edit_first_name', (v) => v.replace(/[^A-Za-zÑñ\s.,'\-]/g, ''));
     bindFilter('edit_middle_name', (v) => v.replace(/[^A-Za-zÑñ\s.,'\-]/g, ''));
-    bindFilter('edit_course', (v) => v.replace(/[^A-Za-z\s\-]/g, ''));
     bindFilter('edit_sex', (v) => v.replace(/[^A-Za-z\s]/g, ''));
     bindFilter('edit_mobile_number', (v) => v.replace(/[^0-9]/g, '').slice(0, 11));
     bindFilter('edit_year_section', formatYearSection);
@@ -286,13 +285,13 @@ document.addEventListener('DOMContentLoaded', function () {
     function updateEditGraduationDisplay() {
         const auto = editAutoGraduation();
         if (editAutoOption) {
-            editAutoOption.textContent = 'Auto' + (auto ? ' (SY ' + (auto.endYear - 1) + '-' + auto.endYear + ')' : '');
+            editAutoOption.textContent = 'Auto' + (auto ? ' (' + auto.endYear + ')' : '');
         }
         if (editGradNote) {
             const info = editGraduationInfo();
             const graduated = !!(info && info.graduated);
             editGradNote.textContent = graduated
-                ? 'This student has already graduated. The record will be moved to Archive as GRADUATE after saving, once all required documents are complete.'
+                ? 'This student has already graduated. The status will be GRADUATE after saving.'
                 : '';
             editGradNote.hidden = !graduated;
         }
@@ -487,10 +486,30 @@ document.addEventListener('DOMContentLoaded', function () {
         if (input) input.addEventListener('input', updateSaveButtonState);
     });
 
+    const TRACK_CHANGE_WARNING = 'Changing the admission type changes the required documents. This student\'s requirements will become Incomplete.';
+
+    function wasCompleteOnLoad() {
+        const required = REQUIREMENTS.filter((r) => Array.isArray(r.required_for) && r.required_for.indexOf(originalTrack) !== -1);
+        return required.every((r) => storedByCode(r.code));
+    }
+
+    function trackChangeMakesIncomplete() {
+        return currentTrack() !== originalTrack && wasCompleteOnLoad() && missingRequiredLabels().length > 0;
+    }
+
+    function updateTrackChangeNote() {
+        const note = document.getElementById('trackChangeNote');
+        if (!note) return;
+        const show = trackChangeMakesIncomplete();
+        note.textContent = show ? TRACK_CHANGE_WARNING : '';
+        note.hidden = !show;
+    }
+
     if (trackSelect) {
         trackSelect.addEventListener('change', () => {
             renderRequirementChecklist();
             updateSaveButtonState();
+            updateTrackChangeNote();
         });
     }
 
@@ -572,6 +591,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
             if (input && value && !input.value.trim()) {
+                if (input.tagName === 'SELECT' && !Array.prototype.some.call(input.options, (o) => o.value === value)) {
+                    input.add(new Option(value, value));
+                }
                 input.value = key === 'student_number' ? maskEditStudentNumber(value, false) : value;
                 input.classList.add('ocr-filled');
                 applied.push(ocrFieldMap[key]);
@@ -1029,6 +1051,7 @@ document.addEventListener('DOMContentLoaded', function () {
             input.classList.remove('ocr-filled', 'is-invalid');
         });
         if (trackSelect) trackSelect.value = originalTrack;
+        updateTrackChangeNote();
 
         if (replacePhotoInput) replacePhotoInput.value = '';
         const photoImg = document.getElementById('modalStudentPhoto');
@@ -1203,6 +1226,15 @@ document.addEventListener('DOMContentLoaded', function () {
             } else if (data.photo_path) {
                 cleanupStagedFile('', '', data.photo_path);
             }
+        } else if ((data.extract_only || []).length) {
+            stagedSources.set(data.source_hash, file.name);
+            populateEmptyFields(data.extracted);
+            if (data.photo_path && !stagedPhotoPath.value) {
+                setServerPhoto(data.photo_path);
+                photoOwnerSource = data.source_hash;
+            } else if (data.photo_path) {
+                cleanupStagedFile('', '', data.photo_path);
+            }
         } else {
             cleanupStagedFile('', '', data.photo_path || '');
         }
@@ -1228,16 +1260,21 @@ document.addEventListener('DOMContentLoaded', function () {
                     : unknown + ' documents could not be identified; please choose their types below.');
             }
         }
+        const extractOnly = data.extract_only || [];
+        if (extractOnly.length) {
+            parts.push('Student information extracted from the Health Information Form.');
+        }
         if (data.skipped_pages && data.skipped_pages.length) {
             parts.push('Skipped info pages: ' + data.skipped_pages.map((p) => 'p' + p.page).join(', ') + '.');
         }
         if (rejected.length) parts.push('Not added (duplicate): ' + rejected.join('; ') + '.');
         (data.warnings || []).forEach((w) => parts.push(w));
         if (accepted.length) parts.push('Review the Documents tab, then click UPDATE.');
+        else if (extractOnly.length) parts.push('Please review the fields before saving.');
 
         const warn = rejected.length || (data.warnings && data.warnings.length)
             || accepted.some((d) => d.confidence === 'low' || d.confidence === 'none');
-        setStatus(parts.join(' '), !accepted.length ? 'error' : warn ? 'warning' : 'success');
+        setStatus(parts.join(' '), !accepted.length && !extractOnly.length ? 'error' : warn ? 'warning' : 'success');
 
         const docsTab = document.getElementById('edit-docs-tab');
         if (accepted.length && docsTab) bootstrap.Tab.getOrCreateInstance(docsTab).show();
@@ -1432,6 +1469,17 @@ document.addEventListener('DOMContentLoaded', function () {
             completionEl.innerHTML = '';
             completionEl.appendChild(completionBadge(missingRequiredLabels().length === 0));
         }
+        let trackWarning = document.getElementById('confirmTrackWarning');
+        if (!trackWarning) {
+            trackWarning = document.createElement('div');
+            trackWarning.id = 'confirmTrackWarning';
+            trackWarning.className = 'alert alert-danger small mb-3';
+            const table = modalEl.querySelector('.confirm-summary-table');
+            if (table) table.parentNode.insertBefore(trackWarning, table);
+        }
+        const warnTrack = trackChangeMakesIncomplete();
+        trackWarning.textContent = warnTrack ? TRACK_CHANGE_WARNING + ' Do you still want to continue?' : '';
+        trackWarning.hidden = !warnTrack;
 
         const bsModal = bootstrap.Modal.getOrCreateInstance(modalEl);
         bsModal.show();
@@ -1965,3 +2013,197 @@ document.addEventListener('DOMContentLoaded', function () {
 
     refreshDocumentsUi();
 });
+document.querySelectorAll('.profile-status-graduate').forEach((badge) => {
+    badge.style.color = '#1D5FB8';
+    badge.style.background = '#E5EEFB';
+});
+
+(function () {
+    const modalEl = document.getElementById('changeStatusModal');
+    if (!modalEl) return;
+    const confirmBtn = document.getElementById('changeStatusConfirmBtn');
+    const cancelBtn = document.getElementById('changeStatusCancelBtn');
+    const errorEl = document.getElementById('changeStatusError');
+    const titleEl = document.getElementById('changeStatusTitle');
+    const messageEl = document.getElementById('changeStatusMessage');
+    const noteEl = document.getElementById('changeStatusNote');
+    const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    const studentName = messageEl.dataset.studentName || 'this student';
+    const STATUSES = {
+        withdrawn: {
+            label: 'Withdrawn',
+            note: 'The record will be moved to Archive. It can be restored if the student enrolls again.',
+        },
+        onleave: {
+            label: 'On-leave',
+            note: 'The record will be moved to Archive. It can be restored when the student returns.',
+        },
+        transferred: {
+            label: 'Transferred',
+            note: 'The record will be moved to Archive.',
+        },
+    };
+    let pending = '';
+    let busy = false;
+
+    const applyStyles = (el, styles) => { if (el) Object.assign(el.style, styles); };
+    applyStyles(modalEl.querySelector('.modal-dialog'), { maxWidth: '560px' });
+    applyStyles(modalEl.querySelector('.modal-content'), {
+        border: 'none', borderRadius: '16px', boxShadow: '0 24px 64px rgba(28, 25, 23, 0.24)',
+        fontFamily: 'var(--font-sans, "Inter")', overflow: 'hidden',
+    });
+    applyStyles(modalEl.querySelector('.confirm-header'), { padding: '20px 24px', borderBottom: '1px solid var(--neutral-border, #E9E5E0)' });
+    applyStyles(titleEl, {
+        margin: '0', fontFamily: 'var(--font-sans, "Inter")', fontSize: '18px', lineHeight: '26px',
+        fontWeight: '700', letterSpacing: '-0.2px', color: 'var(--text-primary, #1C1917)',
+    });
+    applyStyles(modalEl.querySelector('.modal-body'), { padding: '20px 24px', fontSize: '15px', lineHeight: '24px', color: 'var(--text-primary, #1C1917)' });
+    applyStyles(modalEl.querySelector('.confirm-footer'), {
+        gap: '10px', padding: '16px 24px', borderTop: '1px solid var(--neutral-border, #E9E5E0)',
+        background: 'var(--neutral-subtle, #FAF9F7)',
+    });
+    [cancelBtn, confirmBtn].forEach((btn) => applyStyles(btn, {
+        width: 'auto', minWidth: '120px', height: '40px', padding: '0 16px', margin: '0', borderRadius: '10px',
+        fontFamily: 'var(--font-sans, "Inter")', fontSize: '14px', fontWeight: '600', whiteSpace: 'nowrap',
+    }));
+    applyStyles(cancelBtn, {
+        backgroundColor: 'var(--neutral-surface, #ffffff)', color: 'var(--text-primary, #1C1917)',
+        border: '1px solid var(--neutral-border-strong, #D6D0C9)',
+    });
+    applyStyles(confirmBtn, {
+        backgroundColor: 'var(--brand-maroon, #7B1113)', color: '#ffffff', border: '1px solid var(--brand-maroon, #7B1113)',
+    });
+
+    const toggle = document.querySelector('.status-dropdown-toggle');
+    if (toggle) {
+        toggle.style.border = '0';
+        toggle.style.cursor = 'pointer';
+    }
+    const statusMenu = document.querySelector('.status-dropdown-menu');
+    const statusItems = statusMenu ? Array.prototype.slice.call(statusMenu.querySelectorAll('.course-filter-option')) : [];
+    if (statusMenu) {
+        statusMenu.style.width = 'auto';
+        statusMenu.style.minWidth = '200px';
+        statusMenu.style.zIndex = '1060';
+        document.body.appendChild(statusMenu);
+    }
+
+    function closeStatusMenu(focusToggle) {
+        if (!statusMenu || !toggle || statusMenu.hidden) return;
+        statusMenu.hidden = true;
+        toggle.setAttribute('aria-expanded', 'false');
+        if (focusToggle) toggle.focus();
+    }
+
+    function openStatusMenu() {
+        if (!statusMenu || !toggle) return;
+        statusMenu.hidden = false;
+        const rect = toggle.getBoundingClientRect();
+        statusMenu.style.top = (rect.bottom + 6) + 'px';
+        statusMenu.style.left = Math.max(16, Math.min(rect.left, document.documentElement.clientWidth - statusMenu.offsetWidth - 16)) + 'px';
+        toggle.setAttribute('aria-expanded', 'true');
+        if (statusItems[0]) statusItems[0].focus();
+    }
+
+    if (toggle && statusMenu) {
+        toggle.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (statusMenu.hidden) {
+                openStatusMenu();
+            } else {
+                closeStatusMenu(false);
+            }
+        });
+        document.addEventListener('click', (e) => {
+            if (!statusMenu.contains(e.target) && e.target !== toggle) closeStatusMenu(false);
+        });
+        statusMenu.addEventListener('keydown', (e) => {
+            const index = statusItems.indexOf(document.activeElement);
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                statusItems[Math.min(statusItems.length - 1, index + 1)].focus();
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                statusItems[Math.max(0, index - 1)].focus();
+            } else if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                if (index !== -1) statusItems[index].click();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                closeStatusMenu(true);
+            } else if (e.key === 'Tab') {
+                closeStatusMenu(false);
+            }
+        });
+        if (statusItems[0]) statusItems[0].addEventListener('click', () => closeStatusMenu(true));
+        window.addEventListener('resize', () => closeStatusMenu(false));
+        window.addEventListener('scroll', (e) => {
+            if (!statusMenu.contains(e.target)) closeStatusMenu(false);
+        }, true);
+    }
+
+    function showError(message) {
+        errorEl.textContent = message || '';
+        errorEl.classList.toggle('d-none', !message);
+    }
+
+    function setBusy(value) {
+        busy = value;
+        confirmBtn.disabled = value;
+        cancelBtn.disabled = value;
+        confirmBtn.textContent = value ? 'Moving to Archive…' : 'Change to ' + (STATUSES[pending] ? STATUSES[pending].label : '');
+    }
+
+    document.querySelectorAll('.status-option').forEach((item) => {
+        item.addEventListener('click', () => {
+            const info = STATUSES[item.dataset.status];
+            if (!info) return;
+            closeStatusMenu(false);
+            pending = item.dataset.status;
+            titleEl.textContent = 'Change status to ' + info.label;
+            messageEl.textContent = '';
+            const name = document.createElement('strong');
+            name.textContent = studentName;
+            const status = document.createElement('strong');
+            status.textContent = info.label.toUpperCase();
+            messageEl.append('Are you sure you want to change the status of ', name, ' to ', status, '?');
+            noteEl.textContent = info.note;
+            showError('');
+            setBusy(false);
+            modal.show();
+        });
+    });
+
+    modalEl.addEventListener('hide.bs.modal', (e) => {
+        if (busy) e.preventDefault();
+    });
+
+    confirmBtn.addEventListener('click', async () => {
+        if (!pending || busy) return;
+        setBusy(true);
+        showError('');
+        const formData = new FormData();
+        formData.append('student_id', document.body.dataset.studentId || '');
+        formData.append('status', pending);
+        try {
+            const res = await fetch('view_student.php?action=change_status', { method: 'POST', body: formData });
+            const raw = await res.text();
+            let data;
+            try {
+                data = JSON.parse(raw);
+            } catch (err) {
+                throw new Error('The server returned an unexpected response (HTTP ' + res.status + ').');
+            }
+            if (!data.success) {
+                setBusy(false);
+                showError(data.message || 'Could not change the status.');
+                return;
+            }
+            window.location.href = data.redirect || 'archive.php';
+        } catch (err) {
+            setBusy(false);
+            showError(err.message || 'Could not change the status.');
+        }
+    });
+})();

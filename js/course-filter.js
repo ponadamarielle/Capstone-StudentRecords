@@ -4,9 +4,22 @@ document.addEventListener('DOMContentLoaded', function () {
         if (select) buildCourseMenu(select);
     });
 
-    function buildCourseMenu(select) {
+    var simpleMenus = {
+        yearSectionFilterSelect: 'All year & sections',
+        statusFilterSelect: 'All status',
+        archiveYearSectionFilter: 'All years'
+    };
+    Object.keys(simpleMenus).forEach(function (id) {
+        var select = document.getElementById(id);
+        if (select) buildCourseMenu(select, simpleMenus[id]);
+    });
+
+    function buildCourseMenu(select, allLabel) {
+        var simple = typeof allLabel === 'string';
         var wrap = select.parentElement;
         wrap.classList.add('course-filter');
+        if (simple) wrap.classList.add('course-filter-simple');
+        var selectWidth = select.getBoundingClientRect().width;
 
         var button = document.createElement('button');
         button.type = 'button';
@@ -18,7 +31,7 @@ document.addEventListener('DOMContentLoaded', function () {
         button.appendChild(label);
 
         var menu = document.createElement('div');
-        menu.className = 'course-filter-menu';
+        menu.className = 'course-filter-menu' + (simple ? ' course-filter-menu-simple' : '');
         menu.setAttribute('role', 'listbox');
         menu.hidden = true;
 
@@ -33,7 +46,12 @@ document.addEventListener('DOMContentLoaded', function () {
             var split = text.indexOf(' - ');
             if (option.value === '') {
                 item.classList.add('course-filter-all');
-                item.appendChild(document.createTextNode('All courses'));
+                item.appendChild(document.createTextNode(simple ? allLabel : 'All courses'));
+            } else if (simple) {
+                var plain = document.createElement('span');
+                plain.className = 'course-filter-text';
+                plain.textContent = text;
+                item.appendChild(plain);
             } else if (split > 0) {
                 var code = document.createElement('span');
                 code.className = 'course-filter-code';
@@ -67,18 +85,24 @@ document.addEventListener('DOMContentLoaded', function () {
         select.setAttribute('aria-hidden', 'true');
         wrap.insertBefore(button, select);
         wrap.appendChild(menu);
+        if (simple && selectWidth > 0) button.style.width = selectWidth + 'px';
 
         function place() {
             var rect = button.getBoundingClientRect();
             var top = rect.bottom + 6;
             menu.style.top = top + 'px';
-            menu.style.right = Math.max(16, document.documentElement.clientWidth - rect.right) + 'px';
+            if (simple) {
+                menu.style.minWidth = rect.width + 'px';
+                menu.style.left = Math.max(16, Math.min(rect.left, document.documentElement.clientWidth - menu.offsetWidth - 16)) + 'px';
+            } else {
+                menu.style.right = Math.max(16, document.documentElement.clientWidth - rect.right) + 'px';
+            }
             menu.style.maxHeight = Math.max(160, Math.min(360, window.innerHeight - top - 16)) + 'px';
         }
 
         function open() {
-            place();
             menu.hidden = false;
+            place();
             button.setAttribute('aria-expanded', 'true');
             var selected = menu.querySelector('.is-selected') || items[0];
             if (selected) {

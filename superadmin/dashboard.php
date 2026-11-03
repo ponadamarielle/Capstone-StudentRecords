@@ -142,10 +142,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sy_action'])) {
                     'details' => [
                         'school_year' => $label,
                         'changes'     => ['Year-End Commencement (last day)' => ['from' => $before, 'to' => $date]],
-                        'effect'      => 'Graduating students of ' . $label . ' are moved to Archive as GRADUATE after this date.',
+                        'effect'      => 'Graduating students of ' . $label . ' are marked as GRADUATE after this date.',
                     ],
                 ]);
-                $flash = ['type' => 'success', 'message' => 'Saved. Graduating students of ' . $label . ' will be archived after ' . date('F j, Y', strtotime($date)) . '.'];
+                $flash = ['type' => 'success', 'message' => 'Saved. Graduating students of ' . $label . ' will be marked as GRADUATE after ' . date('F j, Y', strtotime($date)) . '.'];
             }
         } elseif ($_POST['sy_action'] === 'clear' && $before !== '') {
             schoolYearClearEnd($endYear);
@@ -177,6 +177,7 @@ for ($y = $syCurrentEnd; $y <= $syCurrentEnd + 2; $y++) {
 $syCurrentDate  = schoolYearEndDate($syCurrentEnd);
 $syCurrentIsSet = $syRows[$syCurrentEnd] !== null;
 $syRemind       = !$syCurrentIsSet && strtotime($syCurrentDate) - time() <= 60 * 86400;
+$syLastEmail    = $syRemind ? schoolYearLastReminder($syCurrentEnd) : null;
 
 runScheduledBackupIfDue();
 $backupConn   = backupConnection();
@@ -217,7 +218,10 @@ include 'navbar.php';
             <i class="bi bi-calendar-event"></i>
             <span>
                 <strong>Set the Year-End Commencement date of <?= htmlspecialchars(schoolYearLabel($syCurrentEnd)) ?>.</strong>
-                Until it is set, graduating students are archived after <?= htmlspecialchars(date('F j, Y', strtotime($syCurrentDate))) ?> (default).
+                Until it is set, graduating students are marked as GRADUATE after <?= htmlspecialchars(date('F j, Y', strtotime($syCurrentDate))) ?> (default).
+                <?php if ($syLastEmail): ?>
+                    An email reminder was sent to <?= htmlspecialchars($syLastEmail['recipients']) ?> on <?= htmlspecialchars(date('M j, Y', strtotime($syLastEmail['attempted_at']))) ?>.
+                <?php endif; ?>
             </span>
             <i class="bi bi-chevron-right"></i>
         </a>
@@ -255,8 +259,7 @@ include 'navbar.php';
             </div>
             <div class="dash-sy-value"><?= htmlspecialchars(date('M j, Y', strtotime($syCurrentDate))) ?></div>
             <div class="dash-stat-note">
-                <?= htmlspecialchars(schoolYearLabel($syCurrentEnd)) ?> &middot;
-                <?= $syCurrentIsSet ? 'Graduates are archived after this date' : 'Default date, not set yet' ?>
+                <?= $syCurrentIsSet ? '' : 'Default date, not set yet. ' ?>The status of graduating students changes to GRADUATE after this date.
             </div>
 
             <?php if ($syFlash): ?>

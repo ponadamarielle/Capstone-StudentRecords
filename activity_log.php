@@ -232,7 +232,7 @@ function logStudentUpdate($conn, $studentId, ?array $before, $photoChanged = fal
         'mobile_number'   => 'Mobile Number',
         'email'           => 'Email Address',
         'address'         => 'Address',
-        'graduation_year' => 'Graduation SY',
+        'graduation_year' => 'Year of Graduation',
     ];
 
     $changes = [];

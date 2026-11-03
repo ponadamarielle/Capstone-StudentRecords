@@ -1,4 +1,24 @@
 document.addEventListener('DOMContentLoaded', function () {
+    function deactivatedText(ms) {
+        var seconds = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+        if (seconds < 60) return 'Deactivated just now';
+        var minutes = Math.floor(seconds / 60);
+        if (minutes < 60) return 'Deactivated ' + minutes + (minutes === 1 ? ' min ago' : ' mins ago');
+        var hours = Math.floor(minutes / 60);
+        if (hours < 24) return 'Deactivated ' + hours + (hours === 1 ? ' hr ago' : ' hrs ago');
+        var days = Math.floor(hours / 24);
+        if (days < 7) return 'Deactivated ' + days + (days === 1 ? ' day ago' : ' days ago');
+        return 'Deactivated on ' + new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+    function refreshDeactivatedNotes() {
+        document.querySelectorAll('[data-deactivated-at]').forEach(function (el) {
+            var ms = Number(el.getAttribute('data-deactivated-at'));
+            if (ms) el.textContent = deactivatedText(ms);
+        });
+    }
+    refreshDeactivatedNotes();
+    setInterval(refreshDeactivatedNotes, 30000);
+
     // filter tabs
     document.querySelectorAll('.filter-tab').forEach(function (btn) {
         btn.addEventListener('click', function () {

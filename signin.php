@@ -226,10 +226,11 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
                     <li><span class="auth-feature-icon"><i class="bi bi-file-earmark-text"></i></span>Digitized student files and documents</li>
                     <li><span class="auth-feature-icon"><i class="bi bi-stars"></i></span>Smart extraction from uploaded PDFs</li>
                     <li><span class="auth-feature-icon"><i class="bi bi-cloud-check"></i></span>Automatic scheduled backups</li>
+                    <li><span class="auth-feature-icon"><i class="bi bi-shield-lock"></i></span>Protected under the Data Privacy Act of 2012 (RA 10173)</li>
                 </ul>
             </div>
 
-            <p class="auth-copyright">&copy; <?= date('Y') ?> Polytechnic University of the Philippines</p>
+            <p class="auth-copyright">&copy; <?= date('Y') ?> Polytechnic University of the Philippines - Biñan Campus</p>
             <div class="auth-rings" aria-hidden="true"></div>
         </aside>
 

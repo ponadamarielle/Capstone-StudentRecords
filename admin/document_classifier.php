@@ -180,6 +180,12 @@ function getDocumentRequirements()
             'ai_hint' => 'DepEd National List of Passers of the ALS A&E test (a list of names).',
         ],
 
+        'health_information_form' => [
+            'label' => 'Health Information Form',
+            'group' => 'info', 'store' => false, 'extract_only' => true, 'required_for' => [],
+            'extract_fields' => true, 'field_priority' => 5, 'photo_box' => 'health_information_form',
+            'ai_hint' => 'Health Information Form / medical record: personal data, emergency contact, medical history, 2x2 photo at the top right. Used only to auto-fill the student information.',
+        ],
         'info_enrollment_procedure' => [
             'label' => 'Admission & Enrollment Procedure (info page)',
             'group' => 'info', 'store' => false, 'required_for' => [],
@@ -213,6 +219,12 @@ function isStorableRequirement($code)
 {
     $req = getDocumentRequirement($code);
     return $req !== null && !empty($req['store']);
+}
+
+function isExtractOnlyRequirement($code)
+{
+    $req = getDocumentRequirement($code);
+    return $req !== null && !empty($req['extract_only']);
 }
 
 function requirementLabel($code)
@@ -633,9 +645,25 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
 
     $grouped = groupClassifiedPages($pages);
     $groups  = $grouped['groups'];
-    $skipped = $grouped['skipped'];
+    $skipped = [];
+    $extractOnly = [];
+    $extractGroups = [];
+    foreach ($grouped['skipped'] as $s) {
+        if (!isExtractOnlyRequirement($s['code'])) {
+            $skipped[] = $s;
+            continue;
+        }
+        $last = count($extractGroups) - 1;
+        if ($last >= 0 && $extractGroups[$last]['code'] === $s['code'] && end($extractGroups[$last]['pages']) === $s['page'] - 1) {
+            $extractGroups[$last]['pages'][] = $s['page'];
+        } else {
+            $extractGroups[] = ['code' => $s['code'], 'confidence' => 'none', 'reason' => '', 'pages' => [$s['page']]];
+        }
+        $extractOnly[] = $s;
+    }
+    $extractOnlyPages = array_column($extractOnly, 'page');
 
-    if (empty($groups)) {
+    if (empty($groups) && empty($extractGroups)) {
         @unlink($destPath);
         return [
             'success' => false,
@@ -646,7 +674,7 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     }
 
     $fieldPages = [];
-    foreach ($groups as $g) {
+    foreach (array_merge($groups, $extractGroups) as $g) {
         $req = getDocumentRequirement($g['code']);
         if ($req && !empty($req['extract_fields'])) {
             $fieldPages[] = $g['pages'][0];
@@ -661,7 +689,11 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     $photoPath = null;
     $photoTime = 0.0;
     $photoGroupIndex = null;
-    foreach ($groups as $gi => $g) {
+    $readGroups = $groups;
+    foreach ($extractGroups as $eg) {
+        $readGroups['extract_' . count($readGroups)] = $eg;
+    }
+    foreach ($readGroups as $gi => $g) {
         $req       = getDocumentRequirement($g['code']);
         $firstPage = $g['pages'][0];
         $extract   = $req && !empty($req['extract_fields']);
@@ -681,7 +713,7 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
             $photoStart = microtime(true);
             $photoPath = extractIdPhoto($destPath, $req['photo_box'], $firstPage);
             $photoTime += microtime(true) - $photoStart;
-            if ($photoPath !== null) {
+            if ($photoPath !== null && is_int($gi)) {
                 $photoGroupIndex = $gi;
             }
         }
@@ -709,7 +741,9 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
         $extracted['mobile_number'] = preg_match('/^09\d{9}$/', $digits) ? $digits : '';
     }
 
-    if (!empty($options['single_file']) && (count($groups) > 1 || !empty($skipped))) {
+    if (empty($groups)) {
+        @unlink($destPath);
+    } elseif (!empty($options['single_file']) && (count($groups) > 1 || !empty($skipped) || !empty($extractOnlyPages))) {
         $main = null;
         foreach ($groups as $gi => $g) {
             if ($g['code'] !== null) {
@@ -718,12 +752,12 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
             }
         }
         $main = $main ?? 0;
-        $groups = [array_merge($groups[$main], ['pages' => range(1, $pageCount)])];
+        $groups = [array_merge($groups[$main], ['pages' => array_values(array_diff(range(1, $pageCount), $extractOnlyPages))])];
         $skipped = [];
         $photoGroupIndex = $photoPath !== null ? 0 : null;
     }
 
-    $needSplit = count($groups) > 1 || !empty($skipped);
+    $needSplit = !empty($groups) && (count($groups) > 1 || !empty($skipped) || !empty($extractOnlyPages));
     $origBase  = pathinfo($originalName, PATHINFO_FILENAME);
     $filePaths = [];
 
@@ -741,14 +775,14 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
         if (empty($filePaths)) {
             $warnings[] = 'Could not split the PDF into separate documents (pdfseparate/pdfunite not found next to pdftoppm). It was stored as one file.';
             $groups    = [$groups[0]];
-            $groups[0]['pages'] = range(1, $pageCount);
+            $groups[0]['pages'] = array_values(array_diff(range(1, $pageCount), $extractOnlyPages));
             $photoGroupIndex = $photoPath !== null ? 0 : null;
             $needSplit = false;
         } else {
             @unlink($destPath);
         }
     }
-    if (!$needSplit) {
+    if (!$needSplit && !empty($groups)) {
         $filePaths = [0 => $destPath];
     }
 
@@ -782,7 +816,7 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     }
 
     $imagePath = null;
-    if (!empty($options['preview_image']) && $photoPath === null) {
+    if (!empty($options['preview_image']) && $photoPath === null && !empty($documents)) {
         $imagePath = renderPdfPagePng($documents[0]['file_path'], 1, $uploadDir);
     }
     $timings['split_save'] = microtime(true) - $mark;
@@ -797,6 +831,7 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
         'page_count'    => $pageCount,
         'documents'     => $documents,
         'skipped_pages' => $skipped,
+        'extract_only'  => $extractOnly,
         'extracted'     => $extracted,
         'photo_path'    => $photoPath,
         'ocr_source'    => 'groq_ai',

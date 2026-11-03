@@ -326,7 +326,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function schoolYearLabel(endYear) {
-        return 'SY ' + (endYear - 1) + '-' + endYear;
+        return String(endYear);
     }
 
     function updateGraduationDisplay() {
@@ -335,7 +335,7 @@ document.addEventListener('DOMContentLoaded', function () {
         graduationDisplay.value = info ? schoolYearLabel(info.endYear) : '';
         if (graduationNote) {
             graduationNote.textContent = info && info.graduated
-                ? 'This student has already graduated. The record will be moved to Archive as GRADUATE after saving, once all required documents are complete.'
+                ? 'This student has already graduated. The status will be GRADUATE after saving.'
                 : '';
         }
     }
@@ -495,6 +495,20 @@ document.addEventListener('DOMContentLoaded', function () {
             syncDocumentsHiddenField();
         }
 
+        const extractOnly = data.extract_only || [];
+        if (extractOnly.length) {
+            if (!accepted.length) {
+                uploadedSources.set(data.source_hash, file.name);
+                populateFields(data.extracted);
+            }
+            const docPhoto = (data.documents || []).some(function (d) { return d.photo_path; });
+            if (!studentPhotoSet && data.photo_path && !docPhoto) {
+                setStudentPhoto(data.photo_path);
+            } else if (data.photo_path && !docPhoto) {
+                deleteFileSet({ photo_path: data.photo_path });
+            }
+        }
+
         const parts = [];
         const detected = accepted.filter(function (i) { return uploadedDocuments[i].requirement_code; });
         const unknown = accepted.length - detected.length;
@@ -507,6 +521,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 ? 'The document type could not be identified; please choose it in the Documents tab.'
                 : unknown + ' documents could not be identified; please choose their types in the Documents tab.');
         }
+        if (extractOnly.length) {
+            parts.push('Student information extracted from the Health Information Form.');
+        }
         if (data.skipped_pages && data.skipped_pages.length) {
             parts.push('Skipped info pages: ' + data.skipped_pages.map(function (s) { return 'p' + s.page; }).join(', ') + '.');
         }
@@ -516,9 +533,11 @@ document.addEventListener('DOMContentLoaded', function () {
         (data.warnings || []).forEach(function (w) { parts.push(w); });
         if (accepted.length) {
             parts.push('Please review both tabs before saving.');
+        } else if (extractOnly.length) {
+            parts.push('Please review the fields before saving.');
         }
 
-        const type = !accepted.length ? 'error'
+        const type = !accepted.length && !extractOnly.length ? 'error'
             : (rejected.length || (data.warnings && data.warnings.length) || accepted.some(function (i) {
                 const c = uploadedDocuments[i].confidence;
                 return c === 'low' || c === 'none';
@@ -643,6 +662,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
             if (!el.value) {
+                if (el.tagName === 'SELECT' && !Array.prototype.some.call(el.options, function (o) { return o.value === value; })) {
+                    el.add(new Option(value, value));
+                }
                 el.value = value;
                 applied.push(key);
             }
@@ -1053,7 +1075,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const info = graduationInfo();
             gradEl.textContent = !info ? '-'
                 : schoolYearLabel(info.endYear)
-                    + (info.graduated ? ' (already ended: this student will be moved to Archive as GRADUATE after saving)' : '');
+                    + (info.graduated ? ' (already ended: the status will be GRADUATE after saving)' : '');
             gradEl.classList.toggle('text-danger', !!(info && info.graduated));
         }
         const trackEl = document.getElementById('confirmSummaryTrack');

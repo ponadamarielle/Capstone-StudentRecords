@@ -694,7 +694,7 @@ function handleUpdateStatus($conn)
         $status = 'enrollee';
     }
     if ($status !== 'enrollee') {
-        echo json_encode(['success' => false, 'message' => 'GRADUATE is set by archiving the student.']);
+        echo json_encode(['success' => false, 'message' => 'GRADUATE is set automatically when the Year of Graduation school year ends.']);
         return;
     }
 
@@ -703,8 +703,12 @@ function handleUpdateStatus($conn)
         echo json_encode(['success' => false, 'message' => 'Student not found.']);
         return;
     }
+    if (($current['status'] ?? '') === 'graduated') {
+        echo json_encode(['success' => false, 'message' => 'This student has already graduated. The status cannot be changed.']);
+        return;
+    }
     if (in_array($current['status'] ?? '', ARCHIVED_STATUSES, true)) {
-        echo json_encode(['success' => false, 'message' => 'This student is archived as GRADUATE. Archived records cannot be restored or changed.']);
+        echo json_encode(['success' => false, 'message' => 'This student is archived. Archived records cannot be changed here.']);
         return;
     }
 
@@ -1002,15 +1006,6 @@ function handleAddStudent($conn)
         $notification = notifyStudentRequirements($conn, $studentId, requirementsForClient());
 
         $archiveBlocked = null;
-        $savedStudent = activityFetchStudent($conn, $studentId);
-        $savedEndYear = $savedStudent ? expectedGraduationYear($savedStudent) : null;
-        if ($savedEndYear !== null && schoolYearHasEnded($savedEndYear)) {
-            $missingForArchive = studentMissingRequirements($conn, $studentId);
-            if ($missingForArchive) {
-                $archiveBlocked = 'This student has already graduated but cannot be archived as GRADUATE because the requirements are incomplete. Missing: '
-                    . implode(', ', $missingForArchive) . '. The record stays in the Student Directory until all requirements are submitted.';
-            }
-        }
 
         echo json_encode([
             'success'         => true,
@@ -1044,8 +1039,9 @@ runScheduledBackupIfDue();
 $search            = isset($_GET['search']) ? trim(preg_replace('/\s+/u', ' ', preg_replace("/[^\\p{L}\\p{M}0-9\\s.,'\\-]/u", '', $_GET['search']))) : '';
 $courseFilter      = isset($_GET['course']) ? trim($_GET['course']) : '';
 $yearSectionFilter = isset($_GET['year_section']) ? trim($_GET['year_section']) : '';
+$statusFilter      = in_array($_GET['status'] ?? '', ['enrollee', 'graduated'], true) ? $_GET['status'] : '';
 
-$conditions = ["(status IN ('enrollee', 'active') OR status IS NULL OR status = '')"];
+$conditions = [directoryStudentCondition($conn)];
 $params     = [];
 $types      = '';
 
@@ -1085,11 +1081,17 @@ if ($yearSectionFilter !== '') {
     $types   .= 's';
 }
 
+if ($statusFilter === 'graduated') {
+    $conditions[] = "status = 'graduated'";
+} elseif ($statusFilter === 'enrollee') {
+    $conditions[] = "(status IN ('enrollee', 'active') OR status IS NULL OR status = '')";
+}
+
 $sql = "SELECT student_id, student_number, name, course, year_section, status, admission_track FROM students";
 if (!empty($conditions)) {
     $sql .= " WHERE " . implode(' AND ', $conditions);
 }
-$sql .= ($search !== '' || $courseFilter !== '' || $yearSectionFilter !== '')
+$sql .= ($search !== '' || $courseFilter !== '' || $yearSectionFilter !== '' || $statusFilter !== '')
     ? " ORDER BY name ASC, student_id DESC"
     : " ORDER BY student_id DESC";
 
@@ -1118,7 +1120,7 @@ $courseOptions = [];
 foreach (officialCourseCatalog() as $catalogEntry) {
     $courseOptions[$catalogEntry['code']] = courseDisplayName($catalogEntry);
 }
-$extraCourseResult = mysqli_query($conn, "SELECT DISTINCT course FROM students WHERE (status IN ('enrollee', 'active') OR status IS NULL OR status = '') AND course IS NOT NULL AND course <> '' ORDER BY course ASC");
+$extraCourseResult = mysqli_query($conn, "SELECT DISTINCT course FROM students WHERE " . directoryStudentCondition($conn) . " AND course IS NOT NULL AND course <> '' ORDER BY course ASC");
 if ($extraCourseResult) {
     while ($row = mysqli_fetch_assoc($extraCourseResult)) {
         $usedCourse = resolveCourse($row['course']);
@@ -1131,7 +1133,7 @@ if ($extraCourseResult) {
 }
 
 $yearSectionOptions = [];
-$yearSectionResult = mysqli_query($conn, "SELECT DISTINCT year_section FROM students WHERE (status IN ('enrollee', 'active') OR status IS NULL OR status = '') AND year_section IS NOT NULL AND year_section <> '' ORDER BY year_section ASC");
+$yearSectionResult = mysqli_query($conn, "SELECT DISTINCT year_section FROM students WHERE " . directoryStudentCondition($conn) . " AND year_section IS NOT NULL AND year_section <> '' ORDER BY year_section ASC");
 if ($yearSectionResult) {
     while ($row = mysqli_fetch_assoc($yearSectionResult)) {
         $yearSectionOptions[] = $row['year_section'];
@@ -1191,7 +1193,7 @@ include 'navbar.php';
             <?php endforeach; ?>
         </select>
         <?php if ($courseFilter !== ''): ?>
-            <a href="student_directory.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'year_section' => $yearSectionFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear course"><i class="bi bi-x-circle"></i></a>
+            <a href="student_directory.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'year_section' => $yearSectionFilter, 'status' => $statusFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear course"><i class="bi bi-x-circle"></i></a>
         <?php endif; ?>
         </div>
 
@@ -1205,7 +1207,18 @@ include 'navbar.php';
             <?php endforeach; ?>
             </select>
         <?php if ($yearSectionFilter !== ''): ?>
-            <a href="student_directory.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'course' => $courseFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear year &amp; section"><i class="bi bi-x-circle"></i></a>
+            <a href="student_directory.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'course' => $courseFilter, 'status' => $statusFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear year &amp; section"><i class="bi bi-x-circle"></i></a>
+        <?php endif; ?>
+        </div>
+
+        <div class="filter-wrap filter-wrap-status">
+        <select class="filter filter-status<?= $statusFilter !== '' ? ' has-value' : '' ?>" id="statusFilterSelect" name="status">
+            <option value="">All Status</option>
+            <option value="enrollee" <?= $statusFilter === 'enrollee' ? 'selected' : '' ?>>Enrollee</option>
+            <option value="graduated" <?= $statusFilter === 'graduated' ? 'selected' : '' ?>>Graduate</option>
+        </select>
+        <?php if ($statusFilter !== ''): ?>
+            <a href="student_directory.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'course' => $courseFilter, 'year_section' => $yearSectionFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear status"><i class="bi bi-x-circle"></i></a>
         <?php endif; ?>
         </div>
       </form>
@@ -1233,7 +1246,11 @@ include 'navbar.php';
             <td><?= htmlspecialchars($row['name']) ?></td>
             <td><?= htmlspecialchars($row['course']) ?></td>
             <td><?= htmlspecialchars($row['year_section']) ?></td>
+            <?php if (($row['status'] ?? '') === 'graduated'): ?>
+            <td class="status-graduate">GRADUATE</td>
+            <?php else: ?>
             <td>ENROLLEE</td>
+            <?php endif; ?>
             <td><?= requirementStatusBadge($row['completion']) ?></td>
             <td>
                <button class="view-btn" data-id="<?= htmlspecialchars($row['student_id']) ?>"><i class="bi bi-eye-fill"></i>View</button>
@@ -1373,8 +1390,13 @@ include 'navbar.php';
                         <label for="course" class="form-label form-label-custom">
                             Course <span class="req-mark">*</span>
                         </label>
-                        <input type="text" id="course" name="course" class="form-control input-custom"
-                               pattern="[A-Za-z\s\-]+" placeholder="BSIT">
+                        <select id="course" name="course" class="form-select input-custom">
+                            <option value="">Select course</option>
+                            <?php foreach (getCourseCatalog() as $courseEntry): ?>
+                                <?php if (($courseEntry['status'] ?? 'active') !== 'active') continue; ?>
+                                <option value="<?= htmlspecialchars(courseDisplayName($courseEntry)) ?>"><?= htmlspecialchars(courseDisplayName($courseEntry)) ?></option>
+                            <?php endforeach; ?>
+                        </select>
                     </div>
 
                     <div class="d-flex align-items-center mb-3">
@@ -1388,7 +1410,7 @@ include 'navbar.php';
 
                     <div class="d-flex align-items-center mb-3">
                         <label for="graduation_sy_display" class="form-label form-label-custom">
-                            Graduation SY
+                            Year of Graduation
                         </label>
                         <input type="text" id="graduation_sy_display" class="form-control input-custom graduation-display bg-light"
                                readonly tabindex="-1" placeholder="Based on the student number">
@@ -1527,7 +1549,7 @@ include 'navbar.php';
                     <tr><th>Course</th><td id="confirmSummaryCourse"></td></tr>
                     <tr><th>Year &amp; Section</th><td id="confirmSummarySection"></td></tr>
                     <tr><th>Admission Type</th><td id="confirmSummaryTrack"></td></tr>
-                    <tr><th>Graduation SY</th><td id="confirmSummaryGraduation"></td></tr>
+                    <tr><th>Year of Graduation</th><td id="confirmSummaryGraduation"></td></tr>
                     <tr><th>Attached Documents</th><td id="confirmSummaryDocs"></td></tr>
                     <tr><th>Requirements Status</th><td id="confirmSummaryCompletion"></td></tr>
                     <tr><th>Missing Requirements</th><td id="confirmSummaryMissing"></td></tr>

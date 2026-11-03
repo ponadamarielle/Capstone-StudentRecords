@@ -10,13 +10,16 @@ if (!defined('ARCHIVE_DIR')) {
     define('ARCHIVE_DIR', '../uploads/archive/');
 }
 
-const ARCHIVED_STATUSES     = ['graduated', 'inactive', 'onleave'];
+const ARCHIVED_STATUSES     = ['graduated', 'withdrawn', 'onleave', 'transferred', 'inactive'];
+const LEFT_STATUSES         = ['withdrawn', 'onleave', 'transferred'];
+const RESTORABLE_STATUSES   = ['withdrawn', 'onleave', 'inactive'];
 const PROGRAM_LENGTH_YEARS  = 4;
+const GRADUATE_ARCHIVE_YEARS = 4;
 
-function studentColumns($conn)
+function studentColumns($conn, $refresh = false)
 {
     static $names = null;
-    if ($names === null) {
+    if ($names === null || $refresh) {
         $names = [];
         $result = mysqli_query($conn, "SHOW COLUMNS FROM students");
         if ($result) {
@@ -31,6 +34,106 @@ function studentColumns($conn)
 function studentHasArchivedAt($conn)
 {
     return in_array('archived_at', studentColumns($conn), true);
+}
+
+function ensureStudentArchivedAt($conn)
+{
+    static $checked = false;
+    if ($checked) {
+        return studentHasArchivedAt($conn);
+    }
+    $checked = true;
+    if (studentHasArchivedAt($conn)) {
+        return true;
+    }
+    try {
+        mysqli_query($conn, "ALTER TABLE students ADD COLUMN archived_at DATETIME NULL DEFAULT NULL");
+        studentColumns($conn, true);
+        mysqli_query($conn, "UPDATE students s SET archived_at = (SELECT MAX(d.archived_at) FROM documents d WHERE d.student_id = s.student_id AND d.is_archived = 1) WHERE s.status IN ('graduated', 'withdrawn', 'onleave', 'transferred', 'inactive') AND s.archived_at IS NULL");
+    } catch (Throwable $e) {
+        error_log('Adding students.archived_at failed: ' . $e->getMessage());
+    }
+    return studentHasArchivedAt($conn);
+}
+
+function archivedStudentCondition($conn, $alias = 's')
+{
+    $a = $alias !== '' ? $alias . '.' : '';
+    if (!ensureStudentArchivedAt($conn)) {
+        return "{$a}status IN ('graduated', 'withdrawn', 'onleave', 'transferred', 'inactive')";
+    }
+    return "({$a}status IN ('withdrawn', 'onleave', 'transferred', 'inactive') OR ({$a}status = 'graduated' AND {$a}archived_at IS NOT NULL))";
+}
+
+function directoryStudentCondition($conn, $alias = '')
+{
+    $a = $alias !== '' ? $alias . '.' : '';
+    $base = "{$a}status IN ('enrollee', 'active') OR {$a}status IS NULL OR {$a}status = ''";
+    if (!ensureStudentArchivedAt($conn)) {
+        return "($base)";
+    }
+    return "($base OR ({$a}status = 'graduated' AND {$a}archived_at IS NULL))";
+}
+
+function isStudentArchived(array $student)
+{
+    $status = $student['status'] ?? '';
+    if (in_array($status, ['withdrawn', 'onleave', 'transferred', 'inactive'], true)) {
+        return true;
+    }
+    if ($status !== 'graduated') {
+        return false;
+    }
+    return !array_key_exists('archived_at', $student) || !empty($student['archived_at']);
+}
+
+function syncGraduateStatus($conn, $studentId)
+{
+    $studentId = (int) $studentId;
+    $columns = studentColumns($conn);
+    $stmt = mysqli_prepare($conn, "SELECT student_id, student_number, status"
+        . (in_array('graduation_year', $columns, true) ? ", graduation_year" : "")
+        . (ensureStudentArchivedAt($conn) ? ", archived_at" : "")
+        . " FROM students WHERE student_id = ?");
+    mysqli_stmt_bind_param($stmt, "i", $studentId);
+    mysqli_stmt_execute($stmt);
+    $student = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    if (!$student || isStudentArchived($student)) {
+        return null;
+    }
+
+    $status  = (string) ($student['status'] ?? '');
+    $endYear = expectedGraduationYear($student);
+    $ended   = $endYear !== null && schoolYearHasEnded($endYear);
+    if ($ended && in_array($status, ['enrollee', 'active', ''], true)) {
+        $newStatus = 'graduated';
+    } elseif (!$ended && $status === 'graduated') {
+        $newStatus = 'enrollee';
+    } else {
+        return null;
+    }
+
+    $update = mysqli_prepare($conn, "UPDATE students SET status = ? WHERE student_id = ?");
+    mysqli_stmt_bind_param($update, "si", $newStatus, $studentId);
+    if (!mysqli_stmt_execute($update)) {
+        return null;
+    }
+
+    $studentOpts = activityStudentOpts($conn, $studentId);
+    logActivity('student_status_changed',
+        'Changed status of ' . activityStudentLabel($studentOpts) . ' to ' . ($newStatus === 'graduated' ? 'GRADUATE' : 'ENROLLEE'),
+        $studentOpts + [
+            'system'      => true,
+            'target_type' => 'student',
+            'target_id'   => $studentId,
+            'details'     => [
+                'changes' => ['Status' => ['from' => $status !== '' ? $status : 'enrollee', 'to' => $newStatus]],
+                'reason'  => $newStatus === 'graduated'
+                    ? 'Year of Graduation school year has ended.'
+                    : 'Year of Graduation school year has not ended yet.',
+            ],
+        ]);
+    return $newStatus;
 }
 
 function safeName($value, $fallback)
@@ -152,14 +255,79 @@ function studentMissingRequirements($conn, $studentId)
     return $missing;
 }
 
-function archiveStudentRecord($conn, $studentId, $status)
+function archiveFolderFor(array $student, $studentId)
+{
+    $studentLabel = trim(($student['student_number'] ?? '') . ' - ' . ($student['name'] ?? ''), " -");
+    return ARCHIVE_DIR
+        . courseFolderName($student['course'] ?? '') . '/'
+        . safeName($studentLabel, 'Student ' . (int) $studentId) . '/';
+}
+
+function archiveFileName(array $doc)
+{
+    $code = $doc['requirement_code'] ?? '';
+    if ($code !== '' && $code !== null && function_exists('isStorableRequirement') && isStorableRequirement($code)) {
+        return requirementLabel($code) . '.pdf';
+    }
+    return ($doc['file_name'] ?? '') !== '' ? $doc['file_name'] : basename((string) ($doc['file_path'] ?? ''));
+}
+
+function relocateArchivedFiles($conn)
+{
+    static $done = false;
+    if ($done) {
+        return 0;
+    }
+    $done = true;
+    $result = mysqli_query($conn,
+        "SELECT d.document_id, d.file_name, d.file_path, d.requirement_code, s.student_id, s.student_number, s.name, s.course
+         FROM documents d JOIN students s ON s.student_id = d.student_id
+         WHERE d.is_archived = 1 AND d.file_path LIKE '" . mysqli_real_escape_string($conn, ARCHIVE_DIR) . "%'
+         ORDER BY s.student_id, d.document_id");
+    if (!$result) {
+        return 0;
+    }
+    $moved    = 0;
+    $reserved = [];
+    $oldDirs  = [];
+    $update   = mysqli_prepare($conn, "UPDATE documents SET file_path = ? WHERE document_id = ?");
+    while ($doc = mysqli_fetch_assoc($result)) {
+        $path   = (string) $doc['file_path'];
+        $folder = archiveFolderFor($doc, (int) $doc['student_id']);
+        if (dirname($path) . '/' === $folder || !is_file($path) || !isPathInside($path, ARCHIVE_DIR)) {
+            continue;
+        }
+        if (!is_dir($folder) && !@mkdir($folder, 0755, true)) {
+            continue;
+        }
+        $target = uniqueTarget($folder, archiveFileName($doc), $reserved);
+        if (!@rename($path, $target)) {
+            continue;
+        }
+        $documentId = (int) $doc['document_id'];
+        mysqli_stmt_bind_param($update, "si", $target, $documentId);
+        if (!mysqli_stmt_execute($update)) {
+            @rename($target, $path);
+            continue;
+        }
+        $oldDirs[dirname($path)] = true;
+        $moved++;
+    }
+    foreach (array_keys($oldDirs) as $dir) {
+        removeEmptyArchiveDirs($dir);
+    }
+    return $moved;
+}
+
+function archiveStudentRecord($conn, $studentId, $status, $force = false)
 {
     if (!in_array($status, ARCHIVED_STATUSES, true)) {
-        return ['success' => false, 'message' => 'Only GRADUATE, IN-ACTIVE or ON-LEAVE students can be archived.'];
+        return ['success' => false, 'message' => 'Only GRADUATE, WITHDRAWN, ON-LEAVE or TRANSFERRED students can be archived.'];
     }
     $studentId = (int) $studentId;
+    ensureStudentArchivedAt($conn);
 
-    if ($status === 'graduated') {
+    if ($status === 'graduated' && !$force) {
         $missingRequirements = studentMissingRequirements($conn, $studentId);
         if (!empty($missingRequirements)) {
             return [
@@ -180,18 +348,13 @@ function archiveStudentRecord($conn, $studentId, $status)
         return ['success' => false, 'message' => 'Student not found.'];
     }
 
-    $studentLabel = trim(($student['student_number'] ?? '') . ' - ' . ($student['name'] ?? ''), " -");
-    $folder = ARCHIVE_DIR
-        . date('Y') . '/'
-        . courseFolderName($student['course']) . '/'
-        . safeName($student['year_section'], 'No Year & Section') . '/'
-        . safeName($studentLabel, 'Student ' . $studentId) . '/';
+    $folder = archiveFolderFor($student, $studentId);
 
     if (!is_dir($folder) && !@mkdir($folder, 0755, true)) {
         return ['success' => false, 'message' => 'Could not create the archive folder. Check folder permissions.'];
     }
 
-    $docsStmt = mysqli_prepare($conn, "SELECT document_id, file_name, file_path FROM documents WHERE student_id = ?");
+    $docsStmt = mysqli_prepare($conn, "SELECT document_id, file_name, file_path, requirement_code FROM documents WHERE student_id = ?");
     mysqli_stmt_bind_param($docsStmt, "i", $studentId);
     mysqli_stmt_execute($docsStmt);
     $documents = mysqli_fetch_all(mysqli_stmt_get_result($docsStmt), MYSQLI_ASSOC);
@@ -201,7 +364,7 @@ function archiveStudentRecord($conn, $studentId, $status)
     $reserved = [];
     foreach ($documents as $doc) {
         $path = $doc['file_path'] ?? '';
-        $name = ($doc['file_name'] ?? '') !== '' ? $doc['file_name'] : basename($path);
+        $name = archiveFileName($doc);
 
         if ($path === '' || !is_file($path)) {
             $missing[] = $name;
@@ -311,19 +474,20 @@ function migrateEnrolleeStatus($conn)
         $column = $result ? mysqli_fetch_assoc($result) : null;
         if ($column) {
             $type = strtolower((string) $column['Type']);
-            $needsAlter = (strpos($type, 'enum(') === 0 && strpos($type, "'enrollee'") === false)
+            $needsAlter = (strpos($type, 'enum(') === 0 && (strpos($type, "'enrollee'") === false || strpos($type, "'withdrawn'") === false || strpos($type, "'transferred'") === false))
                 || (string) $column['Default'] !== 'enrollee';
             if ($needsAlter) {
                 mysqli_query($conn, "ALTER TABLE students MODIFY status VARCHAR(20) NULL DEFAULT 'enrollee'");
             }
         }
         mysqli_query($conn, "UPDATE students SET status = 'enrollee' WHERE status = 'active' OR status IS NULL OR status = ''");
+        mysqli_query($conn, "UPDATE students SET status = 'withdrawn' WHERE status = 'inactive'");
     } catch (Throwable $e) {
         error_log('Enrollee status migration failed: ' . $e->getMessage());
     }
 }
 
-function archiveGraduatedStudents($conn, $limit = 30)
+function markGraduatedStudents($conn, $limit = 200)
 {
     migrateEnrolleeStatus($conn);
     $hasColumn = in_array('graduation_year', studentColumns($conn), true);
@@ -334,31 +498,177 @@ function archiveGraduatedStudents($conn, $limit = 30)
         return 0;
     }
 
-    $archived = 0;
-    while (($row = mysqli_fetch_assoc($result)) && $archived < $limit) {
+    $marked = 0;
+    $update = mysqli_prepare($conn, "UPDATE students SET status = 'graduated'"
+        . (studentHasArchivedAt($conn) ? ", archived_at = NULL" : "")
+        . " WHERE student_id = ?");
+    while (($row = mysqli_fetch_assoc($result)) && $marked < $limit) {
         $endYear = expectedGraduationYear($row);
         if ($endYear === null || !schoolYearHasEnded($endYear)) {
             continue;
         }
-        $outcome = archiveStudentRecord($conn, (int) $row['student_id'], 'graduated');
-        if (!empty($outcome['success'])) {
+        $studentId = (int) $row['student_id'];
+        mysqli_stmt_bind_param($update, "i", $studentId);
+        if (!mysqli_stmt_execute($update)) {
+            error_log('Marking graduate ' . $row['student_number'] . ' failed: ' . mysqli_error($conn));
+            continue;
+        }
+        $marked++;
+        $studentOpts = activityStudentOpts($conn, $studentId);
+        logActivity('student_status_changed',
+            'Changed status of ' . activityStudentLabel($studentOpts) . ' to GRADUATE',
+            $studentOpts + [
+                'system'      => true,
+                'target_type' => 'student',
+                'target_id'   => $studentId,
+                'details'     => [
+                    'changes'           => ['Status' => ['from' => 'enrollee', 'to' => 'graduated']],
+                    'school_year_ended' => schoolYearLabel($endYear),
+                    'reason'            => 'Year of Graduation school year has ended.',
+                ],
+            ]);
+    }
+    return $marked;
+}
+
+function returnGraduateToDirectory($conn, $studentId)
+{
+    $studentId = (int) $studentId;
+    if (!is_dir(DOCUMENTS_DIR) && !@mkdir(DOCUMENTS_DIR, 0755, true)) {
+        return ['success' => false, 'message' => 'Could not create the documents folder.'];
+    }
+
+    $docsStmt = mysqli_prepare($conn, "SELECT document_id, file_path FROM documents WHERE student_id = ?");
+    mysqli_stmt_bind_param($docsStmt, "i", $studentId);
+    mysqli_stmt_execute($docsStmt);
+    $documents = mysqli_fetch_all(mysqli_stmt_get_result($docsStmt), MYSQLI_ASSOC);
+
+    $moves = [];
+    foreach ($documents as $doc) {
+        $path = $doc['file_path'] ?? '';
+        if ($path === '' || !is_file($path) || !isPathInside($path, ARCHIVE_DIR)) {
+            continue;
+        }
+        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION)) ?: 'pdf';
+        $moves[] = [
+            'document_id' => (int) $doc['document_id'],
+            'from'        => $path,
+            'to'          => DOCUMENTS_DIR . uniqid('doc_', true) . '.' . $ext,
+        ];
+    }
+
+    try {
+        $done = moveFiles($moves);
+    } catch (Exception $e) {
+        return ['success' => false, 'message' => $e->getMessage()];
+    }
+
+    mysqli_begin_transaction($conn);
+    try {
+        if (studentHasArchivedAt($conn)) {
+            $studentStmt = mysqli_prepare($conn, "UPDATE students SET archived_at = NULL WHERE student_id = ?");
+            mysqli_stmt_bind_param($studentStmt, "i", $studentId);
+            if (!mysqli_stmt_execute($studentStmt)) {
+                throw new Exception(mysqli_error($conn));
+            }
+        }
+
+        $pathStmt = mysqli_prepare($conn, "UPDATE documents SET file_path = ? WHERE document_id = ?");
+        foreach ($done as $move) {
+            mysqli_stmt_bind_param($pathStmt, "si", $move['to'], $move['document_id']);
+            if (!mysqli_stmt_execute($pathStmt)) {
+                throw new Exception(mysqli_error($conn));
+            }
+        }
+
+        $markStmt = mysqli_prepare($conn,
+            "UPDATE documents SET is_archived = 0, archived_at = NULL WHERE student_id = ?");
+        mysqli_stmt_bind_param($markStmt, "i", $studentId);
+        if (!mysqli_stmt_execute($markStmt)) {
+            throw new Exception(mysqli_error($conn));
+        }
+
+        mysqli_commit($conn);
+    } catch (Exception $e) {
+        mysqli_rollback($conn);
+        undoMoves($done);
+        return ['success' => false, 'message' => $e->getMessage()];
+    }
+
+    foreach ($done as $move) {
+        removeEmptyArchiveDirs(dirname($move['from']));
+    }
+    return ['success' => true, 'documents' => count($done)];
+}
+
+function archiveGraduatedStudents($conn, $limit = 30)
+{
+    markGraduatedStudents($conn);
+    if (!ensureStudentArchivedAt($conn)) {
+        return 0;
+    }
+
+    $hasColumn = in_array('graduation_year', studentColumns($conn), true);
+    $result = mysqli_query($conn, "SELECT s.student_id, s.student_number, s.archived_at"
+        . ($hasColumn ? ", s.graduation_year" : "")
+        . ", (SELECT COUNT(*) FROM documents d WHERE d.student_id = s.student_id AND d.is_archived = 1) AS archived_docs"
+        . " FROM students s WHERE s.status = 'graduated'");
+    if (!$result) {
+        return 0;
+    }
+
+    $archived = 0;
+    $returned = 0;
+    while ($row = mysqli_fetch_assoc($result)) {
+        $endYear = expectedGraduationYear($row);
+        if ($endYear === null) {
+            continue;
+        }
+        $studentId  = (int) $row['student_id'];
+        $isArchived = !empty($row['archived_at']);
+        $longAgo    = schoolYearHasEnded($endYear + GRADUATE_ARCHIVE_YEARS);
+
+        if ($longAgo && !$isArchived && $archived < $limit) {
+            $outcome = archiveStudentRecord($conn, $studentId, 'graduated', true);
+            if (empty($outcome['success'])) {
+                error_log('Auto-archive of graduate ' . $row['student_number'] . ' failed: ' . ($outcome['message'] ?? ''));
+                continue;
+            }
             $archived++;
-            $studentOpts = activityStudentOpts($conn, (int) $row['student_id']);
+            $studentOpts = activityStudentOpts($conn, $studentId);
             logActivity('student_auto_archived',
                 'Automatically archived ' . activityStudentLabel($studentOpts) . ' as GRADUATE',
                 $studentOpts + [
                     'system'      => true,
                     'target_type' => 'student',
-                    'target_id'   => $row['student_id'],
+                    'target_id'   => $studentId,
                     'details'     => [
-                        'new_status'        => 'graduated',
-                        'school_year_ended' => schoolYearLabel($endYear),
-                        'documents_moved'   => $outcome['documents'] ?? 0,
-                        'reason'            => 'Expected graduation school year has ended.',
+                        'new_status'      => 'graduated',
+                        'year_graduated'  => $endYear,
+                        'documents_moved' => $outcome['documents'] ?? 0,
+                        'reason'          => 'Graduated ' . GRADUATE_ARCHIVE_YEARS . ' or more years ago.',
                     ],
                 ]);
-        } elseif (empty($outcome['incomplete'])) {
-            error_log('Auto-archive of graduate ' . $row['student_number'] . ' failed: ' . ($outcome['message'] ?? ''));
+        } elseif (!$longAgo && ($isArchived || (int) $row['archived_docs'] > 0) && $returned < $limit) {
+            $outcome = returnGraduateToDirectory($conn, $studentId);
+            if (empty($outcome['success'])) {
+                error_log('Returning graduate ' . $row['student_number'] . ' to the directory failed: ' . ($outcome['message'] ?? ''));
+                continue;
+            }
+            $returned++;
+            $studentOpts = activityStudentOpts($conn, $studentId);
+            logActivity('student_restored',
+                'Moved ' . activityStudentLabel($studentOpts) . ' back to the Student Directory as GRADUATE',
+                $studentOpts + [
+                    'system'      => true,
+                    'target_type' => 'student',
+                    'target_id'   => $studentId,
+                    'details'     => [
+                        'year_graduated'  => $endYear,
+                        'documents_moved' => $outcome['documents'] ?? 0,
+                        'reason'          => 'Graduates stay in the Student Directory until ' . GRADUATE_ARCHIVE_YEARS . ' years after graduation.',
+                    ],
+                ]);
         }
     }
     return $archived;
@@ -485,6 +795,10 @@ function handleRestoreStudent($conn)
         echo json_encode(['success' => false, 'message' => 'Graduated records cannot be restored. The record stays in the Archive.']);
         return;
     }
+    if (!in_array($student['status'], RESTORABLE_STATUSES, true)) {
+        echo json_encode(['success' => false, 'message' => 'Transferred records cannot be restored. The record stays in the Archive.']);
+        return;
+    }
 
     if (!is_dir(DOCUMENTS_DIR) && !@mkdir(DOCUMENTS_DIR, 0755, true)) {
         echo json_encode(['success' => false, 'message' => 'Could not create the documents folder.']);
@@ -527,16 +841,18 @@ function handleRestoreStudent($conn)
             throw new Exception(mysqli_error($conn));
         }
 
-        if ($student['status'] === 'graduated' && in_array('graduation_year', studentColumns($conn), true)) {
+        if (in_array('graduation_year', studentColumns($conn), true)) {
             $levelStmt = mysqli_prepare($conn, "SELECT year_section FROM students WHERE student_id = ?");
             mysqli_stmt_bind_param($levelStmt, "i", $studentId);
             mysqli_stmt_execute($levelStmt);
             $restoredLevel = yearLevelOf(mysqli_fetch_assoc(mysqli_stmt_get_result($levelStmt))['year_section'] ?? '');
-            $newEndYear = $restoredLevel !== null ? graduationYearForLevel($restoredLevel) : currentSchoolYearEndYear();
-            $gradStmt = mysqli_prepare($conn, "UPDATE students SET graduation_year = ? WHERE student_id = ?");
-            mysqli_stmt_bind_param($gradStmt, "ii", $newEndYear, $studentId);
-            if (!mysqli_stmt_execute($gradStmt)) {
-                throw new Exception(mysqli_error($conn));
+            $newEndYear = $restoredLevel !== null ? graduationYearForLevel($restoredLevel) : null;
+            if ($newEndYear !== null) {
+                $gradStmt = mysqli_prepare($conn, "UPDATE students SET graduation_year = ? WHERE student_id = ?");
+                mysqli_stmt_bind_param($gradStmt, "ii", $newEndYear, $studentId);
+                if (!mysqli_stmt_execute($gradStmt)) {
+                    throw new Exception(mysqli_error($conn));
+                }
             }
         }
 
@@ -647,10 +963,13 @@ if ($action === 'restore_student') {
 
 $search            = isset($_GET['search']) ? trim(preg_replace('/\s+/u', ' ', preg_replace("/[^\\p{L}\\p{M}0-9\\s.,'\\-]/u", '', $_GET['search']))) : '';
 $courseFilter      = isset($_GET['course']) ? trim($_GET['course']) : '';
-$gradYearFilter    = preg_match('/^\d{4}$/', (string) ($_GET['grad_year'] ?? '')) ? (string) $_GET['grad_year'] : '';
 $hasGradColumn     = in_array('graduation_year', studentColumns($conn), true);
 
-$conditions = ["s.status IN ('graduated', 'inactive', 'onleave')"];
+archiveGraduatedStudents($conn);
+require_once __DIR__ . '/document_classifier.php';
+relocateArchivedFiles($conn);
+
+$conditions = [archivedStudentCondition($conn)];
 $params     = [];
 $types      = '';
 
@@ -684,10 +1003,6 @@ if ($courseFilter !== '') {
     }
 }
 
-if ($gradYearFilter !== '') {
-    $conditions[] = "s.status = 'graduated'";
-}
-
 $sql = "SELECT s.student_id, s.student_number, s.name, s.course, s.year_section, s.status," . ($hasGradColumn ? ' s.graduation_year,' : '') . "
                COUNT(d.document_id) AS doc_count,
                " . (studentHasArchivedAt($conn) ? "COALESCE(s.archived_at, MAX(d.archived_at))" : "MAX(d.archived_at)") . " AS archived_at
@@ -695,7 +1010,7 @@ $sql = "SELECT s.student_id, s.student_number, s.name, s.course, s.year_section,
         LEFT JOIN documents d ON d.student_id = s.student_id
         WHERE " . implode(' AND ', $conditions) . "
         GROUP BY s.student_id
-        ORDER BY archived_at IS NULL, archived_at DESC, s.name ASC";
+        ORDER BY " . (studentHasArchivedAt($conn) ? "COALESCE(s.archived_at, MAX(d.archived_at))" : "MAX(d.archived_at)") . " IS NULL, " . (studentHasArchivedAt($conn) ? "COALESCE(s.archived_at, MAX(d.archived_at))" : "MAX(d.archived_at)") . " DESC, s.name ASC";
 
 if (!empty($params)) {
     $stmt = mysqli_prepare($conn, $sql);
@@ -710,9 +1025,6 @@ foreach ($students as &$studentRow) {
     $studentRow['grad_year'] = $studentRow['status'] === 'graduated' ? expectedGraduationYear($studentRow) : null;
 }
 unset($studentRow);
-if ($gradYearFilter !== '') {
-    $students = array_values(array_filter($students, fn($studentRow) => (string) $studentRow['grad_year'] === $gradYearFilter));
-}
 
 $studentFiles = [];
 $studentIds = array_map('intval', array_column($students, 'student_id'));
@@ -734,7 +1046,7 @@ $courseOptions = [];
 foreach (officialCourseCatalog() as $catalogEntry) {
     $courseOptions[$catalogEntry['code']] = courseDisplayName($catalogEntry);
 }
-$extraCourseResult = mysqli_query($conn, "SELECT DISTINCT course FROM students WHERE status IN ('graduated', 'inactive', 'onleave') AND course IS NOT NULL AND course <> '' ORDER BY course ASC");
+$extraCourseResult = mysqli_query($conn, "SELECT DISTINCT course FROM students WHERE " . archivedStudentCondition($conn, '') . " AND course IS NOT NULL AND course <> '' ORDER BY course ASC");
 if ($extraCourseResult) {
     while ($row = mysqli_fetch_assoc($extraCourseResult)) {
         $usedCourse = resolveCourse($row['course']);
@@ -746,21 +1058,8 @@ if ($extraCourseResult) {
     }
 }
 
-$gradYearOptions = [];
-$gradYearResult = mysqli_query($conn,
-    "SELECT student_number" . ($hasGradColumn ? ", graduation_year" : "") . " FROM students WHERE status = 'graduated'");
-if ($gradYearResult) {
-    while ($row = mysqli_fetch_assoc($gradYearResult)) {
-        $year = expectedGraduationYear($row);
-        if ($year !== null) {
-            $gradYearOptions[(string) $year] = true;
-        }
-    }
-}
-$gradYearOptions = array_keys($gradYearOptions);
-rsort($gradYearOptions);
 
-$statusLabels = ['enrollee' => 'ENROLLEE', 'active' => 'ENROLLEE', 'graduated' => 'GRADUATE', 'inactive' => 'IN-ACTIVE', 'onleave' => 'ON-LEAVE'];
+$statusLabels = ['enrollee' => 'ENROLLEE', 'active' => 'ENROLLEE', 'graduated' => 'GRADUATE', 'withdrawn' => 'WITHDRAWN', 'inactive' => 'WITHDRAWN', 'onleave' => 'ON-LEAVE', 'transferred' => 'TRANSFERRED'];
 
 include 'navbar.php';
 ?>
@@ -812,23 +1111,10 @@ include 'navbar.php';
               <?php endforeach; ?>
           </select>
           <?php if ($courseFilter !== ''): ?>
-              <a href="archive.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'grad_year' => $gradYearFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear course"><i class="bi bi-x-circle"></i></a>
+              <a href="archive.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear course"><i class="bi bi-x-circle"></i></a>
           <?php endif; ?>
           </div>
 
-          <div class="filter-wrap filter-wrap-year-section">
-          <select class="filter filter-year-section<?= $gradYearFilter !== '' ? ' has-value' : '' ?>" id="archiveYearSectionFilter" name="grad_year">
-              <option value="">Year Graduated</option>
-              <?php foreach ($gradYearOptions as $gradYearOption): ?>
-                  <option value="<?= htmlspecialchars((string) $gradYearOption) ?>" <?= $gradYearFilter === (string) $gradYearOption ? 'selected' : '' ?>>
-                      <?= htmlspecialchars((string) $gradYearOption) ?>
-                  </option>
-              <?php endforeach; ?>
-          </select>
-          <?php if ($gradYearFilter !== ''): ?>
-              <a href="archive.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'course' => $courseFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear year graduated"><i class="bi bi-x-circle"></i></a>
-          <?php endif; ?>
-          </div>
         </form>
       </div>
 
@@ -841,7 +1127,7 @@ include 'navbar.php';
         <th>Student Number</th>
         <th>Name</th>
         <th>Course</th>
-        <th>Year Graduated</th>
+        <th>Last Year Level</th>
         <th>Status</th>
         <th>Date Archived</th>
         <th>Records</th>
@@ -857,9 +1143,9 @@ include 'navbar.php';
             <td><?= htmlspecialchars($row['student_number']) ?></td>
             <td><?= htmlspecialchars($row['name']) ?></td>
             <td><?= htmlspecialchars($row['course']) ?></td>
-            <td><?= $row['grad_year'] !== null ? (int) $row['grad_year'] : '-' ?></td>
+            <td><?= (($lastLevel = $row['grad_year'] !== null ? PROGRAM_LENGTH_YEARS : yearLevelOf($row['year_section'] ?? '')) !== null ? $lastLevel . ([1 => 'st', 2 => 'nd', 3 => 'rd'][$lastLevel] ?? 'th') . ' Year' : '-') ?></td>
             <td>
-                <span class="archive-status archive-status-<?= htmlspecialchars($row['status']) ?>">
+                <span class="archive-status archive-status-<?= htmlspecialchars($row['status'] === 'inactive' ? 'withdrawn' : $row['status']) ?>">
                     <?= htmlspecialchars($statusLabels[$row['status']] ?? strtoupper((string) $row['status'])) ?>
                 </span>
             </td>
@@ -904,7 +1190,11 @@ include 'navbar.php';
                             </ul>
                         </div>
                     <?php endif; ?>
-
+                    <?php if (in_array($row['status'], RESTORABLE_STATUSES, true)): ?>
+                        <button type="button" class="btn btn-sm archive-restore-btn" data-id="<?= (int) $row['student_id'] ?>" data-name="<?= htmlspecialchars($row['name']) ?>">
+                            <i class="bi bi-arrow-counterclockwise"></i> Restore
+                        </button>
+                    <?php endif; ?>
                 </div>
             </td>
         </tr>
@@ -922,9 +1212,14 @@ include 'navbar.php';
 <div class="modal fade" id="archiveRestoreModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Confirm Restore</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            <div class="modal-header confirm-header">
+                <div class="add-heading">
+                    <span class="add-heading-icon"><i class="bi bi-arrow-counterclockwise"></i></span>
+                    <div class="add-heading-text">
+                        <h5 class="modal-title confirm-title">Restore record</h5>
+                        <p class="add-subtitle">The record will be moved back to the Student Directory.</p>
+                    </div>
+                </div>
             </div>
             <div class="modal-body">
                 <p class="mb-0">
@@ -932,7 +1227,7 @@ include 'navbar.php';
                 </p>
                 <div id="archiveRestoreError" class="alert alert-danger small mt-3 mb-0 d-none"></div>
             </div>
-            <div class="modal-footer">
+            <div class="modal-footer confirm-footer">
                 <button type="button" class="btn btn-cancel" id="archiveRestoreCancelBtn" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-save archive-nowrap-btn" id="archiveRestoreConfirmBtn">Restore</button>
             </div>

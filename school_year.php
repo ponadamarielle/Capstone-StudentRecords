@@ -299,7 +299,7 @@ function buildSchoolYearReminderEmail($endYear, $daysLeft)
         . '</td></tr>'
         . '<tr><td style="padding:16px 32px 0 32px;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:24px;color:#3b3b3b;">'
         . '<p style="margin:0 0 12px 0;">Hi Super Admin,</p>'
-        . '<p style="margin:0;">' . $e($label) . ' is ending soon, but the last day of its Year-End Commencement has not been set in PUP eRecords. If it is not set, graduating students will be moved to Archive as GRADUATE after the default date.</p>'
+        . '<p style="margin:0;">' . $e($label) . ' is ending soon, but the last day of its Year-End Commencement has not been set in PUP eRecords. If it is not set, graduating students will be marked as GRADUATE after the default date.</p>'
         . '</td></tr>'
         . '<tr><td style="padding:22px 32px 0 32px;">'
         . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#fff8e6;border-radius:10px;"><tr><td style="padding:16px 18px;">'
@@ -327,7 +327,7 @@ function buildSchoolYearReminderEmail($endYear, $daysLeft)
 
     $text = "Hi Super Admin,\n\n"
         . $label . " is ending soon, but the last day of its Year-End Commencement has not been set in PUP eRecords.\n"
-        . 'If it is not set, graduating students will be moved to Archive as GRADUATE after the default date: ' . $default . ' (' . $when . ").\n\n"
+        . 'If it is not set, graduating students will be marked as GRADUATE after the default date: ' . $default . ' (' . $when . ").\n\n"
         . "Check the PUP University Calendar, then set the date on the Dashboard under School year end:\n" . $url . "\n\n"
         . "PUP eRecords\nPUP Biñan Campus\n\nThis is an automated message. Please do not reply.";
 

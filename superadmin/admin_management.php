@@ -295,7 +295,7 @@ unset($_SESSION['um_reset_flash']);
     <link href="../css/bootstrap-icons.css" rel="stylesheet">
     <link href="../css/font.css" rel="stylesheet">
     <link href="../css/navbar-superadmin.css" rel="stylesheet">
-    <link href="../css/admin_management.css" rel="stylesheet">
+    <link href="../css/admin_management.css?v=<?= @filemtime(__DIR__ . '/../css/admin_management.css') ?>" rel="stylesheet">
 </head>
 <body>
 
@@ -344,6 +344,19 @@ unset($_SESSION['um_reset_flash']);
     $where = ($filter === 'active') ? "AND status='Active'" : (($filter === 'inactive') ? "AND status='Inactive'" : "");
 
     $result = mysqli_query($conn, "SELECT name, email, status FROM accounts WHERE role='Admin' $where");
+    $deactivatedAt = [];
+    try {
+        $logResult = mysqli_query($conn, "SELECT created_at, details FROM activity_logs WHERE action = 'account_status_changed' ORDER BY created_at DESC, log_id DESC");
+        while ($logResult && ($logRow = mysqli_fetch_assoc($logResult))) {
+            $logDetails = json_decode((string) $logRow['details'], true);
+            $logEmail = strtolower((string) ($logDetails['email'] ?? ''));
+            if ($logEmail === '' || array_key_exists($logEmail, $deactivatedAt)) {
+                continue;
+            }
+            $deactivatedAt[$logEmail] = ($logDetails['changes']['Status']['to'] ?? '') === 'Inactive' ? $logRow['created_at'] : null;
+        }
+    } catch (Throwable $logError) {
+    }
     $shownAccounts = 0;
     while ($row = mysqli_fetch_assoc($result)) {
         $shownAccounts++;
@@ -357,6 +370,12 @@ unset($_SESSION['um_reset_flash']);
         $rowInitials = htmlspecialchars(strtoupper(mb_substr($rowNameParts[0] ?? '', 0, 1) . mb_substr($rowNameParts[count($rowNameParts) - 1] ?? '', 0, 1)), ENT_QUOTES);
         $avatarClass = 'um-avatar-' . (abs(crc32($row['email'])) % 4);
         $statusClass = $isActive ? 'um-status-active' : 'um-status-inactive';
+        $deactivatedNote = '';
+        $rowEmailKey = strtolower($row['email']);
+        if (!$isActive && !empty($deactivatedAt[$rowEmailKey])) {
+            $deactivatedTs = (new DateTime($deactivatedAt[$rowEmailKey], new DateTimeZone('Asia/Manila')))->getTimestamp();
+            $deactivatedNote = "<span class='um-status-note' data-deactivated-at='" . ($deactivatedTs * 1000) . "'>Deactivated on " . htmlspecialchars(date('M j, Y', $deactivatedTs), ENT_QUOTES) . "</span>";
+        }
 
         echo "<tr>
         <td>
@@ -369,7 +388,7 @@ unset($_SESSION['um_reset_flash']);
         <td class='um-role'>Admin</td>
         <td><span class='um-status {$statusClass}'>{$safeStatus}</span></td>
         <td>
-            <div class='um-actions'>
+            <div class='um-actions'>{$deactivatedNote}
             " . ($isActive ? "<button type='button' class='reset-btn'
                 data-bs-toggle='modal'
                 data-bs-target='#resetPasswordModal'
@@ -531,6 +550,6 @@ unset($_SESSION['um_reset_flash']);
     data-show-add-modal="<?= (isset($error) && isset($_POST['add_admin'])) ? 'true' : 'false' ?>"
     data-show-toggle-error="<?= isset($toggleError) ? 'true' : 'false' ?>">
 </div>
-<script src="../js/admin_management.js"></script>
+<script src="../js/admin_management.js?v=<?= @filemtime(__DIR__ . '/../js/admin_management.js') ?>"></script>
 </body>
 </html>

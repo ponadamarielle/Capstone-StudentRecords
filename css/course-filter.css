@@ -46,6 +46,13 @@
     cursor: pointer;
     outline: none;
 }
+.course-filter-menu-simple {
+    width: auto;
+    max-width: 320px;
+}
+.course-filter-text {
+    white-space: nowrap;
+}
 .course-filter-option:hover,
 .course-filter-option:focus {
     background: var(--neutral-subtle, #FAF9F7);
@@ -73,4 +80,7 @@
     .course-filter .course-filter-button {
         width: 100%;
     }
+}
+.course-filter-simple .course-filter-button {
+    min-width: 0;
 }
