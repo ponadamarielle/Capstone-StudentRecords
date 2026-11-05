@@ -402,9 +402,164 @@ document.addEventListener('DOMContentLoaded', function () {
         return code && requirementByCode[code] ? requirementByCode[code].label : 'Other / unclassified';
     }
 
+    function documentFileName(code, fallback) {
+        return code && requirementByCode[code] ? requirementByCode[code].label + '.pdf' : fallback;
+    }
+
+    const studentTypeSelect = document.getElementById('edit_student_type');
+    const admissionTrackRow = document.getElementById('editAdmissionTrackRow');
+    const typeDetailIds = ['edit_student_type', 'edit_shift_from_course', 'edit_previous_school', 'edit_previous_course', 'edit_previous_year_level'];
+
+    function currentStudentType() {
+        return studentTypeSelect && studentTypeSelect.value ? studentTypeSelect.value : 'regular';
+    }
+
     function currentTrack() {
+        const type = currentStudentType();
+        if (type !== 'regular') return type;
         return trackSelect && trackSelect.value ? trackSelect.value : 'shs_current';
     }
+
+    const editCourseRow = document.getElementById('editCourseRow');
+    const editCourseSelect = document.getElementById('edit_course');
+    const shiftToSelect = document.getElementById('edit_shift_to_course');
+
+    function showRow(row, show) {
+        if (!row) return;
+        if (show) row.style.removeProperty('display');
+        else row.style.setProperty('display', 'none', 'important');
+    }
+
+    function syncShiftTo() {
+        if (!shiftToSelect || !editCourseSelect) return;
+        if (editCourseSelect.value && !Array.from(shiftToSelect.options).some((o) => o.value === editCourseSelect.value)) {
+            shiftToSelect.add(new Option(editCourseSelect.value, editCourseSelect.value));
+        }
+        shiftToSelect.value = editCourseSelect.value;
+    }
+
+    const birthRows = ['edit_date_of_birth']
+        .map(function (id) { const el = document.getElementById(id); return el ? el.closest('.d-flex') : null; })
+        .filter(Boolean);
+    const genderRow = (function () { const el = document.getElementById('edit_sex'); return el ? el.closest('.d-flex') : null; })();
+    const birthHome = birthRows.length ? { parent: birthRows[0].parentNode, next: birthRows[birthRows.length - 1].nextSibling } : null;
+
+    const placeRow = (function () { const el = document.getElementById('edit_place_of_birth'); return el ? el.closest('.d-flex') : null; })();
+    const addressRow = (function () { const el = document.getElementById('edit_address'); return el ? el.closest('.d-flex') : null; })();
+    const placeHome = placeRow ? { parent: placeRow.parentNode, next: placeRow.nextSibling } : null;
+
+    function placeBirthRows(type) {
+        if (placeHome && addressRow) {
+            if (type === 'regular') placeHome.parent.insertBefore(placeRow, placeHome.next);
+            else addressRow.after(placeRow);
+        }
+        if (!birthHome || !genderRow) return;
+        if (type === 'regular') {
+            birthRows.forEach(function (row) { birthHome.parent.insertBefore(row, birthHome.next); });
+        } else {
+            let after = genderRow;
+            birthRows.forEach(function (row) { after.after(row); after = row; });
+        }
+    }
+
+    function applyStudentType() {
+        const type = currentStudentType();
+        showRow(admissionTrackRow, type === 'regular');
+        showRow(editCourseRow, type !== 'shiftee');
+        document.querySelectorAll('#addRecordsModal .student-type-fields').forEach((box) => {
+            box.hidden = box.dataset.studentType !== type;
+        });
+        if (type === 'shiftee') syncShiftTo();
+        placeBirthRows(type);
+    }
+    applyStudentType();
+
+    if (shiftToSelect && editCourseSelect) {
+        shiftToSelect.addEventListener('change', () => {
+            editCourseSelect.value = shiftToSelect.value;
+            editCourseSelect.classList.remove('is-invalid');
+            shiftToSelect.classList.remove('is-invalid');
+            editCourseSelect.dispatchEvent(new Event('input', { bubbles: true }));
+            editCourseSelect.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        editCourseSelect.addEventListener('change', syncShiftTo);
+    }
+
+    function studentTypeSummary() {
+        const type = currentStudentType();
+        const value = (id) => {
+            const el = document.getElementById(id);
+            return el && el.value ? el.value.trim() : '';
+        };
+        if (type === 'shiftee') {
+            const from = value('edit_shift_from_course');
+            const to = value('edit_course');
+            const code = (text) => text.split(' - ')[0];
+            return 'Shiftee' + (from ? ': ' + code(from) + ' → ' + (to ? code(to) : '-') : '');
+        }
+        if (type === 'transferee') {
+            const school = value('edit_previous_school');
+            const extra = [value('edit_previous_course'), value('edit_previous_year_level')].filter(Boolean);
+            return 'Transferee' + (school ? ' from ' + school : '') + (extra.length ? ' (' + extra.join(', ') + ')' : '');
+        }
+        return 'Regular';
+    }
+
+    function studentTypeError() {
+        const type = currentStudentType();
+        const from = document.getElementById('edit_shift_from_course');
+        const school = document.getElementById('edit_previous_school');
+        const course = document.getElementById('edit_course');
+        if (from) from.classList.remove('is-invalid');
+        if (school) school.classList.remove('is-invalid');
+        if (shiftToSelect) shiftToSelect.classList.remove('is-invalid');
+        if (type === 'shiftee') {
+            if (!from || !from.value) {
+                if (from) from.classList.add('is-invalid');
+                return { el: from, message: 'Please choose the course the student is shifting from.' };
+            }
+            if (!course || !course.value) {
+                if (shiftToSelect) shiftToSelect.classList.add('is-invalid');
+                return { el: shiftToSelect, message: 'Please choose the course the student is shifting to.' };
+            }
+            if (course && course.value && course.value === from.value) {
+                from.classList.add('is-invalid');
+                return { el: from, message: 'The course the student is shifting from must be different from the new course.' };
+            }
+        }
+        if (type === 'transferee' && (!school || !school.value.trim())) {
+            if (school) school.classList.add('is-invalid');
+            return { el: school, message: 'Please enter the previous school of the transferee.' };
+        }
+        const previousCourse = document.getElementById('edit_previous_course');
+        const previousLevel = document.getElementById('edit_previous_year_level');
+        if (previousCourse) previousCourse.classList.remove('is-invalid');
+        if (previousLevel) previousLevel.classList.remove('is-invalid');
+        if (type === 'transferee' && previousCourse && !previousCourse.value.trim()) {
+            previousCourse.classList.add('is-invalid');
+            return { el: previousCourse, message: 'Please enter the previous course of the transferee.' };
+        }
+        if (type === 'transferee' && previousLevel && !previousLevel.value) {
+            previousLevel.classList.add('is-invalid');
+            return { el: previousLevel, message: 'Please choose the last year level of the transferee.' };
+        }
+        return null;
+    }
+
+    const SCHOOL_NOT_ALLOWED = /[^\p{L}\p{M}0-9 .,'&()\-]/gu;
+    ['edit_previous_school', 'edit_previous_course'].forEach((id) => {
+        const field = document.getElementById(id);
+        if (!field) return;
+        const clean = () => {
+            const cleaned = field.value.replace(SCHOOL_NOT_ALLOWED, '');
+            if (cleaned === field.value) return;
+            const pos = Math.max(0, (field.selectionStart || 0) - (field.value.length - cleaned.length));
+            field.value = cleaned;
+            if (document.activeElement === field) field.setSelectionRange(pos, pos);
+        };
+        field.addEventListener('input', clean);
+        field.addEventListener('blur', clean);
+    });
 
     function isRequiredForTrack(r) {
         return Array.isArray(r.required_for) && r.required_for.indexOf(currentTrack()) !== -1;
@@ -456,6 +611,23 @@ document.addEventListener('DOMContentLoaded', function () {
         originalFieldValues[key] = input ? input.value : '';
     });
     const originalTrack = currentTrack();
+    const originalTypeValues = {};
+    typeDetailIds.forEach((id) => {
+        const el = document.getElementById(id);
+        originalTypeValues[id] = el ? el.value : '';
+    });
+
+    function typeDetailsChanged() {
+        const type = currentStudentType();
+        const relevant = ['edit_student_type'].concat(
+            type === 'shiftee' ? ['edit_shift_from_course'] : [],
+            type === 'transferee' ? ['edit_previous_school', 'edit_previous_course', 'edit_previous_year_level'] : []
+        );
+        return relevant.some((id) => {
+            const el = document.getElementById(id);
+            return el && el.value !== originalTypeValues[id];
+        });
+    }
 
     function hasUnsavedChanges() {
         const fieldsChanged = Object.keys(ocrFieldMap).some((key) => {
@@ -465,7 +637,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const photoChanged = !!(replacePhotoInput && replacePhotoInput.files && replacePhotoInput.files.length > 0)
             || !!(stagedPhotoPath && stagedPhotoPath.value);
 
-        return fieldsChanged || photoChanged || stagedDocs.length > 0 || pendingDeletedDocs.length > 0 || Object.keys(pendingReplacements).length > 0 || currentTrack() !== originalTrack;
+        return fieldsChanged || photoChanged || stagedDocs.length > 0 || pendingDeletedDocs.length > 0 || Object.keys(pendingReplacements).length > 0 || currentTrack() !== originalTrack || typeDetailsChanged();
     }
 
     let pendingUploads = 0;
@@ -512,6 +684,116 @@ document.addEventListener('DOMContentLoaded', function () {
             updateTrackChangeNote();
         });
     }
+
+    const typeChangeModalEl = document.getElementById('typeChangeModal');
+    if (studentTypeSelect && typeChangeModalEl) {
+        const typeLabels = { regular: 'Regular', shiftee: 'Shiftee', transferee: 'Transferee' };
+        const typeConfirmBtn = document.getElementById('typeChangeConfirmBtn');
+        const typeCancelBtn = typeChangeModalEl.querySelector('.btn-cancel');
+        const typeModal = bootstrap.Modal.getOrCreateInstance(typeChangeModalEl);
+        const editModalContent = document.querySelector('#addRecordsModal .modal-content');
+        let typeBefore = studentTypeSelect.value;
+        let typePending = null;
+        let typeConfirmed = false;
+
+        const setStyles = (el, styles) => { if (el) Object.assign(el.style, styles); };
+        typeChangeModalEl.style.zIndex = '1065';
+        setStyles(typeChangeModalEl.querySelector('.modal-dialog'), { maxWidth: '520px' });
+        setStyles(typeChangeModalEl.querySelector('.modal-content'), {
+            border: 'none', borderRadius: '16px', boxShadow: '0 24px 64px rgba(28, 25, 23, 0.24)',
+            fontFamily: 'var(--font-sans, "Inter")', overflow: 'hidden',
+        });
+        setStyles(typeChangeModalEl.querySelector('.confirm-header'), { padding: '20px 24px', borderBottom: '1px solid var(--neutral-border, #E9E5E0)' });
+        setStyles(document.getElementById('typeChangeTitle'), {
+            margin: '0', fontFamily: 'var(--font-sans, "Inter")', fontSize: '18px', lineHeight: '26px',
+            fontWeight: '700', letterSpacing: '-0.2px', color: 'var(--text-primary, #1C1917)',
+        });
+        setStyles(typeChangeModalEl.querySelector('.modal-body'), { padding: '20px 24px', fontSize: '15px', lineHeight: '24px', color: 'var(--text-primary, #1C1917)' });
+        setStyles(typeChangeModalEl.querySelector('.confirm-footer'), {
+            gap: '10px', padding: '16px 24px', borderTop: '1px solid var(--neutral-border, #E9E5E0)',
+            background: 'var(--neutral-subtle, #FAF9F7)',
+        });
+        [typeCancelBtn, typeConfirmBtn].forEach((btn) => setStyles(btn, {
+            width: 'auto', minWidth: '120px', height: '40px', padding: '0 16px', margin: '0', borderRadius: '10px',
+            fontFamily: 'var(--font-sans, "Inter")', fontSize: '14px', fontWeight: '600', whiteSpace: 'nowrap',
+        }));
+        setStyles(typeCancelBtn, {
+            backgroundColor: 'var(--neutral-surface, #ffffff)', color: 'var(--text-primary, #1C1917)',
+            border: '1px solid var(--neutral-border-strong, #D6D0C9)',
+        });
+        setStyles(typeConfirmBtn, {
+            backgroundColor: 'var(--brand-maroon, #7B1113)', color: '#ffffff', border: '1px solid var(--brand-maroon, #7B1113)',
+        });
+
+        studentTypeSelect.addEventListener('focus', () => {
+            if (!typePending) typeBefore = studentTypeSelect.value;
+        });
+        studentTypeSelect.addEventListener('change', (e) => {
+            if (typeConfirmed) {
+                typeConfirmed = false;
+                return;
+            }
+            const next = studentTypeSelect.value;
+            if (next === typeBefore) return;
+            e.stopImmediatePropagation();
+            typePending = next;
+            studentTypeSelect.value = typeBefore;
+            document.getElementById('typeChangeTitle').textContent = 'Change student type to ' + (typeLabels[next] || next) + '?';
+            document.getElementById('typeChangeNote').textContent = 'From ' + (typeLabels[typeBefore] || typeBefore) + ' to ' + (typeLabels[next] || next);
+            typeModal.show();
+        }, true);
+
+        typeConfirmBtn.addEventListener('click', () => {
+            const next = typePending;
+            typePending = null;
+            if (!next) {
+                typeModal.hide();
+                return;
+            }
+            const fromSelect = document.getElementById('edit_shift_from_course');
+            if (next === 'shiftee' && fromSelect && editCourseSelect && !fromSelect.value && editCourseSelect.value) {
+                const current = editCourseSelect.value;
+                if (!Array.from(fromSelect.options).some((o) => o.value === current)) {
+                    fromSelect.add(new Option(current, current));
+                }
+                fromSelect.value = current;
+                editCourseSelect.value = '';
+                fromSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            } else if (typeBefore === 'shiftee' && next !== 'shiftee' && fromSelect && editCourseSelect) {
+                if (!editCourseSelect.value && fromSelect.value) editCourseSelect.value = fromSelect.value;
+                fromSelect.value = originalTypeValues['edit_shift_from_course'] || '';
+            }
+            typeBefore = next;
+            studentTypeSelect.value = next;
+            typeConfirmed = true;
+            studentTypeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            if (editCourseSelect) editCourseSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            typeModal.hide();
+        });
+
+        typeChangeModalEl.addEventListener('show.bs.modal', () => {
+            if (editModalContent) editModalContent.style.filter = 'brightness(0.6)';
+        });
+        typeChangeModalEl.addEventListener('hidden.bs.modal', () => {
+            if (editModalContent) editModalContent.style.filter = '';
+            typePending = null;
+            studentTypeSelect.focus();
+        });
+    }
+
+    typeDetailIds.forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => {
+            if (id === 'edit_student_type') {
+                applyStudentType();
+                renderRequirementChecklist();
+                updateTrackChangeNote();
+            }
+            el.classList.remove('is-invalid');
+            updateSaveButtonState();
+        });
+    });
 
     function forceCloseModal(modalEl) {
         if (!modalEl) return;
@@ -736,7 +1018,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function previewFromRow(row) {
         if (!row || !row.dataset.filePath) return;
-        const nameEl = row.querySelector('.document-name');
+        const nameEl = row.querySelector('.document-name') || row.querySelector('.req-label') || row.querySelector('.document-row-title');
         openDocumentPreview(row.dataset.filePath, nameEl ? nameEl.textContent.trim() : '');
     }
 
@@ -893,6 +1175,8 @@ document.addEventListener('DOMContentLoaded', function () {
             if (!doc) return;
             const title = row.querySelector('.document-row-title');
             if (title) title.textContent = requirementLabel(doc.requirement_code);
+            const nameEl = row.querySelector('.document-name');
+            if (nameEl) nameEl.textContent = documentFileName(doc.requirement_code, doc.file_name);
             const select = row.querySelector('.document-type-select');
             if (select) {
                 let changeLink = row.querySelector('.stored-change-type');
@@ -900,7 +1184,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     changeLink = document.createElement('button');
                     changeLink.type = 'button';
                     changeLink.className = 'btn btn-link change-type-link stored-change-type';
-                    changeLink.textContent = 'Change type';
+                    changeLink.textContent = 'Wrong document?';
                     select.insertAdjacentElement('afterend', changeLink);
                 }
                 if (doc.needs_manual_type) {
@@ -970,10 +1254,9 @@ document.addEventListener('DOMContentLoaded', function () {
             row.innerHTML = `
                 <div class="document-row-body flex-grow-1">
                     <div class="document-row-title ${doc.requirement_code ? '' : 'text-danger'}">${escapeHtml(doc.requirement_code ? requirementLabel(doc.requirement_code) : 'Unclassified - choose a type below')}</div>
-                    <span class="document-name d-block text-muted small">${escapeHtml(doc.file_name)}</span>
                     ${doc.needs_manual_type
                         ? '<select class="form-select form-select-sm document-type-select" aria-label="Document type"></select>'
-                        : '<button type="button" class="btn btn-link change-type-link staged-change-type">Change type</button>'}
+                        : '<button type="button" class="btn btn-link change-type-link staged-change-type">Wrong document?</button>'}
                 </div>
                 <div class="document-actions">
                     <button type="button" class="btn btn-sm btn-outline-secondary staged-view-btn" title="Preview file"><i class="bi bi-eye"></i></button>
@@ -1015,7 +1298,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 setStatus('', '');
                 refreshDocumentsUi();
             } else if (e.target.closest('.staged-view-btn')) {
-                openDocumentPreview(stagedDocs[index].file_path, stagedDocs[index].file_name);
+                openDocumentPreview(stagedDocs[index].file_path, documentFileName(stagedDocs[index].requirement_code, stagedDocs[index].file_name));
             } else if (e.target.closest('.staged-change-type')) {
                 stagedDocs[index].needs_manual_type = true;
                 refreshDocumentsUi();
@@ -1050,7 +1333,14 @@ document.addEventListener('DOMContentLoaded', function () {
             input.value = originalFieldValues[key];
             input.classList.remove('ocr-filled', 'is-invalid');
         });
-        if (trackSelect) trackSelect.value = originalTrack;
+        typeDetailIds.forEach((id) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.value = originalTypeValues[id];
+            el.classList.remove('is-invalid');
+        });
+        if (trackSelect && studentTypeSelect && studentTypeSelect.value === 'regular') trackSelect.value = originalTrack;
+        applyStudentType();
         updateTrackChangeNote();
 
         if (replacePhotoInput) replacePhotoInput.value = '';
@@ -1396,6 +1686,16 @@ document.addEventListener('DOMContentLoaded', function () {
         if (addDocumentFeedback) addDocumentFeedback.textContent = '';
         showEditInfoFeedback('');
 
+        const typeProblemFirst = currentStudentType() === 'shiftee' ? studentTypeError() : null;
+        if (typeProblemFirst) {
+            if (addDocumentFeedback) addDocumentFeedback.textContent = typeProblemFirst.message;
+            showEditInfoFeedback(typeProblemFirst.message);
+            const infoTabFirst = document.getElementById('edit-info-tab');
+            if (infoTabFirst) bootstrap.Tab.getOrCreateInstance(infoTabFirst).show();
+            if (typeProblemFirst.el) typeProblemFirst.el.focus();
+            return;
+        }
+
         const { values, missing } = collectAndValidateRequiredFields();
 
         if (missing.length > 0) {
@@ -1407,6 +1707,16 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         clearRequiredFieldErrors();
+
+        const typeProblem = studentTypeError();
+        if (typeProblem) {
+            if (addDocumentFeedback) addDocumentFeedback.textContent = typeProblem.message;
+            showEditInfoFeedback(typeProblem.message);
+            const infoTab = document.getElementById('edit-info-tab');
+            if (infoTab) bootstrap.Tab.getOrCreateInstance(infoTab).show();
+            if (typeProblem.el) typeProblem.el.focus();
+            return;
+        }
 
         if (!validateEditNumberFormat()) {
             if (addDocumentFeedback) addDocumentFeedback.textContent = EDIT_NUMBER_MESSAGE;
@@ -1457,7 +1767,7 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById('confirmSummarySection').textContent = summary.yearSection || '-';
         document.getElementById('confirmSummaryDocs').textContent = summary.docCount + ' document(s)';
         const trackEl = document.getElementById('confirmSummaryTrack');
-        if (trackEl) trackEl.textContent = ADMISSION_TRACKS[currentTrack()] || '-';
+        if (trackEl) trackEl.textContent = currentStudentType() === 'regular' ? (ADMISSION_TRACKS[currentTrack()] || '-') : studentTypeSummary();
         const missingEl = document.getElementById('confirmSummaryMissing');
         if (missingEl) {
             const missingDocs = missingRequiredLabels();
@@ -1691,7 +2001,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const row = modalDocumentList && modalDocumentList.querySelector(`.document-row[data-document-id="${documentId}"]`);
         if (!row) return;
         const nameEl = row.querySelector('.document-name');
-        if (nameEl) nameEl.textContent = fileName;
+        if (nameEl) nameEl.textContent = documentFileName(row.dataset.requirementCode, fileName);
         const downloadLink = row.querySelector('a[title="Download file"]');
         if (downloadLink) downloadLink.href = filePath;
         row.dataset.filePath = filePath;
@@ -1742,7 +2052,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const pending = pendingDeletedDocs.find((x) => x.doc.document_id === id);
             if (pending && pending.row) {
                 const nameEl = pending.row.querySelector('.document-name');
-                if (nameEl) nameEl.textContent = p.original.file_name;
+                if (nameEl) nameEl.textContent = documentFileName(pending.row.dataset.requirementCode, p.original.file_name);
                 pending.row.dataset.filePath = p.original.file_path;
             }
         });
@@ -1857,7 +2167,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const deleteBtn = e.target.closest('.document-delete-btn');
             if (deleteBtn) {
                 const row = deleteBtn.closest('.document-row');
-                const nameEl = row.querySelector('.document-name');
+                const nameEl = row.querySelector('.document-name') || row.querySelector('.document-row-title');
                 showConfirmDeleteModal(
                     row.dataset.documentId,
                     nameEl ? nameEl.textContent.trim() : '',

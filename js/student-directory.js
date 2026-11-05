@@ -317,10 +317,22 @@ document.querySelectorAll('.view-btn').forEach((btn) => {
         });
     }
 })();
+const typeFilterSelect = document.getElementById('typeFilterSelect');
+if (typeFilterSelect) {
+    typeFilterSelect.addEventListener('change', () => typeFilterSelect.form.submit());
+}
 const statusFilterSelect = document.getElementById('statusFilterSelect');
 if (statusFilterSelect) {
     statusFilterSelect.addEventListener('change', () => statusFilterSelect.form.submit());
 }
+['courseFilterSelect', 'yearSectionFilterSelect'].forEach((id) => {
+    const select = document.getElementById(id);
+    if (!select || !select.form) return;
+    select.addEventListener('change', (e) => {
+        e.stopImmediatePropagation();
+        select.form.submit();
+    }, true);
+});
 
 document.querySelectorAll('.status-graduate').forEach((cell) => {
     cell.style.color = '#1D5FB8';

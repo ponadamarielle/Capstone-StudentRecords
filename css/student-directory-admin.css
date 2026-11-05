@@ -86,7 +86,7 @@
     margin-bottom: 0;
 }
 .filter-year-section {
-    flex: 0 0 160px;
+    flex: 0 0 140px;
 }
 .searchbar {
     width: 100%;
@@ -142,12 +142,21 @@
     min-width: 0;
 }
 .add-filter {
-    display: flex;
-    flex-direction: row-reverse;
-    align-items: center;
-    gap: 10px;
-    flex: 0 1 auto;
-    min-width: 0;
+    display: contents;
+}
+.textNButton-row > .search-group {
+    order: 0;
+}
+.add-filter .btn-add {
+    order: 1;
+}
+.add-filter .filter-row {
+    order: 2;
+    margin-left: auto;
+    justify-content: flex-end;
+}
+.add-filter .btn-add ~ .filter-row {
+    flex: 1 0 100%;
 }
 .student-table {
     width: 100%;
@@ -242,6 +251,10 @@
     line-height: 20px;
     font-weight: 500;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+a.view-btn {
+    text-decoration: none;
+    white-space: nowrap;
 }
 .view-btn:hover {
     background-color: var(--brand-maroon-50, #FBF1F1);
@@ -1302,7 +1315,11 @@ body.has-document-preview #addRecordsModal.modal {
     display: inline-flex;
 }
 .filter-wrap-year-section {
-    flex: 0 0 160px;
+    flex: 0 0 140px;
+}
+.filter-status,
+.filter-type {
+    width: 125px;
 }
 .filter-wrap-year-section .filter-year-section {
     width: 100%;

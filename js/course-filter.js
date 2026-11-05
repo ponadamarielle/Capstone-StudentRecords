@@ -7,6 +7,7 @@ document.addEventListener('DOMContentLoaded', function () {
     var simpleMenus = {
         yearSectionFilterSelect: 'All year & sections',
         statusFilterSelect: 'All status',
+        typeFilterSelect: 'All types',
         archiveYearSectionFilter: 'All years'
     };
     Object.keys(simpleMenus).forEach(function (id) {

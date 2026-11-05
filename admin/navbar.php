@@ -23,8 +23,9 @@
         'view_student.php'      => ['Student Profile', 'View and update the student record and documents.'],
     ];
     [$pageTitle, $pageSubtitle] = $pageTitles[$currentPage] ?? ['PUP eRecords', ''];
+    $viewingArchived = $currentPage === 'view_student.php' && !empty($isArchivedView);
     if ($currentPage === 'view_student.php' && !empty($student['name'])) {
-        $pageSubtitle = 'Student Directory / ' . $student['name'];
+        $pageSubtitle = ($viewingArchived ? 'Archived Records / ' : 'Student Directory / ') . $student['name'];
     }
     $nameParts = preg_split('/[\s,]+/', trim((string) $userName), -1, PREG_SPLIT_NO_EMPTY);
     $userInitials = strtoupper(substr($nameParts[0] ?? '', 0, 1) . substr($nameParts[count($nameParts) - 1] ?? '', 0, 1));
@@ -48,10 +49,10 @@
 
         <p class="admin-menu-label">Main menu</p>
         <nav class="admin-menu">
-            <a class="admin-menu-item <?php echo ($currentPage == 'student_directory.php' || $currentPage == 'view_student.php') ? 'active' : ''; ?>" href="student_directory.php" title="Student Directory">
+            <a class="admin-menu-item <?php echo ($currentPage == 'student_directory.php' || ($currentPage == 'view_student.php' && !$viewingArchived)) ? 'active' : ''; ?>" href="student_directory.php" title="Student Directory">
                 <i class="bi bi-mortarboard"></i><span>Student Directory</span>
             </a>
-            <a class="admin-menu-item <?php echo ($currentPage == 'archive.php') ? 'active' : ''; ?>" href="archive.php" title="Archived Records">
+            <a class="admin-menu-item <?php echo ($currentPage == 'archive.php' || $viewingArchived) ? 'active' : ''; ?>" href="archive.php" title="Archived Records">
                 <i class="bi bi-archive"></i><span>Archived Records</span>
             </a>
         </nav>

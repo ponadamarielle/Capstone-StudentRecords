@@ -6,6 +6,9 @@ require_once __DIR__ . '/../school_year.php';
 if (!defined('DOCUMENTS_DIR')) {
     define('DOCUMENTS_DIR', '../uploads/documents/');
 }
+if (!defined('PHOTOS_DIR')) {
+    define('PHOTOS_DIR', '../uploads/photos/');
+}
 if (!defined('ARCHIVE_DIR')) {
     define('ARCHIVE_DIR', '../uploads/archive/');
 }
@@ -85,6 +88,128 @@ function isStudentArchived(array $student)
         return false;
     }
     return !array_key_exists('archived_at', $student) || !empty($student['archived_at']);
+}
+
+const STUDENT_TYPES = ['regular' => 'Regular', 'shiftee' => 'Shiftee', 'transferee' => 'Transferee'];
+const PREVIOUS_YEAR_LEVELS = ['1st Year', '2nd Year', '3rd Year', '4th Year', '5th Year'];
+
+function ensureStudentTypeColumns($conn)
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+    try {
+        $columns = studentColumns($conn);
+        $added = false;
+        foreach ([
+            'shift_from_course'   => "VARCHAR(255) NULL DEFAULT NULL",
+            'previous_school'     => "VARCHAR(255) NULL DEFAULT NULL",
+            'previous_course'     => "VARCHAR(255) NULL DEFAULT NULL",
+            'previous_year_level' => "VARCHAR(20) NULL DEFAULT NULL",
+        ] as $column => $definition) {
+            if (!in_array($column, $columns, true)) {
+                mysqli_query($conn, "ALTER TABLE students ADD COLUMN $column $definition");
+                $added = true;
+            }
+        }
+        $result = mysqli_query($conn, "SHOW COLUMNS FROM students LIKE 'admission_track'");
+        $column = $result ? mysqli_fetch_assoc($result) : null;
+        if ($column && strpos(strtolower((string) $column['Type']), 'enum(') === 0) {
+            mysqli_query($conn, "ALTER TABLE students MODIFY admission_track VARCHAR(20) NULL DEFAULT 'shs_current'");
+        }
+        if ($added) {
+            studentColumns($conn, true);
+        }
+    } catch (Throwable $e) {
+        error_log('Adding student type columns failed: ' . $e->getMessage());
+    }
+}
+
+function studentTypeOf($track)
+{
+    return in_array($track, ['shiftee', 'transferee'], true) ? $track : 'regular';
+}
+
+function regularAdmissionTracks()
+{
+    return array_diff_key(getAdmissionTracks(), ['shiftee' => true, 'transferee' => true]);
+}
+
+function cleanSchoolText($value)
+{
+    $value = preg_replace("/[^\\p{L}\\p{M}0-9 .,'&()\\-]/u", '', (string) $value);
+    return mb_substr(trim(preg_replace('/\\s+/u', ' ', $value)), 0, 255);
+}
+
+function readStudentTypeInput(array $post, $course)
+{
+    $type = $post['student_type'] ?? 'regular';
+    $type = isset(STUDENT_TYPES[$type]) ? $type : 'regular';
+    $details = [
+        'track'               => $type === 'regular' ? normalizeAdmissionTrack($post['admission_track'] ?? '') : $type,
+        'shift_from_course'   => null,
+        'previous_school'     => null,
+        'previous_course'     => null,
+        'previous_year_level' => null,
+        'error'               => null,
+    ];
+    if ($type === 'shiftee') {
+        $from = normalizeCourseName($post['shift_from_course'] ?? '', false);
+        if ($from === '') {
+            $details['error'] = 'Please choose the course the student is shifting from.';
+        } elseif ($course !== '' && $from === $course) {
+            $details['error'] = 'The course the student is shifting from must be different from the new course.';
+        }
+        $details['shift_from_course'] = $from !== '' ? $from : null;
+    } elseif ($type === 'transferee') {
+        $school = cleanSchoolText($post['previous_school'] ?? '');
+        if ($school === '') {
+            $details['error'] = 'Please enter the previous school of the transferee.';
+        }
+        $previousCourse = cleanSchoolText($post['previous_course'] ?? '');
+        $level = in_array($post['previous_year_level'] ?? '', PREVIOUS_YEAR_LEVELS, true) ? $post['previous_year_level'] : null;
+        if ($details['error'] === null && $previousCourse === '') {
+            $details['error'] = 'Please enter the previous course of the transferee.';
+        } elseif ($details['error'] === null && $level === null) {
+            $details['error'] = 'Please choose the last year level of the transferee.';
+        }
+        $details['previous_school']     = $school !== '' ? $school : null;
+        $details['previous_course']     = $previousCourse !== '' ? $previousCourse : null;
+        $details['previous_year_level'] = $level;
+    }
+    return $details;
+}
+
+function saveStudentTypeDetails($conn, $studentId, array $details)
+{
+    ensureStudentTypeColumns($conn);
+    $studentId = (int) $studentId;
+    $stmt = mysqli_prepare($conn, "UPDATE students SET shift_from_course = ?, previous_school = ?, previous_course = ?, previous_year_level = ? WHERE student_id = ?");
+    mysqli_stmt_bind_param($stmt, "ssssi",
+        $details['shift_from_course'], $details['previous_school'], $details['previous_course'], $details['previous_year_level'], $studentId);
+    return mysqli_stmt_execute($stmt);
+}
+
+function studentTypeSummary(array $student)
+{
+    $type = studentTypeOf($student['admission_track'] ?? '');
+    if ($type === 'shiftee') {
+        $from = trim((string) ($student['shift_from_course'] ?? ''));
+        $to   = trim((string) ($student['course'] ?? ''));
+        $fromEntry = $from !== '' ? resolveCourse($from) : null;
+        $toEntry   = $to !== '' ? resolveCourse($to) : null;
+        $fromLabel = $fromEntry ? $fromEntry['code'] : $from;
+        $toLabel   = $toEntry ? $toEntry['code'] : $to;
+        return 'Shiftee' . ($fromLabel !== '' ? ': ' . $fromLabel . ' → ' . ($toLabel !== '' ? $toLabel : '-') : '');
+    }
+    if ($type === 'transferee') {
+        $school = trim((string) ($student['previous_school'] ?? ''));
+        $extra  = array_filter([trim((string) ($student['previous_course'] ?? '')), trim((string) ($student['previous_year_level'] ?? ''))], 'strlen');
+        return 'Transferee' . ($school !== '' ? ' from ' . $school : '') . ($extra ? ' (' . implode(', ', $extra) . ')' : '');
+    }
+    return 'Regular';
 }
 
 function syncGraduateStatus($conn, $studentId)
@@ -272,6 +397,222 @@ function archiveFileName(array $doc)
     return ($doc['file_name'] ?? '') !== '' ? $doc['file_name'] : basename((string) ($doc['file_path'] ?? ''));
 }
 
+function removeEmptyDirsUnder($dir, $baseDir)
+{
+    $base = realpath($baseDir);
+    $real = realpath($dir);
+    while ($real !== false && $base !== false && $real !== $base
+        && strpos($real, $base . DIRECTORY_SEPARATOR) === 0) {
+        $entries = @scandir($real);
+        if ($entries === false || count($entries) > 2 || !@rmdir($real)) {
+            break;
+        }
+        $real = dirname($real);
+    }
+}
+
+function documentFolderFor(array $student, $studentId)
+{
+    $studentLabel = trim(($student['student_number'] ?? '') . ' - ' . ($student['name'] ?? ''), " -");
+    return DOCUMENTS_DIR
+        . (($student['status'] ?? '') === 'graduated' ? 'GRADUATE' : 'ENROLLEE') . '/'
+        . courseFolderName($student['course'] ?? '') . '/'
+        . safeName($studentLabel, 'Student ' . (int) $studentId) . '/';
+}
+
+function removeUnusedDocumentFiles($conn, $olderThan = 86400)
+{
+    $root = realpath(DOCUMENTS_DIR);
+    if ($root === false) {
+        return 0;
+    }
+    $used = [];
+    $usedNames = [];
+    $result = mysqli_query($conn, "SELECT file_path FROM documents WHERE file_path IS NOT NULL AND file_path <> ''");
+    if (!$result) {
+        return 0;
+    }
+    while ($row = mysqli_fetch_assoc($result)) {
+        $real = realpath($row['file_path']);
+        if ($real !== false) {
+            $used[strtolower($real)] = true;
+        }
+        $usedNames[strtolower(basename(str_replace('\\', '/', $row['file_path'])))] = true;
+    }
+    $removed = 0;
+    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
+    foreach ($files as $file) {
+        if (!$file->isFile() || $file->getMTime() > time() - $olderThan) {
+            continue;
+        }
+        $real = $file->getRealPath();
+        if ($real === false || isset($used[strtolower($real)]) || isset($usedNames[strtolower($file->getFilename())])) {
+            continue;
+        }
+        if (@unlink($real)) {
+            $removed++;
+        }
+    }
+    return $removed;
+}
+
+function organizeStudentPhotos($conn, $studentId = null)
+{
+    $where = "s.photo_path IS NOT NULL AND s.photo_path <> '' AND " . directoryStudentCondition($conn, 's');
+    if ($studentId !== null) {
+        $where .= " AND s.student_id = " . (int) $studentId;
+    }
+    $result = mysqli_query($conn, "SELECT s.student_id, s.student_number, s.name, s.course, s.status, s.photo_path FROM students s WHERE $where ORDER BY s.student_id");
+    if (!$result) {
+        return 0;
+    }
+    $moved    = 0;
+    $reserved = [];
+    $oldDirs  = [];
+    $update   = mysqli_prepare($conn, "UPDATE students SET photo_path = ? WHERE student_id = ?");
+    while ($student = mysqli_fetch_assoc($result)) {
+        $path = (string) $student['photo_path'];
+        if (!is_file($path) || !isPathInside($path, PHOTOS_DIR)) {
+            continue;
+        }
+        $folder = PHOTOS_DIR
+            . (($student['status'] ?? '') === 'graduated' ? 'GRADUATE' : 'ENROLLEE') . '/'
+            . courseFolderName($student['course'] ?? '') . '/';
+        $label = trim(($student['student_number'] ?? '') . ' - ' . ($student['name'] ?? ''), " -");
+        $ext   = strtolower(pathinfo($path, PATHINFO_EXTENSION)) ?: 'png';
+        $name  = safeName($label, 'Student ' . (int) $student['student_id']) . '.' . $ext;
+        if ($path === $folder . $name) {
+            continue;
+        }
+        if (!is_dir($folder) && !@mkdir($folder, 0755, true)) {
+            continue;
+        }
+        $target = uniqueTarget($folder, $name, $reserved);
+        if (!@rename($path, $target)) {
+            continue;
+        }
+        $id = (int) $student['student_id'];
+        mysqli_stmt_bind_param($update, "si", $target, $id);
+        if (!mysqli_stmt_execute($update)) {
+            @rename($target, $path);
+            continue;
+        }
+        $oldDirs[dirname($path)] = true;
+        $moved++;
+    }
+    foreach (array_keys($oldDirs) as $dir) {
+        removeEmptyDirsUnder($dir, PHOTOS_DIR);
+    }
+    if ($studentId === null) {
+        $root = realpath(PHOTOS_DIR);
+        $used = [];
+        $usedNames = [];
+        $all = mysqli_query($conn, "SELECT photo_path FROM students WHERE photo_path IS NOT NULL AND photo_path <> ''");
+        if ($root !== false && $all) {
+            while ($row = mysqli_fetch_assoc($all)) {
+                $real = realpath($row['photo_path']);
+                if ($real !== false) {
+                    $used[strtolower($real)] = true;
+                }
+                $usedNames[strtolower(basename(str_replace('\\', '/', $row['photo_path'])))] = true;
+            }
+            $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
+            foreach ($files as $file) {
+                if (!$file->isFile() || $file->getMTime() > time() - 86400) {
+                    continue;
+                }
+                $real = $file->getRealPath();
+                if ($real !== false && !isset($used[strtolower($real)]) && !isset($usedNames[strtolower($file->getFilename())])) {
+                    @unlink($real);
+                }
+            }
+            foreach (['ENROLLEE', 'GRADUATE'] as $group) {
+                if (!is_dir(PHOTOS_DIR . $group)) {
+                    continue;
+                }
+                $dirs = new RecursiveIteratorIterator(
+                    new RecursiveDirectoryIterator(PHOTOS_DIR . $group, FilesystemIterator::SKIP_DOTS),
+                    RecursiveIteratorIterator::CHILD_FIRST
+                );
+                foreach ($dirs as $entry) {
+                    if ($entry->isDir()) {
+                        @rmdir($entry->getPathname());
+                    }
+                }
+            }
+        }
+    }
+    return $moved;
+}
+
+function organizeStudentDocuments($conn, $studentId = null)
+{
+    organizeStudentPhotos($conn, $studentId);
+    if (!function_exists('requirementLabel')) {
+        require_once __DIR__ . '/document_classifier.php';
+    }
+    $where = "d.is_archived = 0 AND " . directoryStudentCondition($conn, 's');
+    if ($studentId !== null) {
+        $where .= " AND s.student_id = " . (int) $studentId;
+    }
+    $result = mysqli_query($conn,
+        "SELECT d.document_id, d.file_name, d.file_path, d.requirement_code, s.student_id, s.student_number, s.name, s.course, s.status
+         FROM documents d JOIN students s ON s.student_id = d.student_id
+         WHERE $where
+         ORDER BY s.student_id, d.document_id");
+    if (!$result) {
+        return 0;
+    }
+    $moved    = 0;
+    $reserved = [];
+    $oldDirs  = [];
+    $update   = mysqli_prepare($conn, "UPDATE documents SET file_path = ? WHERE document_id = ?");
+    while ($doc = mysqli_fetch_assoc($result)) {
+        $path   = (string) $doc['file_path'];
+        $folder = documentFolderFor($doc, (int) $doc['student_id']);
+        if (dirname($path) . '/' === $folder || !is_file($path) || !isPathInside($path, DOCUMENTS_DIR)) {
+            continue;
+        }
+        if (!is_dir($folder) && !@mkdir($folder, 0755, true)) {
+            continue;
+        }
+        $target = uniqueTarget($folder, archiveFileName($doc), $reserved);
+        if (!@rename($path, $target)) {
+            continue;
+        }
+        $documentId = (int) $doc['document_id'];
+        mysqli_stmt_bind_param($update, "si", $target, $documentId);
+        if (!mysqli_stmt_execute($update)) {
+            @rename($target, $path);
+            continue;
+        }
+        $oldDirs[dirname($path)] = true;
+        $moved++;
+    }
+    foreach (array_keys($oldDirs) as $dir) {
+        removeEmptyDirsUnder($dir, DOCUMENTS_DIR);
+    }
+    if ($studentId === null) {
+        removeUnusedDocumentFiles($conn);
+        foreach (['ENROLLEE', 'GRADUATE'] as $group) {
+            $root = DOCUMENTS_DIR . $group;
+            if (!is_dir($root)) {
+                continue;
+            }
+            $dirs = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::CHILD_FIRST
+            );
+            foreach ($dirs as $entry) {
+                if ($entry->isDir()) {
+                    @rmdir($entry->getPathname());
+                }
+            }
+        }
+    }
+    return $moved;
+}
+
 function relocateArchivedFiles($conn)
 {
     static $done = false;
@@ -421,6 +762,9 @@ function archiveStudentRecord($conn, $studentId, $status, $force = false)
     }
 
     removeEmptyArchiveDirs($folder); 
+    foreach ($done as $move) {
+        removeEmptyDirsUnder(dirname($move['from']), DOCUMENTS_DIR);
+    }
 
     return [
         'success'   => true,
@@ -598,6 +942,7 @@ function returnGraduateToDirectory($conn, $studentId)
     foreach ($done as $move) {
         removeEmptyArchiveDirs(dirname($move['from']));
     }
+    organizeStudentDocuments($conn, $studentId);
     return ['success' => true, 'documents' => count($done)];
 }
 
@@ -882,6 +1227,7 @@ function handleRestoreStudent($conn)
     foreach ($done as $move) {
         removeEmptyArchiveDirs(dirname($move['from']));
     }
+    organizeStudentDocuments($conn, $studentId);
 
     $studentOpts = activityStudentOpts($conn, $studentId);
     logActivity('student_restored',
@@ -1131,6 +1477,7 @@ include 'navbar.php';
         <th>Status</th>
         <th>Date Archived</th>
         <th>Records</th>
+        <th>Actions</th>
     </tr>
 
     <?php if (!empty($students)): ?>
@@ -1160,36 +1507,11 @@ include 'navbar.php';
             </td>
             <td>
                 <div class="archive-records">
-                    <?php if (!empty($files)): ?>
-                        <div class="dropdown">
-                            <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle archive-files-btn"
-                                    data-bs-toggle="dropdown" aria-expanded="false" title="View archived documents">
-                                <i class="bi bi-folder2-open"></i> Files (<?= count($files) ?>)
-                            </button>
-                            <ul class="dropdown-menu dropdown-menu-end archive-drive-menu">
-                                <li><h6 class="dropdown-header">Archived documents</h6></li>
-                                <?php foreach ($files as $file): ?>
-                                    <?php
-                                        $exists = ($file['file_path'] ?? '') !== '' && is_file($file['file_path']);
-                                        $fileLabel = ($file['requirement_code'] ?? '') !== '' && function_exists('requirementLabel')
-                                            ? requirementLabel($file['requirement_code'])
-                                            : $file['file_name'];
-                                    ?>
-                                    <li>
-                                        <?php if ($exists): ?>
-                                            <a class="dropdown-item archive-file-link" href="<?= htmlspecialchars(fileUrl($file['file_path'])) ?>" target="_blank" rel="noopener" title="<?= htmlspecialchars($file['file_name']) ?>" data-file-label="<?= htmlspecialchars($fileLabel) ?>" data-file-name="<?= htmlspecialchars($file['file_name']) ?>">
-                                                <i class="bi bi-file-earmark-pdf"></i> <?= htmlspecialchars($fileLabel) ?>
-                                            </a>
-                                        <?php else: ?>
-                                            <span class="dropdown-item disabled text-muted" title="File is missing on the server">
-                                                <i class="bi bi-exclamation-triangle"></i> <?= htmlspecialchars($fileLabel) ?> (missing)
-                                            </span>
-                                        <?php endif; ?>
-                                    </li>
-                                <?php endforeach; ?>
-                            </ul>
-                        </div>
-                    <?php endif; ?>
+                    <a class="view-btn" href="view_student.php?id=<?= (int) $row['student_id'] ?>"><i class="bi bi-eye-fill"></i>View</a>
+                </div>
+            </td>
+            <td>
+                <div class="archive-records">
                     <?php if (in_array($row['status'], RESTORABLE_STATUSES, true)): ?>
                         <button type="button" class="btn btn-sm archive-restore-btn" data-id="<?= (int) $row['student_id'] ?>" data-name="<?= htmlspecialchars($row['name']) ?>">
                             <i class="bi bi-arrow-counterclockwise"></i> Restore
@@ -1201,7 +1523,7 @@ include 'navbar.php';
         <?php endforeach; ?>
     <?php else: ?>
         <tr>
-            <td colspan="7" class="no-students-message">No archived records found.</td>
+            <td colspan="8" class="no-students-message">No archived records found.</td>
         </tr>
     <?php endif; ?>
     </table>

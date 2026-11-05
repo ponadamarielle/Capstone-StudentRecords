@@ -12,6 +12,8 @@ function getDocumentRequirementGroups()
         'credential'     => 'Entrance Credentials (2.1)',
         'past_graduate'  => 'Previous SHS / HS Graduates of Past School Years (2.2)',
         'als'            => 'Graduates of Alternative Learning System (2.3)',
+        'transferee'     => 'Transferees',
+        'shiftee'        => 'Shiftees',
         'other'          => 'Other',
     ];
 }
@@ -22,6 +24,8 @@ function getAdmissionTracks()
         'shs_current' => 'Senior High School Graduate (current school year)',
         'shs_past'    => 'Previous SHS / HS Graduate (past school years)',
         'als'         => 'Alternative Learning System (ALS) Graduate',
+        'shiftee'     => 'Shiftee',
+        'transferee'  => 'Transferee',
     ];
 }
 
@@ -59,21 +63,21 @@ function getDocumentRequirements()
     $catalog = [
         'sar_form' => [
             'label' => 'SAR Form 1 (Confirmation Slip)',
-            'group' => 'admission_form', 'store' => true, 'required_for' => ['shs_current', 'shs_past', 'als'],
+            'group' => 'admission_form', 'store' => true, 'required_for' => ['shs_current', 'shs_past', 'als', 'transferee'],
             'ref' => '', 'note' => 'Printed from the admission packet.',
             'extract_fields' => true, 'field_priority' => 3, 'photo_box' => 'sar_form',
             'ai_hint' => 'PUP "SAR-FORM 1 with Confirmation Documents" / Confirmation Slip addressed to the University Admission Committee: "I am ___ graduated in ___ from ___ would like to confirm my interest to be admitted", with a 2x2 photo box. Usually two copies on one page.',
         ],
         'route_approval_slip' => [
             'label' => 'Route and Approval Slip',
-            'group' => 'admission_form', 'store' => true, 'required_for' => ['shs_current', 'shs_past', 'als'],
+            'group' => 'admission_form', 'store' => true, 'required_for' => ['shs_current', 'shs_past', 'als', 'transferee', 'shiftee'],
             'ref' => '', 'note' => 'Printed from the admission packet; signed at each enrollment step.',
             'extract_fields' => true, 'field_priority' => 2,
             'ai_hint' => 'PUP "Route and Approval Slip": Name of Applicant, Reference Number, SHS Track/Strand, Admission Status checkboxes (PUPCET Qualifier, ALS, PWD...), Steps 1-5 (submission of credentials, college interview and tagging of program, medical examination, registration certificate, ID card) with signature lines.',
         ],
         'certification_undertaking' => [
             'label' => 'Waiver/Certification/Undertaking (Form 2)',
-            'group' => 'admission_form', 'store' => true, 'required_for' => ['shs_current', 'shs_past', 'als'],
+            'group' => 'admission_form', 'store' => true, 'required_for' => ['shs_current', 'shs_past', 'als', 'transferee'],
             'ref' => '2.1.5', 'note' => 'Duly signed Waiver/Certification/Undertaking.',
             'extract_fields' => true, 'field_priority' => 6,
             'ai_hint' => 'PUP "Certification/Undertaking" (Form 2): "I, ___, of legal age, Filipino ... hereby certify that" the enrollee will submit the listed documents, vouches their authenticity, signed by the enrollee and attested by parent/guardian.',
@@ -102,21 +106,21 @@ function getDocumentRequirements()
         ],
         'psa_birth_certificate' => [
             'label' => 'PSA Birth Certificate',
-            'group' => 'credential', 'store' => true, 'required_for' => ['shs_current', 'shs_past', 'als'],
+            'group' => 'credential', 'store' => true, 'required_for' => ['shs_current', 'shs_past', 'als', 'transferee'],
             'ref' => '2.1.3 / 2.3.5', 'note' => 'Original PSA Birth Certificate.',
             'extract_fields' => true, 'field_priority' => 4,
             'ai_hint' => 'PSA (Philippine Statistics Authority) / NSO copy of a Certificate of Live Birth (Municipal Form No. 102): child\'s name, sex, date and place of birth, parents, registry number.',
         ],
         'good_moral_certificate' => [
             'label' => 'Certificate of Good Moral Character',
-            'group' => 'credential', 'store' => true, 'required_for' => ['shs_current', 'shs_past', 'als'],
+            'group' => 'credential', 'store' => true, 'required_for' => ['shs_current', 'shs_past', 'als', 'transferee'],
             'ref' => '2.1.4 / 2.3.4', 'note' => 'Issued by the Principal / Guidance Counselor (or school last attended for ALS), with school dry seal.',
             'extract_fields' => false, 'field_priority' => 9,
             'ai_hint' => 'Certificate/Certification of Good Moral Character issued by a school principal or guidance counselor stating the student is of good moral character.',
         ],
         'chest_xray' => [
             'label' => 'Chest X-ray Result',
-            'group' => 'credential', 'store' => true, 'required_for' => ['shs_current', 'shs_past', 'als'],
+            'group' => 'credential', 'store' => true, 'required_for' => ['shs_current', 'shs_past', 'als', 'transferee'],
             'ref' => '2.1.6', 'note' => 'Result must not be older than 6 months from the scheduled enrollment.',
             'extract_fields' => false, 'field_priority' => 9,
             'ai_hint' => 'Chest X-ray / radiology result: examination (chest PA), findings about lungs, heart, diaphragm, impression, radiologist\'s name.',
@@ -180,6 +184,35 @@ function getDocumentRequirements()
             'ai_hint' => 'DepEd National List of Passers of the ALS A&E test (a list of names).',
         ],
 
+        'honorable_dismissal' => [
+            'label' => 'Honorable Dismissal / Transfer Credentials',
+            'group' => 'transferee', 'store' => true, 'required_for' => ['transferee'],
+            'ref' => 'Transferee', 'note' => 'Issued by the registrar of the previous school.',
+            'extract_fields' => true, 'field_priority' => 7,
+            'ai_hint' => 'Honorable Dismissal / Certificate of Transfer Credential / Transfer Credentials from a previous college or university registrar, granting the student permission to transfer.',
+        ],
+        'transcript_of_records' => [
+            'label' => 'Transcript of Records / Certified Copy of Grades',
+            'group' => 'transferee', 'store' => true, 'required_for' => ['transferee'],
+            'ref' => 'Transferee', 'note' => 'From the previous college or university.',
+            'extract_fields' => true, 'field_priority' => 8,
+            'ai_hint' => 'College Transcript of Records (TOR) or Certified True Copy of Grades from another college/university: subject codes, descriptive titles, units and final grades per semester.',
+        ],
+        'shifting_form' => [
+            'label' => 'Approved Shifting Form',
+            'group' => 'shiftee', 'store' => true, 'required_for' => ['shiftee'],
+            'ref' => 'Shiftee', 'note' => 'Signed by the chairpersons of the old and new programs.',
+            'extract_fields' => true, 'field_priority' => 7,
+            'ai_hint' => 'PUP Application for Shifting / Shifting Form: student moves from one program to another, with present program, program to shift to, and approval signatures.',
+        ],
+        'copy_of_grades' => [
+            'label' => 'Copy of Grades (previous PUP program)',
+            'group' => 'shiftee', 'store' => true, 'required_for' => ['shiftee'],
+            'ref' => 'Shiftee', 'note' => 'Grades from the program the student is shifting from.',
+            'extract_fields' => false, 'field_priority' => 9,
+            'ai_hint' => 'PUP student copy of grades / grade slip / PUPSIS grades printout for the previous PUP program.',
+        ],
+
         'health_information_form' => [
             'label' => 'Health Information Form',
             'group' => 'info', 'store' => false, 'extract_only' => true, 'required_for' => [],
@@ -206,6 +239,142 @@ function getDocumentRequirements()
         ],
     ];
 
+    $catalog = applyRequirementSettings($catalog);
+    return $catalog;
+}
+
+function requirementTrackGroups()
+{
+    return [
+        'regular'    => ['shs_current', 'shs_past', 'als'],
+        'shiftee'    => ['shiftee'],
+        'transferee' => ['transferee'],
+    ];
+}
+
+function requirementSettingsDb()
+{
+    static $conn = false;
+    if ($conn !== false) {
+        return $conn;
+    }
+    $conn = null;
+    try {
+        $link = @mysqli_connect('localhost', 'root', '', 'db_pup_eRecords');
+        if ($link) {
+            mysqli_set_charset($link, 'utf8mb4');
+            $conn = $link;
+        }
+    } catch (Throwable $e) {
+        $conn = null;
+    }
+    return $conn;
+}
+
+function requirementTrackColumns()
+{
+    return array_keys(getAdmissionTracks());
+}
+
+function setRequirementTracks($conn, $code, array $tracks, $value)
+{
+    foreach (array_intersect(requirementTrackColumns(), $tracks) as $track) {
+        $stmt = mysqli_prepare($conn, $value
+            ? "INSERT IGNORE INTO requirement_tracks (code, track) VALUES (?, ?)"
+            : "DELETE FROM requirement_tracks WHERE code = ? AND track = ?");
+        mysqli_stmt_bind_param($stmt, 'ss', $code, $track);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+    }
+}
+
+function ensureRequirementTables($conn, array $builtin)
+{
+    mysqli_query($conn, "CREATE TABLE IF NOT EXISTS requirement_documents (
+        code VARCHAR(64) NOT NULL PRIMARY KEY,
+        label VARCHAR(150) NOT NULL,
+        ai_hint TEXT NOT NULL,
+        doc_group VARCHAR(30) NOT NULL DEFAULT 'other',
+        is_custom TINYINT(1) NOT NULL DEFAULT 0,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ) DEFAULT CHARSET=utf8mb4");
+    mysqli_query($conn, "CREATE TABLE IF NOT EXISTS requirement_tracks (
+        code VARCHAR(64) NOT NULL,
+        track VARCHAR(20) NOT NULL,
+        added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (code, track)
+    ) DEFAULT CHARSET=utf8mb4");
+
+    $columns = [];
+    $result = mysqli_query($conn, "SHOW COLUMNS FROM requirement_documents");
+    while ($result && ($row = mysqli_fetch_assoc($result))) {
+        $columns[$row['Field']] = true;
+    }
+    foreach (requirementTrackColumns() as $track) {
+        if (!isset($columns[$track])) {
+            continue;
+        }
+        mysqli_query($conn, "INSERT IGNORE INTO requirement_tracks (code, track) SELECT code, '$track' FROM requirement_documents WHERE `$track` = 1");
+        mysqli_query($conn, "ALTER TABLE requirement_documents DROP COLUMN `$track`");
+    }
+
+    $known = [];
+    $result = mysqli_query($conn, "SELECT code FROM requirement_documents");
+    while ($result && ($row = mysqli_fetch_assoc($result))) {
+        $known[$row['code']] = true;
+    }
+    foreach ($builtin as $code => $req) {
+        if (empty($req['store']) || isset($known[$code])) {
+            continue;
+        }
+        $label = $req['label'];
+        $hint = $req['ai_hint'] ?? '';
+        $group = $req['group'];
+        $stmt = mysqli_prepare($conn, "INSERT INTO requirement_documents (code, label, ai_hint, doc_group, is_custom) VALUES (?, ?, ?, ?, 0)");
+        mysqli_stmt_bind_param($stmt, 'ssss', $code, $label, $hint, $group);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        setRequirementTracks($conn, $code, $req['required_for'] ?? [], true);
+    }
+}
+
+function applyRequirementSettings(array $catalog)
+{
+    $conn = requirementSettingsDb();
+    if ($conn === null) {
+        return $catalog;
+    }
+    try {
+        ensureRequirementTables($conn, $catalog);
+        $tracks = [];
+        $result = mysqli_query($conn, "SELECT code, track FROM requirement_tracks ORDER BY added_at, track");
+        while ($result && ($row = mysqli_fetch_assoc($result))) {
+            $tracks[$row['code']][] = $row['track'];
+        }
+        $result = mysqli_query($conn, "SELECT code, label, ai_hint, doc_group, is_custom FROM requirement_documents ORDER BY created_at, code");
+        while ($result && ($row = mysqli_fetch_assoc($result))) {
+            $code = $row['code'];
+            if (isset($catalog[$code])) {
+                if (!empty($catalog[$code]['store'])) {
+                    $catalog[$code]['required_for'] = $tracks[$code] ?? [];
+                }
+                continue;
+            }
+            if ((int) $row['is_custom'] !== 1) {
+                continue;
+            }
+            $catalog[$code] = [
+                'label' => $row['label'],
+                'group' => $row['doc_group'], 'store' => true, 'required_for' => $tracks[$code] ?? [],
+                'ref' => '', 'note' => '',
+                'extract_fields' => false, 'field_priority' => 9,
+                'ai_hint' => $row['ai_hint'],
+                'custom' => true,
+            ];
+        }
+    } catch (Throwable $e) {
+        error_log('Requirement settings could not be loaded: ' . $e->getMessage());
+    }
     return $catalog;
 }
 
@@ -316,6 +485,73 @@ function aiHttpPostJson($url, array $headers, array $body, $timeout = 90)
     return [$status, $raw === false ? null : json_decode($raw, true), $raw === false ? $error : $raw];
 }
 
+function aiDescribeRequirement($label)
+{
+    $config = aiClassifierConfig();
+    if ($config === null) {
+        return ['description' => '', 'error' => 'No AI provider is configured.'];
+    }
+
+    $instructions = "You help configure the document classifier of the Polytechnic University of the Philippines (PUP) "
+        . "Biñan campus student records system. Uploaded student documents are read through PDF text extraction or OCR, "
+        . "and an AI picks the matching document type from a list of names and descriptions.\n"
+        . "Write the description for the document type named by the user, based on how this document usually looks "
+        . "in the Philippines: its usual title or heading, who issues it, and the key fields or wording printed on it. "
+        . "Add what tells it apart from similar documents when that helps.\n"
+        . "Rules: one paragraph, at most 60 words, plain text, no quotes around it, no line breaks, no personal data. "
+        . "Reply with the description only.";
+    $user = 'Document: ' . $label;
+
+    $text = null;
+    $status = 0;
+    if ($config['provider'] === 'groq') {
+        $url = rtrim(getenv('AI_GROQ_BASE_URL') ?: 'https://api.groq.com/openai/v1', '/') . '/chat/completions';
+        [$status, $json] = aiHttpPostJson($url, ['Authorization: Bearer ' . getenv('GROQ_API_KEY')], [
+            'model'                 => $config['model'],
+            'temperature'           => 0.2,
+            'max_completion_tokens' => 1500,
+            'messages'              => [
+                ['role' => 'system', 'content' => $instructions],
+                ['role' => 'user', 'content' => $user],
+            ],
+        ] + aiClassifierReasoning($config['model']), 30);
+        $text = $json['choices'][0]['message']['content'] ?? null;
+    } elseif ($config['provider'] === 'anthropic') {
+        [$status, $json] = aiHttpPostJson(rtrim(getenv('AI_ANTHROPIC_BASE_URL') ?: 'https://api.anthropic.com', '/') . '/v1/messages', [
+            'x-api-key: ' . getenv('ANTHROPIC_API_KEY'),
+            'anthropic-version: 2023-06-01',
+        ], [
+            'model'      => $config['model'],
+            'max_tokens' => 300,
+            'system'     => $instructions,
+            'messages'   => [['role' => 'user', 'content' => $user]],
+        ], 30);
+        foreach ($json['content'] ?? [] as $block) {
+            if (($block['type'] ?? '') === 'text') {
+                $text = ($text ?? '') . $block['text'];
+            }
+        }
+    } else {
+        $url = rtrim(getenv('AZURE_OPENAI_ENDPOINT'), '/') . '/openai/deployments/' . rawurlencode($config['model'])
+            . '/chat/completions?api-version=' . (getenv('AZURE_OPENAI_API_VERSION') ?: '2024-10-21');
+        [$status, $json] = aiHttpPostJson($url, ['api-key: ' . getenv('AZURE_OPENAI_KEY')], [
+            'temperature' => 0.2,
+            'messages'    => [
+                ['role' => 'system', 'content' => $instructions],
+                ['role' => 'user', 'content' => $user],
+            ],
+        ], 30);
+        $text = $json['choices'][0]['message']['content'] ?? null;
+    }
+
+    $text = trim(preg_replace('/\s+/u', ' ', (string) $text), " \t\"'");
+    if ($text === '') {
+        error_log('AI requirement description failed, HTTP ' . $status);
+        return ['description' => '', 'error' => 'The AI description could not be generated.'];
+    }
+    return ['description' => mb_substr($text, 0, 1000), 'error' => null];
+}
+
 function aiClassifyPages(array $pageTexts)
 {
     $config = aiClassifierConfig();
@@ -346,6 +582,7 @@ function aiClassifyPages(array $pageTexts)
         . "gets the same code as that previous page.\n"
         . "- For report cards, choose the grade level printed as the card's own level, not a 'promoted to Grade X' line.\n"
         . "- The Grade or Grade Level field on a report card decides its type (Grade 10, 11 or 12), even when the form code says SF9-JHS.\n"
+        . "- Some types have a name only; recognize them from what that name means.\n"
         . "- Use \"none\" for blank pages or documents that match no type.\n"
         . "- confidence: high = unmistakable; medium = probably right; low = a guess the admin should check.\n"
         . "- reason: at most 15 words, naming the evidence you used.\n"

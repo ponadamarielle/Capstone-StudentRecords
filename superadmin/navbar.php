@@ -19,6 +19,7 @@
         'dashboard.php'       => ['Dashboard', 'Overview of student records and document requirements.'],
         'admin_management.php' => ['Admin Management', 'Manage admin accounts and control who can access records.'],
         'course_management.php' => ['Course Management', 'Manage the programs offered and how they are recognized in documents.'],
+        'requirements.php'    => ['Requirements', 'Manage the documents required for regular, shiftee and transferee students.'],
         'backup_logs.php'     => ['Backup & Logs', 'Keep records safe and see who did what, and when.'],
     ];
     [$pageTitle, $pageSubtitle] = $pageTitles[$currentPage] ?? ['PUP eRecords', ''];
@@ -52,6 +53,9 @@
             </a>
             <a class="admin-menu-item <?php echo ($currentPage == 'course_management.php') ? 'active' : ''; ?>" href="course_management.php" title="Programs Offered">
                 <i class="bi bi-mortarboard"></i><span>Programs Offered</span>
+            </a>
+            <a class="admin-menu-item <?php echo ($currentPage == 'requirements.php') ? 'active' : ''; ?>" href="requirements.php" title="Requirements">
+                <i class="bi bi-file-earmark-check"></i><span>Requirements</span>
             </a>
             <a class="admin-menu-item <?php echo ($currentPage == 'backup_logs.php') ? 'active' : ''; ?>" href="backup_logs.php" title="Backup &amp; Logs">
                 <i class="bi bi-database"></i><span>Backup &amp; Logs</span>

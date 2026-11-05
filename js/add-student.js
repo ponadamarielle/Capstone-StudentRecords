@@ -17,10 +17,15 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     guardTextField('place_of_birth', PLACE_NOT_ALLOWED);
     guardTextField('address', ADDRESS_NOT_ALLOWED);
+    const SCHOOL_NOT_ALLOWED = /[^\p{L}\p{M}0-9 .,'&()\-]/gu;
+    guardTextField('previous_school', SCHOOL_NOT_ALLOWED);
+    guardTextField('previous_course', SCHOOL_NOT_ALLOWED);
     const ACTIONS_URL = 'student_directory.php';
     let studentPhotoSet = false;
     let currentPhotoDocIndex = null;
     let recordSaved = false;
+    let standalonePhotoPath = null;
+    let uploadSession = 0;
 
     const previewPanel = document.getElementById('documentPreviewPanel');
     const previewFrame = document.getElementById('documentPreviewFrame');
@@ -111,6 +116,10 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function setStudentPhoto(dataUrl) {
+        if (standalonePhotoPath && dataUrl !== standalonePhotoPath) {
+            deleteFileSet({ photo_path: standalonePhotoPath });
+            standalonePhotoPath = null;
+        }
         const container = document.getElementById('photoContainer');
         container.innerHTML = `<img src="${dataUrl}" class="photo-img" alt="Student photo">`;
 
@@ -132,6 +141,10 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function resetStudentPhoto() {
+        if (standalonePhotoPath) {
+            deleteFileSet({ photo_path: standalonePhotoPath });
+            standalonePhotoPath = null;
+        }
         const container = document.getElementById('photoContainer');
         container.innerHTML = `<div class="photo-placeholder">
                         <i class="bi bi-person"></i>
@@ -181,21 +194,171 @@ document.addEventListener('DOMContentLoaded', function () {
     const ADMISSION_TRACKS = PAGE_DATA.tracks || {};
     const trackSelect = document.getElementById('admission_track');
     let trackTouched = false;
+    const studentTypeSelect = document.getElementById('student_type');
+    const admissionTrackRow = document.getElementById('admissionTrackRow');
+    let typeTouched = false;
+
+    function currentStudentType() {
+        return studentTypeSelect && studentTypeSelect.value ? studentTypeSelect.value : 'regular';
+    }
 
     function currentTrack() {
+        const type = currentStudentType();
+        if (type !== 'regular') return type;
         return trackSelect && trackSelect.value ? trackSelect.value : 'shs_current';
     }
+
+    const courseRow = document.getElementById('courseRow');
+    const courseSelect = document.getElementById('course');
+    const shiftToSelect = document.getElementById('shift_to_course');
+
+    function showRow(row, show) {
+        if (!row) return;
+        if (show) row.style.removeProperty('display');
+        else row.style.setProperty('display', 'none', 'important');
+    }
+
+    function syncShiftTo() {
+        if (!shiftToSelect || !courseSelect) return;
+        if (courseSelect.value && !Array.prototype.some.call(shiftToSelect.options, function (o) { return o.value === courseSelect.value; })) {
+            shiftToSelect.add(new Option(courseSelect.value, courseSelect.value));
+        }
+        shiftToSelect.value = courseSelect.value;
+    }
+
+    const birthRows = ['date_of_birth']
+        .map(function (id) { const el = document.getElementById(id); return el ? el.closest('.d-flex') : null; })
+        .filter(Boolean);
+    const genderRow = (function () { const el = document.getElementById('sex'); return el ? el.closest('.d-flex') : null; })();
+    const birthHome = birthRows.length ? { parent: birthRows[0].parentNode, next: birthRows[birthRows.length - 1].nextSibling } : null;
+
+    const placeRow = (function () { const el = document.getElementById('place_of_birth'); return el ? el.closest('.d-flex') : null; })();
+    const addressRow = (function () { const el = document.getElementById('address'); return el ? el.closest('.d-flex') : null; })();
+    const placeHome = placeRow ? { parent: placeRow.parentNode, next: placeRow.nextSibling } : null;
+
+    function placeBirthRows(type) {
+        if (placeHome && addressRow) {
+            if (type === 'regular') placeHome.parent.insertBefore(placeRow, placeHome.next);
+            else addressRow.after(placeRow);
+        }
+        if (!birthHome || !genderRow) return;
+        if (type === 'regular') {
+            birthRows.forEach(function (row) { birthHome.parent.insertBefore(row, birthHome.next); });
+        } else {
+            let after = genderRow;
+            birthRows.forEach(function (row) { after.after(row); after = row; });
+        }
+    }
+
+    function applyStudentType() {
+        const type = currentStudentType();
+        showRow(admissionTrackRow, type === 'regular');
+        showRow(courseRow, type !== 'shiftee');
+        document.querySelectorAll('#addStudentForm .student-type-fields').forEach(function (box) {
+            box.hidden = box.dataset.studentType !== type;
+        });
+        if (type === 'shiftee') syncShiftTo();
+        placeBirthRows(type);
+    }
+
+    if (shiftToSelect && courseSelect) {
+        shiftToSelect.addEventListener('change', function () {
+            courseSelect.value = shiftToSelect.value;
+            courseSelect.classList.remove('is-invalid');
+            shiftToSelect.classList.remove('is-invalid');
+            courseSelect.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        courseSelect.addEventListener('change', syncShiftTo);
+    }
+
+    function studentTypeSummary() {
+        const type = currentStudentType();
+        const value = function (id) {
+            const el = document.getElementById(id);
+            return el && el.value ? el.value.trim() : '';
+        };
+        if (type === 'shiftee') {
+            const from = value('shift_from_course');
+            const to = value('course');
+            const code = function (text) { return text.split(' - ')[0]; };
+            return 'Shiftee' + (from ? ': ' + code(from) + ' → ' + (to ? code(to) : '-') : '');
+        }
+        if (type === 'transferee') {
+            const school = value('previous_school');
+            const extra = [value('previous_course'), value('previous_year_level')].filter(Boolean);
+            return 'Transferee' + (school ? ' from ' + school : '') + (extra.length ? ' (' + extra.join(', ') + ')' : '');
+        }
+        return 'Regular';
+    }
+
+    function studentTypeError() {
+        const type = currentStudentType();
+        const from = document.getElementById('shift_from_course');
+        const school = document.getElementById('previous_school');
+        const course = document.getElementById('course');
+        if (from) from.classList.remove('is-invalid');
+        if (school) school.classList.remove('is-invalid');
+        if (shiftToSelect) shiftToSelect.classList.remove('is-invalid');
+        if (type === 'shiftee') {
+            if (!from || !from.value) {
+                if (from) from.classList.add('is-invalid');
+                return { el: from, message: 'Please choose the course the student is shifting from.' };
+            }
+            if (!course || !course.value) {
+                if (shiftToSelect) shiftToSelect.classList.add('is-invalid');
+                return { el: shiftToSelect, message: 'Please choose the course the student is shifting to.' };
+            }
+            if (course && course.value && course.value === from.value) {
+                from.classList.add('is-invalid');
+                return { el: from, message: 'The course the student is shifting from must be different from the new course.' };
+            }
+        }
+        if (type === 'transferee' && (!school || !school.value.trim())) {
+            if (school) school.classList.add('is-invalid');
+            return { el: school, message: 'Please enter the previous school of the transferee.' };
+        }
+        const previousCourse = document.getElementById('previous_course');
+        const previousLevel = document.getElementById('previous_year_level');
+        if (previousCourse) previousCourse.classList.remove('is-invalid');
+        if (previousLevel) previousLevel.classList.remove('is-invalid');
+        if (type === 'transferee' && previousCourse && !previousCourse.value.trim()) {
+            previousCourse.classList.add('is-invalid');
+            return { el: previousCourse, message: 'Please enter the previous course of the transferee.' };
+        }
+        if (type === 'transferee' && previousLevel && !previousLevel.value) {
+            previousLevel.classList.add('is-invalid');
+            return { el: previousLevel, message: 'Please choose the last year level of the transferee.' };
+        }
+        return null;
+    }
+
+    if (studentTypeSelect) {
+        studentTypeSelect.addEventListener('change', function () {
+            typeTouched = true;
+            applyStudentType();
+            rerenderDocumentList();
+        });
+    }
+    applyStudentType();
 
     function isRequiredForTrack(r) {
         return Array.isArray(r.required_for) && r.required_for.indexOf(currentTrack()) !== -1;
     }
 
     function suggestTrackFromDocuments() {
-        if (!trackSelect || trackTouched) return;
         const groups = uploadedDocuments.map(function (d) {
             const r = requirementByCode[d.requirement_code];
             return r ? r.group : null;
         });
+        if (studentTypeSelect && !typeTouched) {
+            const suggestedType = groups.indexOf('transferee') !== -1 ? 'transferee'
+                : (groups.indexOf('shiftee') !== -1 ? 'shiftee' : null);
+            if (suggestedType && studentTypeSelect.value !== suggestedType) {
+                studentTypeSelect.value = suggestedType;
+                applyStudentType();
+            }
+        }
+        if (!trackSelect || trackTouched || currentStudentType() !== 'regular') return;
         let suggested = 'shs_current';
         if (groups.indexOf('als') !== -1) suggested = 'als';
         else if (groups.indexOf('past_graduate') !== -1) suggested = 'shs_past';
@@ -441,6 +604,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         setStatus(uploadingMessage(), 'loading');
         toggleSaveDisabled(true);
+        const session = uploadSession;
 
         let data;
         try {
@@ -451,6 +615,11 @@ document.addEventListener('DOMContentLoaded', function () {
             return;
         }
         toggleSaveDisabled(false);
+
+        if (session !== uploadSession) {
+            discardUploadResult(data);
+            return;
+        }
 
         if (!data.success) {
             setStatus(data.message || 'AI extraction failed.', 'error');
@@ -504,6 +673,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const docPhoto = (data.documents || []).some(function (d) { return d.photo_path; });
             if (!studentPhotoSet && data.photo_path && !docPhoto) {
                 setStudentPhoto(data.photo_path);
+                standalonePhotoPath = data.photo_path;
             } else if (data.photo_path && !docPhoto) {
                 deleteFileSet({ photo_path: data.photo_path });
             }
@@ -557,6 +727,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         setStatus('Uploading replacement... please wait.', 'loading');
         toggleSaveDisabled(true);
+        const session = uploadSession;
 
         let data;
         try {
@@ -568,6 +739,11 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         toggleSaveDisabled(false);
 
+        if (session !== uploadSession) {
+            discardUploadResult(data);
+            return;
+        }
+
         if (!data.success || !data.documents || !data.documents.length) {
             setStatus(data.message || 'AI extraction failed.', 'error');
             return;
@@ -578,6 +754,9 @@ document.addEventListener('DOMContentLoaded', function () {
         if (pick === -1) pick = 0;
         const newDoc = docs[pick];
         docs.forEach(function (d, i) { if (i !== pick) deleteFileSet(d); });
+        if (data.photo_path && !docs.some(function (d) { return d.photo_path === data.photo_path; })) {
+            deleteFileSet({ photo_path: data.photo_path });
+        }
 
         newDoc.source_hash = data.source_hash;
         newDoc.classified_by = data.classified_by || '';
@@ -733,6 +912,10 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    function documentFileName(doc) {
+        return doc.requirement_code ? requirementLabel(doc.requirement_code) + '.pdf' : doc.file_name;
+    }
+
     function renderDocumentRow(doc, index) {
         if (!documentRowTemplate || !documentList) return;
         const node = documentRowTemplate.content.cloneNode(true);
@@ -742,8 +925,8 @@ document.addEventListener('DOMContentLoaded', function () {
         titleEl.textContent = doc.requirement_code ? requirementLabel(doc.requirement_code) : 'Unclassified - choose a type below';
         if (!doc.requirement_code) titleEl.classList.add('text-danger');
 
-        const pagesText = doc.pages && doc.pages.length ? ' · ' + (doc.pages.length === 1 ? '1 page' : doc.pages.length + ' pages') : '';
-        node.querySelector('.document-row-filename').textContent = doc.file_name + pagesText;
+        const fileNameEl = node.querySelector('.document-row-filename');
+        if (fileNameEl) fileNameEl.remove();
 
 
         const typeSelect = node.querySelector('.document-type-select');
@@ -754,7 +937,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 const changeLink = document.createElement('button');
                 changeLink.type = 'button';
                 changeLink.className = 'btn btn-link change-type-link';
-                changeLink.textContent = 'Change type';
+                changeLink.textContent = 'Wrong document?';
                 changeLink.addEventListener('click', function () {
                     doc.needs_manual_type = true;
                     rerenderDocumentList();
@@ -767,7 +950,7 @@ document.addEventListener('DOMContentLoaded', function () {
         if (viewBtn) {
             viewBtn.title = 'Preview document';
             viewBtn.addEventListener('click', function () {
-                openDocumentPreview(doc.file_path, doc.file_name);
+                openDocumentPreview(doc.file_path, documentFileName(doc));
             });
         }
 
@@ -1006,6 +1189,15 @@ document.addEventListener('DOMContentLoaded', function () {
         saveBtn.addEventListener('click', function (e) {
             e.preventDefault();
 
+            const typeProblemFirst = currentStudentType() === 'shiftee' ? studentTypeError() : null;
+            if (typeProblemFirst) {
+                setStatus(typeProblemFirst.message, 'error');
+                const studentInfoTab = document.getElementById('student-info-tab');
+                if (studentInfoTab) bootstrap.Tab.getOrCreateInstance(studentInfoTab).show();
+                if (typeProblemFirst.el) typeProblemFirst.el.focus();
+                return;
+            }
+
             const result = collectAndValidateRequiredFields();
             const values = result.values;
             const missing = result.missing;
@@ -1014,6 +1206,15 @@ document.addEventListener('DOMContentLoaded', function () {
                 setStatus('Please fill in: ' + missing.join(', ') + '.', 'error');
                 const studentInfoTab = document.getElementById('student-info-tab');
                 if (studentInfoTab) bootstrap.Tab.getOrCreateInstance(studentInfoTab).show();
+                return;
+            }
+
+            const typeProblem = studentTypeError();
+            if (typeProblem) {
+                setStatus(typeProblem.message, 'error');
+                const studentInfoTab = document.getElementById('student-info-tab');
+                if (studentInfoTab) bootstrap.Tab.getOrCreateInstance(studentInfoTab).show();
+                if (typeProblem.el) typeProblem.el.focus();
                 return;
             }
 
@@ -1049,6 +1250,15 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    [['previous_course', 'input'], ['previous_year_level', 'change']].forEach(function (pair) {
+        const el = document.getElementById(pair[0]);
+        if (el) {
+            el.addEventListener(pair[1], function () {
+                if (el.value.trim()) el.classList.remove('is-invalid');
+            });
+        }
+    });
+
     REQUIRED_FIELDS.forEach(function (f) {
         const el = form.elements[f.name];
         if (el) {
@@ -1079,7 +1289,7 @@ document.addEventListener('DOMContentLoaded', function () {
             gradEl.classList.toggle('text-danger', !!(info && info.graduated));
         }
         const trackEl = document.getElementById('confirmSummaryTrack');
-        if (trackEl) trackEl.textContent = ADMISSION_TRACKS[currentTrack()] || '-';
+        if (trackEl) trackEl.textContent = currentStudentType() === 'regular' ? (ADMISSION_TRACKS[currentTrack()] || '-') : studentTypeSummary();
         const missingEl = document.getElementById('confirmSummaryMissing');
         if (missingEl) {
             const missing = missingRequiredLabels();
@@ -1142,6 +1352,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     return;
                 }
                 recordSaved = true;
+                standalonePhotoPath = null;
                 if (data.archive_blocked) window.alert(data.archive_blocked);
                 const notice = notificationNotice(data.notification);
                 if (!notice) {
@@ -1179,6 +1390,14 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    function discardUploadResult(data) {
+        if (!data || !data.success) return;
+        (data.documents || []).forEach(deleteFileSet);
+        const docPhoto = (data.documents || []).some(function (d) { return d.photo_path === data.photo_path; });
+        if (data.photo_path && !docPhoto) deleteFileSet({ photo_path: data.photo_path });
+        if (data.image_path) deleteFileSet({ image_path: data.image_path });
+    }
+
     function deleteFileSet(doc) {
         if (!doc || (!doc.file_path && !doc.image_path && !doc.photo_path)) return;
         const formData = new FormData();
@@ -1190,6 +1409,7 @@ document.addEventListener('DOMContentLoaded', function () {
         fetch(ACTIONS_URL + '?action=delete_document', {
             method: 'POST',
             body: formData,
+            keepalive: true,
         }).catch(function (err) {
             console.error('Failed to delete file:', err);
         });
@@ -1198,16 +1418,20 @@ document.addEventListener('DOMContentLoaded', function () {
     const addRecordsModalEl = document.getElementById('addRecordsModal');
     if (addRecordsModalEl) {
         addRecordsModalEl.addEventListener('hidden.bs.modal', function () {
+            uploadSession++;
             if (!recordSaved) {
                 uploadedDocuments.forEach(deleteFileSet);
                 uploadedDocuments = [];
                 uploadedSources.clear();
                 pendingReplaceIndex = null;
                 trackTouched = false;
+                typeTouched = false;
                 syncDocumentsHiddenField();
                 rerenderDocumentList();
                 resetStudentPhoto();
                 form.reset();
+                applyStudentType();
+                document.querySelectorAll('#shift_from_course, #previous_school, #previous_course, #previous_year_level').forEach(function (el) { el.classList.remove('is-invalid'); });
                 rerenderDocumentList();
                 clearRequiredFieldErrors();
                 numberIsDuplicate = false;

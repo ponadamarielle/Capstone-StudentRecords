@@ -209,9 +209,9 @@ function sarFrameLines($mask, $w, $h, $minRun, $maxGap, $band)
 function detectSarPhotoFrame($pdfPath, $page = 1)
 {
     $sx = 1650;
-    $sy = 250;
+    $sy = 150;
     $sw = 896;
-    $sh = 950;
+    $sh = 1650;
 
     $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('sarframe_', true);
     $cmd = escapeshellarg(PDFTOPPM_BIN)
@@ -242,20 +242,26 @@ function detectSarPhotoFrame($pdfPath, $page = 1)
         return null;
     }
 
-    $mask = str_repeat("\0", $n);
-    for ($i = 0; $i < $n; $i++) {
-        $o = $i * 3;
-        if (ord($data[$o]) + ord($data[$o + 1]) + ord($data[$o + 2]) < 480) {
-            $mask[$i] = "\1";
-        }
-    }
-
     $minRun = 350;
     $maxGap = 4;
     $band   = 8;
-    [$cols, $rows] = sarFrameLines($mask, $w, $h, $minRun, $maxGap, $band);
+    $cols   = [];
+    $rows   = [];
+    foreach ([480, 600] as $threshold) {
+        $mask = str_repeat("\0", $n);
+        for ($i = 0; $i < $n; $i++) {
+            $o = $i * 3;
+            if (ord($data[$o]) + ord($data[$o + 1]) + ord($data[$o + 2]) < $threshold) {
+                $mask[$i] = "\1";
+            }
+        }
+        [$cols, $rows] = sarFrameLines($mask, $w, $h, $minRun, $maxGap, $band);
+        if (count($cols) >= 2 && $rows) {
+            break;
+        }
+    }
 
-    if (count($cols) < 2 || !$rows) {
+    if (!$cols || !$rows) {
         return null;
     }
 
@@ -263,11 +269,19 @@ function detectSarPhotoFrame($pdfPath, $page = 1)
     $right = max($cols);
     $top   = min($rows) + $band - 1;
     $width = $right - $left;
-    if ($width < 450 || $width > 750) {
+    if ($width < 450) {
+        $width = 600;
+        $right = $left + $width;
+    }
+    if ($width > 750) {
         return null;
     }
     $below  = array_filter($rows, function ($r) use ($top) { return $r > $top + 400; });
     $bottom = $below ? min($below) + $band - 1 : $top + $width;
+    if (!$below && $top + $width > $h && $top - $width >= 0) {
+        $bottom = $top;
+        $top    = $bottom - $width;
+    }
 
     $inset = 9; 
     return [
@@ -807,6 +821,13 @@ function handleAddStudent($conn)
     $email            = trim($_POST['email'] ?? '');
     $status           = 'enrollee';
     $admissionTrack   = normalizeAdmissionTrack($_POST['admission_track'] ?? '');
+    ensureStudentTypeColumns($conn);
+    $typeDetails = readStudentTypeInput($_POST, $course);
+    if ($typeDetails['error'] !== null) {
+        echo json_encode(['success' => false, 'student_type_error' => true, 'message' => $typeDetails['error']]);
+        return;
+    }
+    $admissionTrack = $typeDetails['track'];
 
     $photoBinary = null;
     $photoPathFromOcr = null;
@@ -889,7 +910,7 @@ function handleAddStudent($conn)
         $byHash[$hash] = $fileName;
         $documents[] = [
             'file_path'        => $filePath,
-            'file_name'        => $fileName,
+            'file_name'        => $code !== null ? requirementLabel($code) . '.pdf' : $fileName,
             'requirement_code' => $code,
             'document_type'    => requirementLabel($code),
             'file_hash'        => $hash,
@@ -924,6 +945,7 @@ function handleAddStudent($conn)
         }
 
         $studentId = mysqli_insert_id($conn);
+        saveStudentTypeDetails($conn, $studentId, $typeDetails);
 
         if (count($documents) > 0) {
             $docSql = "INSERT INTO documents
@@ -1033,6 +1055,8 @@ function handleAddStudent($conn)
 
 archiveGraduatedStudents($conn);
 updateYearLevels($conn);
+organizeStudentDocuments($conn);
+ensureStudentTypeColumns($conn);
 schoolYearReminderIfDue();
 runScheduledBackupIfDue();
 
@@ -1040,6 +1064,7 @@ $search            = isset($_GET['search']) ? trim(preg_replace('/\s+/u', ' ', p
 $courseFilter      = isset($_GET['course']) ? trim($_GET['course']) : '';
 $yearSectionFilter = isset($_GET['year_section']) ? trim($_GET['year_section']) : '';
 $statusFilter      = in_array($_GET['status'] ?? '', ['enrollee', 'graduated'], true) ? $_GET['status'] : '';
+$typeFilter        = isset(STUDENT_TYPES[$_GET['type'] ?? '']) ? $_GET['type'] : '';
 
 $conditions = [directoryStudentCondition($conn)];
 $params     = [];
@@ -1087,11 +1112,17 @@ if ($statusFilter === 'graduated') {
     $conditions[] = "(status IN ('enrollee', 'active') OR status IS NULL OR status = '')";
 }
 
+if ($typeFilter === 'shiftee' || $typeFilter === 'transferee') {
+    $conditions[] = "admission_track = '" . $typeFilter . "'";
+} elseif ($typeFilter === 'regular') {
+    $conditions[] = "(admission_track IS NULL OR admission_track NOT IN ('shiftee', 'transferee'))";
+}
+
 $sql = "SELECT student_id, student_number, name, course, year_section, status, admission_track FROM students";
 if (!empty($conditions)) {
     $sql .= " WHERE " . implode(' AND ', $conditions);
 }
-$sql .= ($search !== '' || $courseFilter !== '' || $yearSectionFilter !== '' || $statusFilter !== '')
+$sql .= ($search !== '' || $courseFilter !== '' || $yearSectionFilter !== '' || $statusFilter !== '' || $typeFilter !== '')
     ? " ORDER BY name ASC, student_id DESC"
     : " ORDER BY student_id DESC";
 
@@ -1193,7 +1224,7 @@ include 'navbar.php';
             <?php endforeach; ?>
         </select>
         <?php if ($courseFilter !== ''): ?>
-            <a href="student_directory.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'year_section' => $yearSectionFilter, 'status' => $statusFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear course"><i class="bi bi-x-circle"></i></a>
+            <a href="student_directory.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'year_section' => $yearSectionFilter, 'status' => $statusFilter, 'type' => $typeFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear course"><i class="bi bi-x-circle"></i></a>
         <?php endif; ?>
         </div>
 
@@ -1207,7 +1238,7 @@ include 'navbar.php';
             <?php endforeach; ?>
             </select>
         <?php if ($yearSectionFilter !== ''): ?>
-            <a href="student_directory.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'course' => $courseFilter, 'status' => $statusFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear year &amp; section"><i class="bi bi-x-circle"></i></a>
+            <a href="student_directory.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'course' => $courseFilter, 'status' => $statusFilter, 'type' => $typeFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear year &amp; section"><i class="bi bi-x-circle"></i></a>
         <?php endif; ?>
         </div>
 
@@ -1218,7 +1249,19 @@ include 'navbar.php';
             <option value="graduated" <?= $statusFilter === 'graduated' ? 'selected' : '' ?>>Graduate</option>
         </select>
         <?php if ($statusFilter !== ''): ?>
-            <a href="student_directory.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'course' => $courseFilter, 'year_section' => $yearSectionFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear status"><i class="bi bi-x-circle"></i></a>
+            <a href="student_directory.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'course' => $courseFilter, 'year_section' => $yearSectionFilter, 'type' => $typeFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear status"><i class="bi bi-x-circle"></i></a>
+        <?php endif; ?>
+        </div>
+
+        <div class="filter-wrap filter-wrap-type">
+        <select class="filter filter-type<?= $typeFilter !== '' ? ' has-value' : '' ?>" id="typeFilterSelect" name="type">
+            <option value="">All Types</option>
+            <?php foreach (STUDENT_TYPES as $typeValue => $typeLabel): ?>
+                <option value="<?= htmlspecialchars($typeValue) ?>" <?= $typeFilter === $typeValue ? 'selected' : '' ?>><?= htmlspecialchars($typeLabel) ?></option>
+            <?php endforeach; ?>
+        </select>
+        <?php if ($typeFilter !== ''): ?>
+            <a href="student_directory.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'course' => $courseFilter, 'year_section' => $yearSectionFilter, 'status' => $statusFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear type"><i class="bi bi-x-circle"></i></a>
         <?php endif; ?>
         </div>
       </form>
@@ -1233,7 +1276,7 @@ include 'navbar.php';
         <th>Student Number</th>
         <th>Name</th>
         <th>Course</th>
-        <th>Year & Section</th>
+        <th>Student Type</th>
         <th>Status</th>
         <th>Requirements</th>
         <th>Records</th>
@@ -1245,7 +1288,7 @@ include 'navbar.php';
             <td><?= htmlspecialchars($row['student_number']) ?></td>
             <td><?= htmlspecialchars($row['name']) ?></td>
             <td><?= htmlspecialchars($row['course']) ?></td>
-            <td><?= htmlspecialchars($row['year_section']) ?></td>
+            <td><?= htmlspecialchars(STUDENT_TYPES[studentTypeOf($row['admission_track'] ?? '')]) ?></td>
             <?php if (($row['status'] ?? '') === 'graduated'): ?>
             <td class="status-graduate">GRADUATE</td>
             <?php else: ?>
@@ -1386,7 +1429,7 @@ include 'navbar.php';
                     </div>
                     <small id="studentNumberFeedback" class="text-danger d-block mb-3"></small>
 
-                    <div class="d-flex align-items-center mb-3">
+                    <div class="d-flex align-items-center mb-3" id="courseRow">
                         <label for="course" class="form-label form-label-custom">
                             Course <span class="req-mark">*</span>
                         </label>
@@ -1428,14 +1471,79 @@ include 'navbar.php';
 
                     <div class="col-md-6">
                     <div class="d-flex align-items-center mb-3">
+                        <label for="student_type" class="form-label form-label-custom">
+                            Student type
+                        </label>
+                        <select id="student_type" name="student_type" class="form-select input-custom">
+                            <?php foreach (STUDENT_TYPES as $typeValue => $typeLabel): ?>
+                                <option value="<?= htmlspecialchars($typeValue) ?>"><?= htmlspecialchars($typeLabel) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div class="d-flex align-items-center mb-3" id="admissionTrackRow">
                         <label for="admission_track" class="form-label form-label-custom">
                             Admission type
                         </label>
                         <select id="admission_track" name="admission_track" class="form-select input-custom">
-                            <?php foreach (getAdmissionTracks() as $trackValue => $trackLabel): ?>
+                            <?php foreach (regularAdmissionTracks() as $trackValue => $trackLabel): ?>
                                 <option value="<?= htmlspecialchars($trackValue) ?>"><?= htmlspecialchars($trackLabel) ?></option>
                             <?php endforeach; ?>
                         </select>
+                    </div>
+
+                    <div class="student-type-fields" data-student-type="shiftee" hidden>
+                        <div class="d-flex align-items-center mb-3">
+                            <label for="shift_from_course" class="form-label form-label-custom">
+                                Shifting from <span class="req-mark">*</span>
+                            </label>
+                            <select id="shift_from_course" name="shift_from_course" class="form-select input-custom">
+                                <option value="">Select previous course</option>
+                                <?php foreach (getCourseCatalog() as $courseEntry): ?>
+                                    <option value="<?= htmlspecialchars(courseDisplayName($courseEntry)) ?>"><?= htmlspecialchars(courseDisplayName($courseEntry)) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="d-flex align-items-center mb-3">
+                            <label for="shift_to_course" class="form-label form-label-custom">
+                                Shifting to <span class="req-mark">*</span>
+                            </label>
+                            <select id="shift_to_course" class="form-select input-custom" data-mirrors="course">
+                                <option value="">Select new course</option>
+                                <?php foreach (getCourseCatalog() as $courseEntry): ?>
+                                    <?php if (($courseEntry['status'] ?? 'active') !== 'active') continue; ?>
+                                    <option value="<?= htmlspecialchars(courseDisplayName($courseEntry)) ?>"><?= htmlspecialchars(courseDisplayName($courseEntry)) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="student-type-fields" data-student-type="transferee" hidden>
+                        <div class="d-flex align-items-center mb-3">
+                            <label for="previous_school" class="form-label form-label-custom">
+                                Previous school <span class="req-mark">*</span>
+                            </label>
+                            <input type="text" id="previous_school" name="previous_school" class="form-control input-custom"
+                                   maxlength="255" placeholder="School the student transferred from">
+                        </div>
+                        <div class="d-flex align-items-center mb-3">
+                            <label for="previous_course" class="form-label form-label-custom">
+                                Previous course <span class="req-mark">*</span>
+                            </label>
+                            <input type="text" id="previous_course" name="previous_course" class="form-control input-custom"
+                                   maxlength="255" placeholder="Course taken in the previous school">
+                        </div>
+                        <div class="d-flex align-items-center mb-3">
+                            <label for="previous_year_level" class="form-label form-label-custom">
+                                Last year level <span class="req-mark">*</span>
+                            </label>
+                            <select id="previous_year_level" name="previous_year_level" class="form-select input-custom">
+                                <option value="">Select year level</option>
+                                <?php foreach (PREVIOUS_YEAR_LEVELS as $levelLabel): ?>
+                                    <option value="<?= htmlspecialchars($levelLabel) ?>"><?= htmlspecialchars($levelLabel) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
                     </div>
 
                     <div class="d-flex align-items-center mb-3">
@@ -1453,6 +1561,7 @@ include 'navbar.php';
                         <input type="text" id="place_of_birth" name="place_of_birth" class="form-control input-custom"
                                placeholder="City/Municipality, Province">
                     </div>
+
 
                     <div class="d-flex align-items-center mb-3">
                         <label for="mobile_number" class="form-label form-label-custom">

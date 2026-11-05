@@ -305,9 +305,9 @@ function sarFrameLines($mask, $w, $h, $minRun, $maxGap, $band)
 function detectSarPhotoFrame($pdfPath, $page = 1)
 {
     $sx = 1650;
-    $sy = 250;
+    $sy = 150;
     $sw = 896;
-    $sh = 950;
+    $sh = 1650;
 
     $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('sarframe_', true);
     $cmd = escapeshellarg(PDFTOPPM_BIN)
@@ -338,20 +338,26 @@ function detectSarPhotoFrame($pdfPath, $page = 1)
         return null;
     }
 
-    $mask = str_repeat("\0", $n);
-    for ($i = 0; $i < $n; $i++) {
-        $o = $i * 3;
-        if (ord($data[$o]) + ord($data[$o + 1]) + ord($data[$o + 2]) < 480) {
-            $mask[$i] = "\1";
-        }
-    }
-
     $minRun = 350;
     $maxGap = 4;
     $band   = 8;
-    [$cols, $rows] = sarFrameLines($mask, $w, $h, $minRun, $maxGap, $band);
+    $cols   = [];
+    $rows   = [];
+    foreach ([480, 600] as $threshold) {
+        $mask = str_repeat("\0", $n);
+        for ($i = 0; $i < $n; $i++) {
+            $o = $i * 3;
+            if (ord($data[$o]) + ord($data[$o + 1]) + ord($data[$o + 2]) < $threshold) {
+                $mask[$i] = "\1";
+            }
+        }
+        [$cols, $rows] = sarFrameLines($mask, $w, $h, $minRun, $maxGap, $band);
+        if (count($cols) >= 2 && $rows) {
+            break;
+        }
+    }
 
-    if (count($cols) < 2 || !$rows) {
+    if (!$cols || !$rows) {
         return null;
     }
 
@@ -359,11 +365,19 @@ function detectSarPhotoFrame($pdfPath, $page = 1)
     $right = max($cols);
     $top   = min($rows) + $band - 1;
     $width = $right - $left;
-    if ($width < 450 || $width > 750) {
+    if ($width < 450) {
+        $width = 600;
+        $right = $left + $width;
+    }
+    if ($width > 750) {
         return null;
     }
     $below  = array_filter($rows, function ($r) use ($top) { return $r > $top + 400; });
     $bottom = $below ? min($below) + $band - 1 : $top + $width;
+    if (!$below && $top + $width > $h && $top - $width >= 0) {
+        $bottom = $top;
+        $top    = $bottom - $width;
+    }
 
     $inset = 9; 
     return [
@@ -825,6 +839,13 @@ function handleUpdateStudentInfo($conn)
     $email       = trim($_POST['email'] ?? '');
     $address     = trim(preg_replace('/\s+/u', ' ', preg_replace("/[^\\p{L}\\p{M}0-9\\s.,'\\-#\\/()]/u", '', (string) ($_POST['address'] ?? ''))));
     $track       = normalizeAdmissionTrack($_POST['admission_track'] ?? '');
+    ensureStudentTypeColumns($conn);
+    $typeDetails = readStudentTypeInput($_POST, $course);
+    if ($typeDetails['error'] !== null) {
+        echo json_encode(['success' => false, 'student_type_error' => true, 'message' => $typeDetails['error']]);
+        return;
+    }
+    $track = $typeDetails['track'];
 
     if ($studentNum !== '') {
         $duplicate = findDuplicateStudentNumber($conn, $studentNum, (int) $studentId);
@@ -924,6 +945,7 @@ function handleUpdateStudentInfo($conn)
     }
 
     if (mysqli_stmt_execute($stmt)) {
+        saveStudentTypeDetails($conn, (int) $studentId, $typeDetails);
         if (in_array('graduation_year', studentColumns($conn), true)) {
             $gradInput = trim($_POST['graduation_year'] ?? '');
             $gradYear  = ctype_digit($gradInput) ? (int) $gradInput : null;
@@ -1615,6 +1637,8 @@ if ($studentId === '' || !ctype_digit((string) $studentId)) {
 }
 
 ensureStudentArchivedAt($conn);
+ensureStudentTypeColumns($conn);
+organizeStudentDocuments($conn, (int) $studentId);
 $sql  = "SELECT * FROM students WHERE student_id = ?";
 $stmt = mysqli_prepare($conn, $sql);
 mysqli_stmt_bind_param($stmt, "i", $studentId);
@@ -1626,10 +1650,7 @@ if (!$student) {
     exit();
 }
 
-if (isStudentArchived($student)) {
-    header("Location: archive.php");
-    exit();
-}
+$isArchivedView = isStudentArchived($student);
 
 $docsSql  = "SELECT document_id, document_type, requirement_code, file_name, file_path, uploaded_at
              FROM documents WHERE student_id = ? ORDER BY uploaded_at DESC, document_id DESC";
@@ -1706,6 +1727,7 @@ include 'navbar.php';
     <link href="../css/navbar-admin.css" rel="stylesheet">
     <link href="../css/student-directory-admin.css?v=<?= @filemtime(__DIR__ . '/../css/student-directory-admin.css') ?>" rel="stylesheet">
     <link href="../css/view-student.css?v=<?= @filemtime(__DIR__ . '/../css/view-student.css') ?>" rel="stylesheet">
+    <link href="../css/document-sort.css?v=<?= @filemtime(__DIR__ . '/../css/document-sort.css') ?>" rel="stylesheet">
     <link href="../css/scanner.css?v=<?= @filemtime(__DIR__ . '/../css/scanner.css') ?>" rel="stylesheet">
     <link href="../css/student-report.css?v=<?= @filemtime(__DIR__ . '/../css/student-report.css') ?>" rel="stylesheet">
     <link href="../css/student-profile.css?v=<?= @filemtime(__DIR__ . '/../css/student-profile.css') ?>" rel="stylesheet">
@@ -1714,16 +1736,24 @@ include 'navbar.php';
 <body data-student-id="<?= (int) $studentId ?>">
     <div class="view-container profile-page">
 
+        <?php if ($isArchivedView): ?>
+        <a href="archive.php" class="profile-back" title="Back to Archived Records">
+            <i class="bi bi-arrow-left"></i> Back to Archived Records
+        </a>
+        <?php else: ?>
         <a href="student_directory.php" class="profile-back" title="Back to Student Directory">
             <i class="bi bi-arrow-left"></i> Back to Student Directory
         </a>
+        <?php endif; ?>
 
         <section class="profile-header">
             <img src="<?= htmlspecialchars($photoUrl) ?>" alt="Student photo" class="profile-photo">
             <div class="profile-identity">
                 <div class="profile-name-row">
                     <h2 class="profile-name"><?= htmlspecialchars($student['name']) ?></h2>
-                    <?php if (($student['status'] ?? '') === 'graduated'): ?>
+                    <?php if ($isArchivedView): ?>
+                    <span class="profile-status profile-status-<?= htmlspecialchars(in_array($student['status'] ?? '', ['inactive', 'withdrawn'], true) ? 'withdrawn' : (($student['status'] ?? '') === 'graduated' ? 'graduate' : ($student['status'] ?? ''))) ?>"><?= htmlspecialchars($statusLabel) ?></span>
+                    <?php elseif (($student['status'] ?? '') === 'graduated'): ?>
                     <span class="profile-status profile-status-graduate"><?= htmlspecialchars($statusLabel) ?></span>
                     <?php else: ?>
                     <div class="dropdown status-dropdown">
@@ -1751,6 +1781,7 @@ include 'navbar.php';
                     <?php endif; ?>
                 </div>
             </div>
+            <?php if (!$isArchivedView): ?>
             <div class="profile-actions">
                 <button class="profile-btn profile-btn-secondary" type="button" id="generateReportBtn" data-student-id="<?= (int) $studentId ?>">
                     <i class="bi bi-file-earmark-pdf"></i> Generate report
@@ -1761,6 +1792,7 @@ include 'navbar.php';
                 </button>
                 <?php endif; ?>
             </div>
+            <?php endif; ?>
         </section>
 
         <section class="profile-card">
@@ -1777,6 +1809,17 @@ include 'navbar.php';
                         Documents <span class="profile-tab-count"><?= count($orderedDocs) ?></span>
                     </button>
                 </li>
+                <?php if (count($orderedDocs) > 1): ?>
+                <li class="nav-item doc-sort-item" role="presentation" hidden>
+                    <span class="doc-sort-prefix">Sort by</span>
+                    <div class="doc-sort-tabs" role="group" aria-label="Sort documents">
+                        <button type="button" class="doc-sort-tab active" aria-pressed="true" data-sort="default">Default</button>
+                        <button type="button" class="doc-sort-tab" aria-pressed="false" data-sort="name_asc">A-Z</button>
+                        <button type="button" class="doc-sort-tab" aria-pressed="false" data-sort="newest">Newest</button>
+                        <button type="button" class="doc-sort-tab" aria-pressed="false" data-sort="oldest">Oldest</button>
+                    </div>
+                </li>
+                <?php endif; ?>
             </ul>
 
             <div class="tab-content profile-tab-content">
@@ -1797,6 +1840,7 @@ include 'navbar.php';
                             'Home address'  => $student['address'] ?? '',
                         ]],
                         ['Academic', 'bi-mortarboard', [
+                            'Student type'        => studentTypeSummary($student),
                             (($student['status'] ?? '') === 'graduated' ? 'Last year & section' : 'Year & section') => $student['year_section'] ?? '',
                             'Year of graduation'  => $expectedGradYear !== null ? (string) $expectedGradYear : '',
                             'Date issued'         => $dateIssued,
@@ -1834,23 +1878,24 @@ include 'navbar.php';
                         <small class="d-block mt-1 <?= $emailFailed || $emailPending ? 'text-danger' : 'text-muted' ?>" data-email-note<?= $emailSummary || $emailPending ? '' : ' hidden' ?>>
                             <i class="bi bi-envelope"></i> <span data-email-note-text><?= $emailPending ? htmlspecialchars($emailPending['text']) : ($emailSummary ? htmlspecialchars($emailSummary['text']) : '') ?></span>
                         </small>
-                        <button type="button" class="btn btn-sm btn-outline-danger mt-2" id="resendEmailBtn" data-student-id="<?= (int) $studentId ?>"<?= $emailFailed || $emailPending ? '' : ' hidden' ?>><i class="bi bi-send"></i> <?= $emailPending ? 'SEND EMAIL' : 'SEND EMAIL AGAIN' ?></button>
+                        <button type="button" class="btn btn-sm btn-outline-danger mt-2" id="resendEmailBtn" data-student-id="<?= (int) $studentId ?>"<?= ($emailFailed || $emailPending) && !$isArchivedView ? '' : ' hidden' ?>><i class="bi bi-send"></i> <?= $emailPending ? 'SEND EMAIL' : 'SEND EMAIL AGAIN' ?></button>
                     </div>
                     <div id="documentList" class="d-flex flex-column gap-2">
                         <?php if (!empty($orderedDocs)): ?>
                             <?php foreach ($orderedDocs as $doc): ?>
                                 <div class="document-row requirement-view-row"
                                      data-document-id="<?= (int) $doc['document_id'] ?>"
-                                     data-file-path="<?= htmlspecialchars($doc['file_path']) ?>">
+                                     data-file-path="<?= htmlspecialchars($doc['file_path']) ?>"
+                                     data-sort-name="<?= htmlspecialchars(isStorableRequirement($doc['requirement_code'] ?? null) ? requirementLabel($doc['requirement_code']) : ($doc['document_type'] ?: 'Other Document')) ?>"
+                                     data-uploaded="<?= !empty($doc['uploaded_at']) ? (int) strtotime($doc['uploaded_at']) : 0 ?>">
                                     <i class="bi bi-file-earmark-text req-status"></i>
                                     <div class="req-body">
                                         <div class="req-label"><?= htmlspecialchars(isStorableRequirement($doc['requirement_code'] ?? null) ? requirementLabel($doc['requirement_code']) : ($doc['document_type'] ?: 'Other Document')) ?></div>
-                                        <span class="document-name"><?= htmlspecialchars($doc['file_name']) ?></span>
-                                        <?php if (!empty($doc['uploaded_at'])): ?>
-                                            <small class="text-muted"> · <?= htmlspecialchars(date('M j, Y', strtotime($doc['uploaded_at']))) ?></small>
-                                        <?php endif; ?>
                                     </div>
                                     <div class="document-actions">
+                                        <?php if (!empty($doc['uploaded_at'])): ?>
+                                            <time class="doc-uploaded-ago" datetime="<?= htmlspecialchars(date('c', strtotime($doc['uploaded_at']))) ?>"><?= htmlspecialchars(date('M j, Y g:i A', strtotime($doc['uploaded_at']))) ?></time>
+                                        <?php endif; ?>
                                         <button type="button" class="btn btn-sm btn-outline-secondary document-view-btn" title="Preview file">
                                             <i class="bi bi-eye"></i>
                                         </button>
@@ -1965,7 +2010,7 @@ include 'navbar.php';
                                                            value="<?= htmlspecialchars($student['student_number'] ?? '') ?>" maxlength="15" placeholder="0000-00000-BN-0" inputmode="numeric" autocomplete="off">
                                                 </div>
                                                 <small id="editStudentNumberFeedback" class="text-danger d-block mb-3" hidden></small>
-                                                <div class="d-flex align-items-center mb-3">
+                                                <div class="d-flex align-items-center mb-3" id="editCourseRow">
                                                     <label for="edit_course" class="form-label form-label-custom">Course</label>
                                                     <?php
                                                         $currentCourse = normalizeCourseName($student['course'] ?? '');
@@ -1992,33 +2037,6 @@ include 'navbar.php';
                                                            value="<?= htmlspecialchars($student['year_section'] ?? '') ?>" pattern="[0-9]-[0-9]" inputmode="numeric" maxlength="3" title="One number for the year and one for the section, e.g. 1-1" placeholder="1-1">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_sex" class="form-label form-label-custom">Gender</label>
-                                                    <input type="text" id="edit_sex" name="sex" class="form-control input-custom"
-                                                           value="<?= htmlspecialchars($student['sex'] ?? '') ?>" pattern="[A-Za-z\s]+" placeholder="Female/Male">
-                                                </div>
-                                            </div>
-                                            <div class="col-md-6">
-                                                <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_admission_track" class="form-label form-label-custom">Admission type</label>
-                                                    <select id="edit_admission_track" name="admission_track" class="form-select input-custom">
-                                                        <?php foreach (getAdmissionTracks() as $trackValue => $trackLabel): ?>
-                                                            <option value="<?= htmlspecialchars($trackValue) ?>" <?= $trackValue === $admissionTrack ? 'selected' : '' ?>><?= htmlspecialchars($trackLabel) ?></option>
-                                                        <?php endforeach; ?>
-                                                    </select>
-                                                </div>
-                                                <small id="trackChangeNote" class="text-danger d-block mb-3" hidden></small>
-                                                <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_date_of_birth" class="form-label form-label-custom">Date of birth</label>
-                                                    <input type="date" id="edit_date_of_birth" name="date_of_birth" class="form-control input-custom"
-                                                           value="<?= htmlspecialchars($student['date_of_birth'] ?? '') ?>" min="1900-01-01" max="<?= minimumBirthDate() ?>"
-                                                           title="The student must turn at least 17 years old this year">
-                                                </div>
-                                                <div class="d-flex align-items-center mb-3">
-                                                    <label for="edit_place_of_birth" class="form-label form-label-custom">Place of birth</label>
-                                                    <input type="text" id="edit_place_of_birth" name="place_of_birth" class="form-control input-custom"
-                                                           value="<?= htmlspecialchars($student['place_of_birth'] ?? '') ?>" placeholder="City/Municipality, Province">
-                                                </div>
-                                                <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_graduation_year" class="form-label form-label-custom">Year of Graduation</label>
                                                     <select id="edit_graduation_year" name="graduation_year" class="form-select input-custom"
                                                             data-current-sy-end="<?= (int) currentSchoolYearEndYear() ?>"
@@ -2033,6 +2051,87 @@ include 'navbar.php';
                                                     </select>
                                                 </div>
                                                 <small id="editGraduationNote" class="text-danger d-block mb-3" hidden></small>
+                                                <div class="d-flex align-items-center mb-3">
+                                                    <label for="edit_sex" class="form-label form-label-custom">Gender</label>
+                                                    <input type="text" id="edit_sex" name="sex" class="form-control input-custom"
+                                                           value="<?= htmlspecialchars($student['sex'] ?? '') ?>" pattern="[A-Za-z\s]+" placeholder="Female/Male">
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <?php $editStudentType = studentTypeOf($admissionTrack); ?>
+                                                <div class="d-flex align-items-center mb-3">
+                                                    <label for="edit_student_type" class="form-label form-label-custom">Student type</label>
+                                                    <select id="edit_student_type" name="student_type" class="form-select input-custom">
+                                                        <?php foreach (STUDENT_TYPES as $typeValue => $typeLabel): ?>
+                                                            <option value="<?= htmlspecialchars($typeValue) ?>" <?= $typeValue === $editStudentType ? 'selected' : '' ?>><?= htmlspecialchars($typeLabel) ?></option>
+                                                        <?php endforeach; ?>
+                                                    </select>
+                                                </div>
+                                                <div class="d-flex align-items-center mb-3" id="editAdmissionTrackRow">
+                                                    <label for="edit_admission_track" class="form-label form-label-custom">Admission type</label>
+                                                    <select id="edit_admission_track" name="admission_track" class="form-select input-custom">
+                                                        <?php foreach (regularAdmissionTracks() as $trackValue => $trackLabel): ?>
+                                                            <option value="<?= htmlspecialchars($trackValue) ?>" <?= $trackValue === $admissionTrack ? 'selected' : '' ?>><?= htmlspecialchars($trackLabel) ?></option>
+                                                        <?php endforeach; ?>
+                                                    </select>
+                                                </div>
+                                                <div class="student-type-fields" data-student-type="shiftee" <?= $editStudentType === 'shiftee' ? '' : 'hidden' ?>>
+                                                    <div class="d-flex align-items-center mb-3">
+                                                        <label for="edit_shift_from_course" class="form-label form-label-custom">Shifting from <span class="req-mark">*</span></label>
+                                                        <select id="edit_shift_from_course" name="shift_from_course" class="form-select input-custom">
+                                                            <option value="">Select previous course</option>
+                                                            <?php $shiftFrom = (string) ($student['shift_from_course'] ?? ''); $shiftFromListed = false; ?>
+                                                            <?php foreach (getCourseCatalog() as $courseEntry): ?>
+                                                                <?php $shiftOption = courseDisplayName($courseEntry); $shiftFromListed = $shiftFromListed || $shiftOption === $shiftFrom; ?>
+                                                                <option value="<?= htmlspecialchars($shiftOption) ?>" <?= $shiftOption === $shiftFrom ? 'selected' : '' ?>><?= htmlspecialchars($shiftOption) ?></option>
+                                                            <?php endforeach; ?>
+                                                            <?php if ($shiftFrom !== '' && !$shiftFromListed): ?>
+                                                                <option value="<?= htmlspecialchars($shiftFrom) ?>" selected><?= htmlspecialchars($shiftFrom) ?></option>
+                                                            <?php endif; ?>
+                                                        </select>
+                                                    </div>
+                                                    <div class="d-flex align-items-center mb-3">
+                                                        <label for="edit_shift_to_course" class="form-label form-label-custom">Shifting to <span class="req-mark">*</span></label>
+                                                        <select id="edit_shift_to_course" class="form-select input-custom" data-mirrors="edit_course">
+                                                            <option value="">Select new course</option>
+                                                            <?php foreach ($courseChoices as $courseChoice): ?>
+                                                                <option value="<?= htmlspecialchars($courseChoice) ?>" <?= $courseChoice === $currentCourse ? 'selected' : '' ?>><?= htmlspecialchars($courseChoice) ?></option>
+                                                            <?php endforeach; ?>
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                                <div class="student-type-fields" data-student-type="transferee" <?= $editStudentType === 'transferee' ? '' : 'hidden' ?>>
+                                                    <div class="d-flex align-items-center mb-3">
+                                                        <label for="edit_previous_school" class="form-label form-label-custom">Previous school <span class="req-mark">*</span></label>
+                                                        <input type="text" id="edit_previous_school" name="previous_school" class="form-control input-custom" maxlength="255"
+                                                               value="<?= htmlspecialchars($student['previous_school'] ?? '') ?>" placeholder="School the student transferred from">
+                                                    </div>
+                                                    <div class="d-flex align-items-center mb-3">
+                                                        <label for="edit_previous_course" class="form-label form-label-custom">Previous course <span class="req-mark">*</span></label>
+                                                        <input type="text" id="edit_previous_course" name="previous_course" class="form-control input-custom" maxlength="255"
+                                                               value="<?= htmlspecialchars($student['previous_course'] ?? '') ?>" placeholder="Course taken in the previous school">
+                                                    </div>
+                                                    <div class="d-flex align-items-center mb-3">
+                                                        <label for="edit_previous_year_level" class="form-label form-label-custom">Last year level <span class="req-mark">*</span></label>
+                                                        <select id="edit_previous_year_level" name="previous_year_level" class="form-select input-custom">
+                                                            <option value="">Select year level</option>
+                                                            <?php foreach (PREVIOUS_YEAR_LEVELS as $levelLabel): ?>
+                                                                <option value="<?= htmlspecialchars($levelLabel) ?>" <?= ($student['previous_year_level'] ?? '') === $levelLabel ? 'selected' : '' ?>><?= htmlspecialchars($levelLabel) ?></option>
+                                                            <?php endforeach; ?>
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                                <div class="d-flex align-items-center mb-3">
+                                                    <label for="edit_date_of_birth" class="form-label form-label-custom">Date of birth</label>
+                                                    <input type="date" id="edit_date_of_birth" name="date_of_birth" class="form-control input-custom"
+                                                           value="<?= htmlspecialchars($student['date_of_birth'] ?? '') ?>" min="1900-01-01" max="<?= minimumBirthDate() ?>"
+                                                           title="The student must turn at least 17 years old this year">
+                                                </div>
+                                                <div class="d-flex align-items-center mb-3">
+                                                    <label for="edit_place_of_birth" class="form-label form-label-custom">Place of birth</label>
+                                                    <input type="text" id="edit_place_of_birth" name="place_of_birth" class="form-control input-custom"
+                                                           value="<?= htmlspecialchars($student['place_of_birth'] ?? '') ?>" placeholder="City/Municipality, Province">
+                                                </div>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_mobile_number" class="form-label form-label-custom">Mobile number</label>
                                                     <input type="text" id="edit_mobile_number" name="mobile_number" class="form-control input-custom"
@@ -2070,8 +2169,7 @@ include 'navbar.php';
                                                                  data-file-path="<?= htmlspecialchars($doc['file_path']) ?>"
                                                                  data-requirement-code="<?= htmlspecialchars($doc['requirement_code'] ?? '') ?>">
                                                                 <div class="document-row-body flex-grow-1">
-                                                                    <span class="document-row-title"><?= htmlspecialchars(requirementLabel($doc['requirement_code'] ?? null)) ?></span>
-                                                                    <span class="document-name d-block text-muted small"><?= htmlspecialchars($doc['file_name']) ?></span>
+                                                                    <span class="document-row-title d-block"><?= htmlspecialchars(requirementLabel($doc['requirement_code'] ?? null)) ?></span>
                                                                     <select class="form-select form-select-sm document-type-select" aria-label="Document type"></select>
                                                                 </div>
                                                                 <div class="document-actions">
@@ -2145,7 +2243,30 @@ include 'navbar.php';
         </div>
     </div>
 
-    <?php if (($student['status'] ?? '') !== 'graduated'): ?>
+    <div class="modal fade" id="typeChangeModal" tabindex="-1" aria-hidden="true" data-bs-focus="false">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header confirm-header">
+                    <div class="add-heading">
+                        <span class="add-heading-icon"><i class="bi bi-arrow-left-right"></i></span>
+                        <div class="add-heading-text">
+                            <h5 class="modal-title confirm-title" id="typeChangeTitle">Change student type</h5>
+                            <p class="add-subtitle" id="typeChangeNote"></p>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-0">Changing the student type will change the required documents. Continue?</p>
+                </div>
+                <div class="modal-footer confirm-footer">
+                    <button type="button" class="btn btn-cancel" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-save" id="typeChangeConfirmBtn">Continue</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <?php if (($student['status'] ?? '') !== 'graduated' && !$isArchivedView): ?>
     <div class="modal fade" id="changeStatusModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
@@ -2217,6 +2338,7 @@ include 'navbar.php';
         'documents'    => $clientDocuments,
     ]), ENT_QUOTES, 'UTF-8') ?>"></div>
     <script src="../js/view-student.js?v=<?= @filemtime(__DIR__ . '/../js/view-student.js') ?>"></script>
+    <script src="../js/document-sort.js?v=<?= @filemtime(__DIR__ . '/../js/document-sort.js') ?>"></script>
     <script src="../js/scanner.js?v=<?= @filemtime(__DIR__ . '/../js/scanner.js') ?>"></script>
     <script src="../js/student-report.js?v=<?= @filemtime(__DIR__ . '/../js/student-report.js') ?>"></script>
 </body>
