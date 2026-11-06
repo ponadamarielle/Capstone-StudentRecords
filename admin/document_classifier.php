@@ -796,6 +796,13 @@ function extractPdfPages($srcPdf, array $pages, $destPdf)
     return file_exists($destPdf);
 }
 
+function fieldDocumentTitlePattern()
+{
+    return '/HEALTH\s+INFORMATION\s+FORM|ROUTE\s+AND\s+APPROVAL\s+SLIP|SAR[\s-]*FORM|CONFIRMATION\s+SLIP'
+        . '|CERTIFICATION\s*\/\s*UNDERTAKING|CERTIFICATE\s+OF\s+LIVE\s+BIRTH|HONORABLE\s+DISMISSAL'
+        . '|TRANSFER\s+CREDENTIALS?|TRANSCRIPT\s+OF\s+RECORDS?|SHIFTING\s+FORM/i';
+}
+
 function processDocumentUpload($destPath, $originalName, $uploadDir, array $options = [])
 {
     $startedAt  = microtime(true);
@@ -844,7 +851,16 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     }
     $timings['pdf_text'] = microtime(true) - $startedAt;
     $mark = microtime(true);
-    $readPages($scannedPages);
+    $visionFirst = [];
+    if (count($pageTexts) <= 3) {
+        foreach ($pageTexts as $p => $text) {
+            if (!in_array($p, $scannedPages, true) && preg_match(fieldDocumentTitlePattern(), $text)) {
+                $visionFirst = array_keys($pageTexts);
+                break;
+            }
+        }
+    }
+    $readPages(array_merge($scannedPages, $visionFirst));
     foreach ($scannedPages as $p) {
         $pageTexts[$p] = $aiCache[$p]['text'] ?? '';
     }
@@ -967,6 +983,13 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
             if (($extracted[$key] ?? '') === '' && $value !== '') {
                 $extracted[$key] = $value;
             }
+        }
+    }
+
+    if (($extracted['year_section'] ?? '') !== '') {
+        $yearSection = strtr(trim($extracted['year_section']), ['I' => '1', 'l' => '1', 'i' => '1', '|' => '1', '!' => '1', 'O' => '0', 'o' => '0']);
+        if (preg_match('/^(\d)\s*[-\x{2010}-\x{2015}\/]\s*(\d)$/u', $yearSection, $m)) {
+            $extracted['year_section'] = $m[1] . '-' . $m[2];
         }
     }
 

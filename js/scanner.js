@@ -166,6 +166,12 @@ document.addEventListener('DOMContentLoaded', function () {
         waiting = false;
     }
 
+    function hideScannerDialog() {
+        const data = new FormData();
+        data.append('action', 'keep');
+        fetch('scan_dialog.php', { method: 'POST', body: data }).catch(() => {});
+    }
+
     function showWaiting(message) {
         statusBox.hidden = false;
         statusText.textContent = message;
@@ -198,6 +204,7 @@ document.addEventListener('DOMContentLoaded', function () {
         waiting = true;
         const seq = ++waitSeq;
         showWaiting(waitingMessage());
+        hideScannerDialog();
         const start = new FormData();
         start.append('action', 'watch_start');
         try {
@@ -207,6 +214,7 @@ document.addEventListener('DOMContentLoaded', function () {
         while (seq === waitSeq) {
             await new Promise((r) => setTimeout(r, 1500));
             if (seq !== waitSeq) return;
+            hideScannerDialog();
             if (!currentToken && Date.now() - startedAt > WAIT_LIMIT_MS) {
                 stopWaiting();
                 setView('error', 'No scanned document was received. Place the document in the scanner and click START SCAN to try again.');

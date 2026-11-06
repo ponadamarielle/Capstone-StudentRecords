@@ -5,8 +5,8 @@ const GROQ_API_URL       = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_DEFAULT_MODEL = 'qwen/qwen3.8-27b';
 const AI_MAX_PARALLEL    = 5;
 const AI_PAGE_IMAGE_SIZE = 1280;
-const AI_ZOOM_WIDTH      = 1600;
-const AI_ZOOM_HEIGHT     = 1280;
+const AI_ZOOM_WIDTH      = 1440;
+const AI_ZOOM_HEIGHT     = 1152;
 const AI_MAX_WAIT        = 45;
 
 const AI_STUDENT_FIELDS = [
@@ -85,7 +85,7 @@ function groqWouldExceed($requests)
     $usage = groqUsage();
     $limit = (int) (getenv('GROQ_ITPM_LIMIT') ?: 7000);
     $last = $usage ? (int) end($usage)[1] : 0;
-    $perRequest = max($last, (int) (getenv('GROQ_TOKENS_PER_PAGE') ?: 3800));
+    $perRequest = max($last, (int) (getenv('GROQ_TOKENS_PER_PAGE') ?: 3400));
     $now = microtime(true);
     $used = 0.0;
     foreach ($usage as [$time, $tokens]) {
@@ -114,7 +114,7 @@ function groqNoteRemaining($model, $headers)
     if (!preg_match('/^x-ratelimit-remaining-tokens:\s*(\d+)/mi', (string) $headers, $remaining)) {
         return;
     }
-    $needed = (int) (getenv('GROQ_TOKENS_PER_PAGE') ?: 3800);
+    $needed = (int) (getenv('GROQ_TOKENS_PER_PAGE') ?: 3400);
     if ((int) $remaining[1] >= $needed) {
         return;
     }
@@ -218,7 +218,7 @@ function geminiEffort($model)
 function geminiSend(array $pending, $model, $effort)
 {
     $url = rtrim(getenv('GEMINI_BASE_URL') ?: 'https://generativelanguage.googleapis.com/v1beta/openai', '/') . '/chat/completions';
-    $timeout = max(4, (int) (getenv('GEMINI_TIMEOUT') ?: 6));
+    $timeout = max(4, (int) (getenv('GEMINI_TIMEOUT') ?: 12));
     $mh = curl_multi_init();
     $handles = [];
     foreach ($pending as $key => $body) {
@@ -238,12 +238,19 @@ function geminiSend(array $pending, $model, $effort)
         curl_multi_add_handle($mh, $ch);
         $handles[$key] = $ch;
     }
+    $curlCodes = [];
     do {
         $status = curl_multi_exec($mh, $running);
+        while ($info = curl_multi_info_read($mh)) {
+            $curlCodes[is_object($info['handle']) ? spl_object_id($info['handle']) : (int) $info['handle']] = $info['result'];
+        }
         if ($running) {
             curl_multi_select($mh, 1.0);
         }
     } while ($running && $status === CURLM_OK);
+    while ($info = curl_multi_info_read($mh)) {
+        $curlCodes[is_object($info['handle']) ? spl_object_id($info['handle']) : (int) $info['handle']] = $info['result'];
+    }
 
     $results = [];
     $failures = [];
@@ -251,6 +258,10 @@ function geminiSend(array $pending, $model, $effort)
         $response = (string) curl_multi_getcontent($ch);
         $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curlErr  = curl_error($ch);
+        $curlCode = $curlCodes[is_object($ch) ? spl_object_id($ch) : (int) $ch] ?? 0;
+        if ($curlErr === '' && $curlCode !== 0) {
+            $curlErr = 'curl error ' . $curlCode . ': ' . curl_strerror($curlCode);
+        }
         curl_multi_remove_handle($mh, $ch);
         curl_close($ch);
         if ($httpCode === 200) {
@@ -386,12 +397,19 @@ function cloudflareSend(array $pending, $noThinkingFlag)
         curl_multi_add_handle($mh, $ch);
         $handles[$key] = $ch;
     }
+    $curlCodes = [];
     do {
         $status = curl_multi_exec($mh, $running);
+        while ($info = curl_multi_info_read($mh)) {
+            $curlCodes[is_object($info['handle']) ? spl_object_id($info['handle']) : (int) $info['handle']] = $info['result'];
+        }
         if ($running) {
             curl_multi_select($mh, 1.0);
         }
     } while ($running && $status === CURLM_OK);
+    while ($info = curl_multi_info_read($mh)) {
+        $curlCodes[is_object($info['handle']) ? spl_object_id($info['handle']) : (int) $info['handle']] = $info['result'];
+    }
 
     $results = [];
     $failures = [];
@@ -399,6 +417,10 @@ function cloudflareSend(array $pending, $noThinkingFlag)
         $response = (string) curl_multi_getcontent($ch);
         $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curlErr  = curl_error($ch);
+        $curlCode = $curlCodes[is_object($ch) ? spl_object_id($ch) : (int) $ch] ?? 0;
+        if ($curlErr === '' && $curlCode !== 0) {
+            $curlErr = 'curl error ' . $curlCode . ': ' . curl_strerror($curlCode);
+        }
         $took     = (float) curl_getinfo($ch, CURLINFO_TOTAL_TIME);
         curl_multi_remove_handle($mh, $ch);
         curl_close($ch);
@@ -736,7 +758,9 @@ function aiFieldRules()
         . "- course: the course/program exactly as written, usually an abbreviation such as BSIT, BSPSY, BSA, BEED. Never replace it with a different course. "
         . "The Selected NSTP (CWTS, LTS or ROTC) on SAR Form 1 is NOT a course; SAR Form 1 has no course, so leave course \"\" for it.\n"
         . "- year_section: \"year-section\" as two single digits, e.g. \"1-1\". If only a section is written (e.g. \"Section: 1\" on the Route and Approval Slip), "
-        . "the student is a freshman, so return \"1-\" plus the section, e.g. \"1-1\". \"\" if not written. A school year like 2026-2027 is NOT a year & section.\n"
+        . "the student is a freshman, so return \"1-\" plus the section, e.g. \"1-1\". \"\" if not written. A school year like 2026-2027 is NOT a year & section. "
+        . "A handwritten section is often a single short vertical stroke; a lone stroke that looks like I, l or | is the digit 1, so \"Section: |\" gives \"1-1\". "
+        . "Look closely at the small Section blank beside Program on the Route and Approval Slip before deciding it is empty.\n"
         . "- sex: \"Male\" or \"Female\".\n"
         . "- date_of_birth: YYYY-MM-DD.\n"
         . "- place_of_birth: city/municipality and province.\n"
@@ -747,11 +771,15 @@ function aiFieldRules()
     return $rules;
 }
 
-function aiPageCache($text = null, $fields = null)
+function aiPageCache($text = null, $fields = null, $first = false)
 {
     static $pages = [];
     if ($text !== null) {
-        $pages[] = ['text' => $text, 'fields' => $fields];
+        if ($first) {
+            array_unshift($pages, ['text' => $text, 'fields' => $fields]);
+        } else {
+            $pages[] = ['text' => $text, 'fields' => $fields];
+        }
     }
     return $pages;
 }
@@ -796,7 +824,7 @@ function aiPageReadMessages(array $dataUrls)
 {
     $types = aiDocTypeList();
     $system = "You read scanned Philippine university student documents and reply with ONLY a JSON object:\n"
-        . "{\"doc_type\": \"\", \"doc_confidence\": \"high\", \"grade_level\": \"\", \"fields\": {\"student_number\": \"\", \"last_name\": \"\", \"first_name\": \"\", \"middle_name\": \"\", \"course\": \"\", \"year_section\": \"\", \"sex\": \"\", "
+        . "{\"doc_type\": \"\", \"doc_confidence\": \"high\", \"grade_level\": \"\", \"turn\": \"none\", \"fields\": {\"student_number\": \"\", \"last_name\": \"\", \"first_name\": \"\", \"middle_name\": \"\", \"course\": \"\", \"year_section\": \"\", \"sex\": \"\", "
         . "\"date_of_birth\": \"\", \"place_of_birth\": \"\", \"address\": \"\", \"mobile_number\": \"\", \"email\": \"\"}, \"text\": \"...\"}\n"
         . ($types !== ''
             ? "\"doc_type\": the code of what this page IS (not documents it merely mentions), or \"none\" for a blank page, "
@@ -808,6 +836,9 @@ function aiPageReadMessages(array $dataUrls)
               . "Pages may be scanned sideways or upside down; read the rotated text.\n"
               . "\"doc_confidence\": high, medium or low.\n\"grade_level\": for a report card, only the number written in its Grade or Grade Level field (for example 11), otherwise empty.\nDocument types (code: name. description):\n" . $types
             : '')
+        . "\"turn\": how the image must be turned so its main text reads upright: \"none\" if it is already upright, "
+        . "\"clockwise\" if it must be turned 90 degrees clockwise (the text now runs from bottom to top), "
+        . "\"counterclockwise\" if it must be turned 90 degrees counterclockwise (the text now runs from top to bottom), or \"upside_down\".\n"
         . "\"fields\": the student's details found on this page.\n"
         . "\"text\": only the form code and the document title printed on the page (use \\n between them), at most 200 characters. No markdown.\n"
         . aiFieldRules();
@@ -871,6 +902,8 @@ function aiReadImages(array $imagePaths)
         ];
         $gradeLevel = preg_replace('/\D/', '', (string) ($json['grade_level'] ?? ''));
         $read['grade_level'] = $gradeLevel;
+        $turn = strtolower(str_replace([' ', '-'], '_', trim((string) ($json['turn'] ?? ''))));
+        $read['turn'] = in_array($turn, ['clockwise', 'counterclockwise', 'upside_down'], true) ? $turn : 'none';
         error_log('AI page read: doc_type=' . ($read['doc_type'] ?? '') . ', grade_level=' . ($json['grade_level'] ?? '') . ', text=' . str_replace("\n", ' | ', $text));
         if (in_array($gradeLevel, ['10', '11', '12'], true) && in_array((string) $read['doc_type'], ['grade_10_card', 'grade_11_card', 'grade_12_card', 'none', ''], true)) {
             $read['doc_type'] = 'grade_' . $gradeLevel . '_card';
@@ -993,19 +1026,26 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir)
     }
     $commands = [];
     $files = [];
+    $wideFiles = [];
     foreach ($pages as $page) {
         [$cmd, $file] = isset($sideways[$page])
             ? aiPageFullRenderCommand($pdfPath, $page, $workDir)
             : aiPageRenderCommand($pdfPath, $page, $workDir, true);
         $commands[$page] = $cmd;
         $files[$page][] = $file;
+        if (!isset($sideways[$page]) && count($pages) <= 3) {
+            [$commands['wide' . $page], $wideFiles[$page]] = aiPageWideRenderCommand($pdfPath, $page, $workDir);
+        }
     }
     aiRunCommandsParallel($commands);
+    foreach ($wideFiles as $page => $file) {
+        $files[$page][] = $file;
+    }
 
     $images = [];
     $results = [];
     foreach ($pages as $page) {
-        $ready = array_values(array_filter($files[$page], 'file_exists'));
+        $ready = array_values(array_filter([$files[$page][0]], 'file_exists'));
         $results[$page] = ['text' => null, 'doc_type' => null, 'doc_confidence' => 'low', 'render_failed' => !file_exists($files[$page][0])];
         if (file_exists($files[$page][0])) {
             $images[$page] = $ready;
@@ -1046,12 +1086,181 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir)
             }
         }
     }
+    $cardPages = [];
+    $cardCommands = [];
+    foreach ($results as $page => $read) {
+        $isCard = in_array((string) $read['doc_type'], $cardCodes, true)
+            || preg_match('/\bSF\s*-?\s*9\b|F\s*-?\s*138|report\s*card|progress\s*report|attendance\s*record/i', (string) $read['text']);
+        if ($isCard && isset($sideways[$page])) {
+            $base = rtrim($workDir, '/\\') . '/' . uniqid('aicard_', true);
+            $cardCommands[$page] = escapeshellarg(PDFTOPPM_BIN) . ' -jpeg -jpegopt quality=85 -scale-to 2000'
+                . ' -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+                . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($base);
+            $files[$page][] = $base . '.jpg';
+            $cardPages[$page] = ['file' => $base . '.jpg', 'turn' => $read['turn'] ?? 'none'];
+        }
+    }
+    if ($cardPages) {
+        aiRunCommandsParallel($cardCommands);
+        foreach (aiReadCardGrade($cardPages) as $page => $grade) {
+            $code = 'grade_' . $grade . '_card';
+            if ($results[$page]['doc_type'] !== $code) {
+                error_log('AI report card grade re-check: page ' . $page . ' changed from ' . $results[$page]['doc_type'] . ' to ' . $code . '.');
+            }
+            $results[$page]['doc_type'] = $code;
+            $results[$page]['grade_level'] = $grade;
+        }
+    }
+
+    $slipPages = [];
+    foreach ($results as $page => $read) {
+        if ((string) $read['doc_type'] === 'route_approval_slip' && !isset($sideways[$page]) && trim((string) $read['text']) !== '') {
+            if (isset($wideFiles[$page]) && is_file($wideFiles[$page])) {
+                $slipPages[$page] = $wideFiles[$page];
+                continue;
+            }
+            [$slipCommands[$page], $slipFile] = aiPageWideRenderCommand($pdfPath, $page, $workDir);
+            $files[$page][] = $slipFile;
+            $slipPages[$page] = $slipFile;
+        }
+    }
+    if ($slipPages) {
+        if (!empty($slipCommands)) {
+            aiRunCommandsParallel($slipCommands);
+        }
+        aiReadRouteSlipProgram($slipPages, $results, $workDir, $files);
+    }
     foreach ($files as $set) {
         foreach ($set as $file) {
             @unlink($file);
         }
     }
     return $results;
+}
+
+function aiReadCardGrade(array $cardPages)
+{
+    $bodies = [];
+    $upright = [];
+    foreach ($cardPages as $page => $card) {
+        $file = $card['file'];
+        if (!is_file($file)) {
+            continue;
+        }
+        $angles = ['clockwise' => 270, 'counterclockwise' => 90, 'upside_down' => 180];
+        $upright[$page] = false;
+        if (isset($angles[$card['turn']]) && function_exists('imagerotate') && function_exists('imagecreatefromjpeg')) {
+            $img = @imagecreatefromjpeg($file);
+            if ($img) {
+                $rotated = imagerotate($img, $angles[$card['turn']], imagecolorallocate($img, 255, 255, 255));
+                imagedestroy($img);
+                if ($rotated) {
+                    imagejpeg($rotated, $file, 85);
+                    imagedestroy($rotated);
+                    $upright[$page] = true;
+                    error_log('AI report card grade re-check: page ' . $page . ' turned ' . $card['turn'] . ' to read it upright.');
+                }
+            }
+        }
+        $url = imageToDataUrlForAi($file, 2000, 1800000);
+        if ($url === null) {
+            continue;
+        }
+        $bodies[$page] = groqRequestBody([
+            ['role' => 'system', 'content' => "You read a scanned Philippine DepEd report card (SF9 / Form 138) and reply with ONLY a JSON object: {\"grade\": \"\"}.\n"
+                . ($upright[$page] ? "The page has been turned so the text is upright. " : "The page is rotated sideways; turn it in your mind so the text is upright. ")
+                . "On the cover side, find the learner details (LRN, Name, Age, Sex, Grade, Section, School Year, Track/Strand). "
+                . "\"grade\": only the number written in the Grade field, usually handwritten, for example 10, 11 or 12. Read both digits carefully: 12 and 10 look alike. "
+                . "A Track/Strand such as STEM, ABM, HUMSS or GAS means Senior High School, so the grade is 11 or 12, never 10. Use \"\" if it is not written."],
+            ['role' => 'user', 'content' => [
+                ['type' => 'text', 'text' => 'What grade is written on this report card?'],
+                ['type' => 'image_url', 'image_url' => ['url' => $url]],
+            ]],
+        ], true, 60);
+    }
+    $grades = [];
+    foreach ($bodies ? groqChatMany($bodies) : [] as $page => $reply) {
+        $json = aiDecodeJson($reply);
+        $grade = preg_replace('/\D/', '', (string) ($json['grade'] ?? ''));
+        error_log('AI report card grade re-check: page ' . $page . ' grade=' . $grade);
+        if (in_array($grade, ['10', '11', '12'], true)) {
+            $grades[$page] = $grade;
+        }
+    }
+    return $grades;
+}
+
+function aiPageWideRenderCommand($pdfPath, $page, $outDir)
+{
+    $base = rtrim($outDir, '/\\') . '/' . uniqid('aiwide_', true);
+    $cmd = escapeshellarg(PDFTOPPM_BIN) . ' -jpeg -jpegopt quality=85 -scale-to-x ' . AI_ZOOM_WIDTH . ' -scale-to-y -1'
+        . ' -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+        . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($base);
+    return [$cmd, $base . '.jpg'];
+}
+
+function aiReadRouteSlipProgram(array $slipPages, array $results, $workDir, array &$files)
+{
+    if (!function_exists('imagecreatefromjpeg')) {
+        return;
+    }
+    $bodies = [];
+    foreach ($slipPages as $page => $file) {
+        $img = is_file($file) ? @imagecreatefromjpeg($file) : false;
+        if (!$img) {
+            continue;
+        }
+        $w = imagesx($img);
+        $h = imagesy($img);
+        $top = (int) round($h * 0.45);
+        $band = imagecrop($img, ['x' => 0, 'y' => $top, 'width' => $w, 'height' => (int) round($h * 0.30)]);
+        imagedestroy($img);
+        if (!$band) {
+            continue;
+        }
+        $small = imagescale($band, 1100, -1, IMG_BILINEAR_FIXED);
+        if ($small) {
+            imagedestroy($band);
+            $band = $small;
+        }
+        $bandFile = rtrim($workDir, '/\\') . '/' . uniqid('aiband_', true) . '.jpg';
+        imagejpeg($band, $bandFile, 85);
+        imagedestroy($band);
+        $files[$page][] = $bandFile;
+        $url = imageToDataUrlForAi($bandFile, 1100, 500000);
+        if ($url === null) {
+            continue;
+        }
+        $bodies[$page] = groqRequestBody([
+            ['role' => 'system', 'content' => "You read one part of a PUP Route and Approval Slip and reply with ONLY a JSON object: {\"program\": \"\", \"section\": \"\"}.\n"
+                . "Find Step 2 (College Interview and Tagging of Program). \"program\": the handwritten course written after Program:, exactly as written, usually an abbreviation such as BSIT, BSCPE, BSPSY, BSA. "
+                . "\"section\": the handwritten value after Section:, a single digit. A lone short vertical stroke that looks like I, l or | is the digit 1. "
+                . "Use \"\" only when the blank is truly empty."],
+            ['role' => 'user', 'content' => [
+                ['type' => 'text', 'text' => 'Read the Program and Section in Step 2.'],
+                ['type' => 'image_url', 'image_url' => ['url' => $url]],
+            ]],
+        ], true, 60);
+    }
+    if (!$bodies) {
+        return;
+    }
+    foreach (groqChatMany($bodies) as $page => $reply) {
+        $json = aiDecodeJson($reply);
+        if ($json === null) {
+            continue;
+        }
+        $section = trim((string) ($json['section'] ?? ''));
+        $fields = sanitizeAiStudentFields([
+            'course'       => (string) ($json['program'] ?? ''),
+            'year_section' => $section !== '' ? 'Section ' . $section : '',
+        ]);
+        error_log('AI route slip re-check: program=' . ($json['program'] ?? '') . ', section=' . $section);
+        $text = trim((string) ($results[$page]['text'] ?? ''));
+        if ($text !== '' && ($fields['course'] !== '' || $fields['year_section'] !== '')) {
+            aiPageCache($text, $fields, true);
+        }
+    }
 }
 
 function aiFieldsFromCache($text)
@@ -1157,6 +1366,8 @@ function sanitizeAiStudentFields(array $raw)
         $f['course'] = trim(preg_replace('/\s+/', ' ', preg_replace('/[^A-Za-z\s\-]/', '', $course)));
     }
 
+    $f['year_section'] = preg_replace('/(?<![A-Za-z])[Il|i](?![A-Za-z])/', '1', $f['year_section']);
+    $f['year_section'] = preg_replace('/(?<![A-Za-z])[Oo](?![A-Za-z])/', '0', $f['year_section']);
     if (preg_match('/^\D*(\d)\s*[-\x{2010}-\x{2015}\/]\s*(\d)\D*$/u', $f['year_section'], $m)) {
         $f['year_section'] = $m[1] . '-' . $m[2];
     } elseif (preg_match('/^\D*(\d)\D*$/', $f['year_section'], $m)) {

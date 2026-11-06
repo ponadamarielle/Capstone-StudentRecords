@@ -252,6 +252,9 @@
     font-weight: 500;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
+.add-filter .btn-report {
+    margin-left: auto;
+}
 a.view-btn {
     text-decoration: none;
     white-space: nowrap;

@@ -373,7 +373,7 @@ if (!$documents) {
     $pdf->Cell(0, 6, reportText('No documents have been submitted.'), 0, 1);
 } else {
     $widths = [10, 58, 62, 26, $contentWidth - 156];
-    $pdf->TableHeader($widths, ['No.', 'Document Type', 'File Name', 'Date Uploaded', 'Checked By']);
+    $pdf->TableHeader($widths, ['No.', 'Document', 'File Name', 'Date Uploaded', 'Checked By']);
     foreach ($documents as $i => $doc) {
         $pdf->TableRow(
             $widths,

@@ -482,11 +482,256 @@ function savePhotoWithTopSpace($pdfPath, $page, array $box, $photoBase, $spaceRa
     return writePngRgb($path, $w, $h + $space, $rgb) ? $path : null;
 }
 
+function findHealthPhotoFrame(array $ppm, $threshold = 300)
+{
+    $w = $ppm['width'];
+    $h = $ppm['height'];
+    $data = $ppm['data'];
+    $dark = function ($x, $y) use ($data, $w, $threshold) {
+        $o = ($y * $w + $x) * 3;
+        return ord($data[$o]) + ord($data[$o + 1]) + ord($data[$o + 2]) < $threshold;
+    };
+
+    $samples = 60;
+    $colHits = array_fill(0, $w, 0);
+    for ($i = 0; $i < $samples; $i++) {
+        $y = (int) (($i + 0.5) * $h / $samples);
+        for ($x = 0; $x < $w; $x++) {
+            if ($dark($x, $y)) {
+                $colHits[$x]++;
+            }
+        }
+    }
+    $cols = [];
+    foreach ($colHits as $x => $hits) {
+        if ($hits >= $samples * 0.3) {
+            $cols[] = $x;
+        }
+    }
+    if (count($cols) < 2) {
+        return null;
+    }
+    $left = min($cols);
+    $right = max($cols);
+    if ($right - $left < 400 || $right - $left > 850) {
+        return null;
+    }
+
+    $probe = [];
+    for ($i = 0; $i < 40; $i++) {
+        $probe[] = $left + 10 + (int) (($i + 0.5) * ($right - $left - 20) / 40);
+    }
+    $rows = [];
+    for ($y = 0; $y < $h; $y++) {
+        $hits = 0;
+        foreach ($probe as $x) {
+            if ($dark($x, $y)) {
+                $hits++;
+            }
+        }
+        if ($hits >= 36) {
+            $rows[] = $y;
+        }
+    }
+    if (count($rows) < 2) {
+        return null;
+    }
+    $top = min($rows);
+    $below = array_filter($rows, fn($y) => $y > $top + 350);
+    if (!$below) {
+        return null;
+    }
+    $bottom = min($below);
+    if ($bottom - $top > 900) {
+        return null;
+    }
+
+    $inset = 8;
+    return [
+        'x'      => $left + $inset,
+        'y'      => $top + $inset,
+        'width'  => $right - $left - $inset * 2,
+        'height' => $bottom - $top - $inset * 2,
+    ];
+}
+
+function findHealthPhotoArea(array $ppm)
+{
+    $w = $ppm['width'];
+    $h = $ppm['height'];
+    $data = $ppm['data'];
+    $step = 3;
+    $colCount = array_fill(0, $w, 0);
+    for ($y = 0; $y < $h; $y += $step) {
+        $row = $y * $w * 3;
+        for ($x = 0; $x < $w; $x++) {
+            $o = $row + $x * 3;
+            if (ord($data[$o]) + ord($data[$o + 1]) + ord($data[$o + 2]) < 600) {
+                $colCount[$x]++;
+            }
+        }
+    }
+    $need = (int) (($h / $step) * 0.18);
+    $best = [0, 0];
+    $start = null;
+    for ($x = 0; $x <= $w; $x++) {
+        $on = $x < $w && $colCount[$x] >= $need;
+        if ($on && $start === null) {
+            $start = $x;
+        } elseif (!$on && $start !== null) {
+            if ($x - $start > $best[1] - $best[0]) {
+                $best = [$start, $x];
+            }
+            $start = null;
+        }
+    }
+    [$left, $right] = $best;
+    if ($right - $left < 350 || $right - $left > 900) {
+        return null;
+    }
+    $rowNeed = (int) (($right - $left) / $step * 0.25);
+    $rows = [];
+    for ($y = 0; $y < $h; $y++) {
+        $count = 0;
+        $row = $y * $w * 3;
+        for ($x = $left; $x < $right; $x += $step) {
+            $o = $row + $x * 3;
+            if (ord($data[$o]) + ord($data[$o + 1]) + ord($data[$o + 2]) < 600) {
+                $count++;
+            }
+        }
+        if ($count >= $rowNeed) {
+            $rows[] = $y;
+        }
+    }
+    if (count($rows) < 2) {
+        return null;
+    }
+    $top = min($rows);
+    $bottom = max($rows);
+    if ($bottom - $top < 350 || $bottom - $top > 950) {
+        return null;
+    }
+    return ['x' => $left, 'y' => $top, 'width' => $right - $left, 'height' => $bottom - $top];
+}
+
+function healthPhotoSquare(array $box)
+{
+    $size = min($box['width'], $box['height']);
+    return [
+        'x'      => $box['x'] + (int) round(($box['width'] - $size) / 2),
+        'y'      => $box['y'],
+        'width'  => $size,
+        'height' => $size,
+    ];
+}
+
+function extractHealthPhoto($pdfPath, $page, array $fallback, $photoBase)
+{
+    $sx = 1450;
+    $sy = 0;
+    $sw = 1100;
+    $sh = 1250;
+
+    $ppm = null;
+    foreach (['-scale-to-x 2550 -scale-to-y -1', '-r 300'] as $scale) {
+        $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('hifphoto_', true);
+        $cmd = escapeshellarg(PDFTOPPM_BIN)
+            . ' ' . $scale . ' -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+            . ' -x ' . $sx . ' -y ' . $sy . ' -W ' . $sw . ' -H ' . $sh
+            . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($tmpBase) . ' 2>&1';
+        $cmdOut = [];
+        exec($cmd, $cmdOut, $cmdCode);
+        $ppmFile = $tmpBase . '-1.ppm';
+        if (!file_exists($ppmFile)) {
+            $ppmFile = $tmpBase . '.ppm';
+        }
+        if (!file_exists($ppmFile)) {
+            error_log('Health form photo: page ' . (int) $page . ' could not be rendered (' . $scale . '): ' . implode(' ', $cmdOut));
+            continue;
+        }
+        $ppm = readPpmPixels($ppmFile);
+        @unlink($ppmFile);
+        if ($ppm !== null && strlen($ppm['data']) >= $ppm['width'] * $ppm['height'] * 3) {
+            break;
+        }
+        $ppm = null;
+    }
+    if ($ppm === null) {
+        return null;
+    }
+
+    $candidates = [];
+    foreach ([300, 450, 560, 650] as $threshold) {
+        $frame = findHealthPhotoFrame($ppm, $threshold);
+        if ($frame !== null && $frame['y'] <= 450) {
+            $candidates[] = ['photo frame', $frame];
+        }
+    }
+    $area = findHealthPhotoArea($ppm);
+    if ($area !== null && $area['y'] <= 450) {
+        $candidates[] = ['photo area', $area];
+    }
+    $candidates[] = ['fixed position', [
+        'x'      => (int) $fallback['x'] - $sx,
+        'y'      => (int) $fallback['y'] - $sy,
+        'width'  => (int) $fallback['width'],
+        'height' => (int) $fallback['height'],
+    ]];
+
+    $best = null;
+    foreach ($candidates as [$method, $candidate]) {
+        $square = healthPhotoSquare($candidate);
+        $square['x'] = max(0, $square['x']);
+        $square['y'] = max(0, $square['y']);
+        $square['width'] = min($square['width'], $ppm['width'] - $square['x']);
+        $square['height'] = min($square['height'], $ppm['height'] - $square['y']);
+        if ($square['width'] < 100 || $square['height'] < 100) {
+            continue;
+        }
+        $rowLen = $ppm['width'] * 3;
+        $crop = '';
+        for ($r = 0; $r < $square['height']; $r++) {
+            $crop .= substr($ppm['data'], ($square['y'] + $r) * $rowLen + $square['x'] * 3, $square['width'] * 3);
+        }
+        $total = $square['width'] * $square['height'];
+        $step = max(1, (int) floor($total / 6000));
+        $skin = 0;
+        $count = 0;
+        for ($i = 0; $i < $total; $i += $step) {
+            $o = $i * 3;
+            $r = ord($crop[$o]);
+            $g = ord($crop[$o + 1]);
+            $b = ord($crop[$o + 2]);
+            $count++;
+            if ($r > 95 && $g > 40 && $b > 20 && (max($r, $g, $b) - min($r, $g, $b)) > 15
+                && abs($r - $g) > 15 && $r > $g && $r > $b) {
+                $skin++;
+            }
+        }
+        $ratio = $count ? $skin / $count : 0;
+        if ($best === null || $ratio > $best['ratio'] + 0.02) {
+            $best = ['method' => $method, 'box' => $square, 'crop' => $crop, 'ratio' => $ratio];
+        }
+    }
+    if ($best === null || $best['ratio'] < 0.03) {
+        error_log('Health form photo: no area that looks like a photo was found (best skin ' . round(($best['ratio'] ?? 0) * 100, 1) . '%).');
+        return null;
+    }
+    $box = $best['box'];
+    $crop = $best['crop'];
+    error_log('Health form photo: found by ' . $best['method'] . ', ' . $box['width'] . 'x' . $box['height'] . ' at '
+        . ($box['x'] + $sx) . ',' . ($box['y'] + $sy) . ', skin ' . round($best['ratio'] * 100, 1) . '%.');
+
+    $path = $photoBase . '.png';
+    return writePngRgb($path, $box['width'], $box['height'], $crop) ? $path : null;
+}
+
 function extractIdPhoto($pdfPath, $docType, $page = 1)
 {
     static $idPhotoBoxes = [
         'sar_form' => ['x' => 1866, 'y' => 440, 'width' => 577, 'height' => 573],
-        'health_information_form' => ['x' => 1845, 'y' => 50, 'width' => 540, 'height' => 735],
+        'health_information_form' => ['x' => 1848, 'y' => 73, 'width' => 592, 'height' => 571],
     ];
 
     if (!isset($idPhotoBoxes[$docType])) {
@@ -504,6 +749,10 @@ function extractIdPhoto($pdfPath, $docType, $page = 1)
         mkdir($photoDir, 0755, true);
     }
     $photoBase = $photoDir . uniqid('photo_', true);
+
+    if ($docType === 'health_information_form') {
+        return extractHealthPhoto($pdfPath, $page, $box, $photoBase);
+    }
 
     if ($isSar) {
         if (!cropLooksLikePersonPhoto($pdfPath, $box, 0.04, $page)) {
