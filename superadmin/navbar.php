@@ -21,6 +21,7 @@
         'course_management.php' => ['Course Management', 'Manage the programs offered and how they are recognized in documents.'],
         'requirements.php'    => ['Requirements', 'Manage the documents required for regular, shiftee and transferee students.'],
         'backup_logs.php'     => ['Backup & Logs', 'Keep records safe and see who did what, and when.'],
+        'report_template.php' => ['Report Template', 'Change the letterhead used on the student reports.'],
     ];
     [$pageTitle, $pageSubtitle] = $pageTitles[$currentPage] ?? ['PUP eRecords', ''];
     $nameParts = preg_split('/[\s,]+/', trim((string) $userName), -1, PREG_SPLIT_NO_EMPTY);
@@ -56,6 +57,9 @@
             </a>
             <a class="admin-menu-item <?php echo ($currentPage == 'requirements.php') ? 'active' : ''; ?>" href="requirements.php" title="Requirements">
                 <i class="bi bi-file-earmark-check"></i><span>Requirements</span>
+            </a>
+            <a class="admin-menu-item <?php echo ($currentPage == 'report_template.php') ? 'active' : ''; ?>" href="report_template.php" title="Report Template">
+                <i class="bi bi-file-earmark-richtext"></i><span>Report Template</span>
             </a>
             <a class="admin-menu-item <?php echo ($currentPage == 'backup_logs.php') ? 'active' : ''; ?>" href="backup_logs.php" title="Backup &amp; Logs">
                 <i class="bi bi-database"></i><span>Backup &amp; Logs</span>
@@ -113,3 +117,5 @@
         </div>
     </div>
 </div>
+
+<?php include __DIR__ . '/year_end_gate.php'; ?>

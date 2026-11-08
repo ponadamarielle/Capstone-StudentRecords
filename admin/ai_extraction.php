@@ -571,8 +571,8 @@ function groqChatMany(array $bodies)
                     ],
                     CURLOPT_POSTFIELDS     => $body,
                     CURLOPT_ENCODING       => '',
-                    CURLOPT_CONNECTTIMEOUT => 10,
-                    CURLOPT_TIMEOUT        => 30,
+                    CURLOPT_CONNECTTIMEOUT => 5,
+                    CURLOPT_TIMEOUT        => max(5, (int) (getenv('GROQ_TIMEOUT') ?: 12)),
                 ]);
                 curl_multi_add_handle($mh, $ch);
                 $handles[$key] = $ch;
@@ -589,6 +589,10 @@ function groqChatMany(array $bodies)
                 $response = curl_multi_getcontent($ch);
                 $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
                 $curlErr  = curl_error($ch);
+                $seconds  = (float) curl_getinfo($ch, CURLINFO_TOTAL_TIME);
+                if ($seconds >= 6) {
+                    error_log(sprintf('Groq was slow: %.2fs (HTTP %d).', $seconds, $httpCode));
+                }
                 curl_multi_remove_handle($mh, $ch);
                 curl_close($ch);
                 $lastCode = $httpCode;
@@ -1020,6 +1024,7 @@ function aiSidewaysPages($pdfPath, array $pages, $workDir)
 
 function aiReadPdfPages($pdfPath, array $pages, $workDir)
 {
+    $renderStart = microtime(true);
     $sideways = aiSidewaysPages($pdfPath, $pages, $workDir);
     if ($sideways) {
         error_log('AI: page(s) ' . implode(', ', array_keys($sideways)) . ' scanned sideways, sending the whole page.');
@@ -1038,6 +1043,9 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir)
         }
     }
     aiRunCommandsParallel($commands);
+    if (microtime(true) - $renderStart >= 5) {
+        error_log(sprintf('AI page render was slow: %.2fs for page(s) %s.', microtime(true) - $renderStart, implode(', ', $pages)));
+    }
     foreach ($wideFiles as $page => $file) {
         $files[$page][] = $file;
     }
@@ -1129,6 +1137,23 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir)
             aiRunCommandsParallel($slipCommands);
         }
         aiReadRouteSlipProgram($slipPages, $results, $workDir, $files);
+    }
+
+    $healthPages = [];
+    $healthCommands = [];
+    foreach ($results as $page => $read) {
+        if ((string) $read['doc_type'] === 'health_information_form' && !isset($sideways[$page]) && trim((string) $read['text']) !== '') {
+            $base = rtrim($workDir, '/\\') . '/' . uniqid('aihealth_', true);
+            $healthCommands[$page] = escapeshellarg(PDFTOPPM_BIN) . ' -jpeg -jpegopt quality=92 -scale-to-x 4000 -scale-to-y -1'
+                . ' -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+                . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($base);
+            $files[$page][] = $base . '.jpg';
+            $healthPages[$page] = $base . '.jpg';
+        }
+    }
+    if ($healthPages) {
+        aiRunCommandsParallel($healthCommands);
+        aiReadHealthStudentNumber($healthPages, $results, $workDir, $files);
     }
     foreach ($files as $set) {
         foreach ($set as $file) {
@@ -1259,6 +1284,79 @@ function aiReadRouteSlipProgram(array $slipPages, array $results, $workDir, arra
         $text = trim((string) ($results[$page]['text'] ?? ''));
         if ($text !== '' && ($fields['course'] !== '' || $fields['year_section'] !== '')) {
             aiPageCache($text, $fields, true);
+        }
+    }
+}
+
+function aiReadHealthStudentNumber(array $healthPages, array $results, $workDir, array &$files)
+{
+    if (!function_exists('imagecreatefromjpeg')) {
+        return;
+    }
+    $bodies = [];
+    foreach ($healthPages as $page => $file) {
+        $img = is_file($file) ? @imagecreatefromjpeg($file) : false;
+        if (!$img) {
+            continue;
+        }
+        $w = imagesx($img);
+        $h = imagesy($img);
+        $x = (int) round($w * 0.60);
+        $y = (int) round($w * 0.21);
+        $crop = imagecrop($img, ['x' => $x, 'y' => $y, 'width' => $w - $x, 'height' => min((int) round($w * 0.12), $h - $y)]);
+        imagedestroy($img);
+        if (!$crop) {
+            continue;
+        }
+        $cropFile = rtrim($workDir, '/\\') . '/' . uniqid('aisn_', true) . '.jpg';
+        imagejpeg($crop, $cropFile, 92);
+        imagedestroy($crop);
+        $files[$page][] = $cropFile;
+        $url = imageToDataUrlForAi($cropFile, 1600, 1200000);
+        if ($url === null) {
+            continue;
+        }
+        $bodies[$page] = groqRequestBody([
+            ['role' => 'system', 'content' => "You read one part of a PUP Health Information Form and reply with ONLY a JSON object: {\"characters\": [], \"student_number\": \"\"}.\n"
+                . "\"characters\": every character of the handwritten PUP Student No., one per item, left to right, including the dashes. Decide each one on its own before writing the next.\n"
+                . "\"student_number\": the handwritten value after \"PUP Student No.:\", exactly as written. "
+                . "The format is YYYY-NNNNN-XX-N, for example 2022-00213-BN-0: a 4-digit year that starts with 20, five digits, two capital letters (the campus code, usually BN) and one digit. "
+                . "Read every digit one by one and look closely at each one; 1, 2 and 7 are easy to confuse in handwriting. "
+                . "The same person writes a digit the same way every time, so compare each digit with the same digit elsewhere in the number "
+                . "(for example a 2 in the year and a 2 later in the number) before deciding. A handwritten 2 has a curved or hooked top and a flat bottom stroke, even when it is small, faint or written quickly; "
+                . "a 1 is a single straight stroke with no hook and no flat base. If a digit has any bottom stroke going sideways, it is a 2, not a 1. "
+                . "Do not read the School Year or any other line. Use \"\" if the blank is empty or unreadable."],
+            ['role' => 'user', 'content' => [
+                ['type' => 'text', 'text' => 'Read the PUP Student No. character by character.'],
+                ['type' => 'image_url', 'image_url' => ['url' => $url]],
+            ]],
+        ], true, 200);
+    }
+    if (!$bodies) {
+        return;
+    }
+    $maxYear = (int) date('Y') + 1;
+    foreach (groqChatMany($bodies) as $page => $reply) {
+        $json = aiDecodeJson($reply);
+        if ($json === null) {
+            continue;
+        }
+        $chars = is_array($json['characters'] ?? null) ? implode('', array_map('strval', $json['characters'])) : '';
+        $raw = (string) ($json['student_number'] ?? '');
+        $fields = sanitizeAiStudentFields(['student_number' => $raw]);
+        $fromChars = sanitizeAiStudentFields(['student_number' => $chars]);
+        if ($fromChars['student_number'] !== '') {
+            $fields = $fromChars;
+        }
+        $number = $fields['student_number'];
+        $year = (int) substr($number, 0, 4);
+        error_log('AI health form student number re-check: page ' . $page . ' characters=' . $chars . ' student_number=' . $raw . ' -> ' . $number);
+        if ($number === '' || $year < 2000 || $year > $maxYear) {
+            continue;
+        }
+        $text = trim((string) ($results[$page]['text'] ?? ''));
+        if ($text !== '') {
+            aiPageCache($text, ['student_number' => $number] + array_fill_keys(AI_STUDENT_FIELDS, ''), true);
         }
     }
 }

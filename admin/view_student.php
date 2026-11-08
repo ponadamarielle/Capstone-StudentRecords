@@ -8,14 +8,28 @@ require_once __DIR__ . '/archive.php';
 require_once __DIR__ . '/requirement_status.php';
 require_once __DIR__ . '/../activity_log.php';
 require_once __DIR__ . '/../student_notifications.php';
+require_once __DIR__ . '/../access_control.php';
 
-if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] !== 'Admin') {
-    header("Location: ../signin.php");
-    exit();
-}
+requireOfficeLogin(($_GET['action'] ?? $_POST['action'] ?? '') !== '');
 
 require_once __DIR__ . '/../account_guard.php';
 requireActiveAccount(($_GET['action'] ?? $_POST['action'] ?? '') !== '');
+requirePermission('students.view', ($_GET['action'] ?? $_POST['action'] ?? '') !== '');
+
+const VIEW_ACTION_PERMISSIONS = [
+    'ocr_extract'             => 'documents.upload',
+    'add_documents'           => 'documents.upload',
+    'delete_document_record'  => 'documents.delete',
+    'replace_document'        => 'documents.replace',
+    'commit_replace_document' => 'documents.replace',
+    'set_document_type'       => 'documents.set_type',
+    'update_student_info'     => 'students.fill_blank',
+    'change_status'           => 'students.status',
+];
+$requestedAction = $_GET['action'] ?? $_POST['action'] ?? '';
+if (isset(VIEW_ACTION_PERMISSIONS[$requestedAction])) {
+    requirePermission(VIEW_ACTION_PERMISSIONS[$requestedAction], true);
+}
 
 function loadEnv($path)
 {
@@ -89,7 +103,7 @@ if ($action !== '') {
             handleDeleteDocumentRecord($conn);
             break;
         case 'delete_staged_document':
-            handleDeleteStagedDocument();
+            handleDeleteStagedDocument($conn);
             break;
         case 'replace_document':
             handleReplaceDocument($conn);
@@ -156,6 +170,9 @@ if ($action !== '') {
 
 function isPathInsideUploads($path)
 {
+    if (isStagedDocument((string) $path)) {
+        return true;
+    }
     $uploadDir = realpath('../uploads/documents/');
     $target    = realpath($path);
     return $uploadDir !== false && $target !== false && strpos($target, $uploadDir) === 0;
@@ -626,6 +643,50 @@ function healthPhotoSquare(array $box)
     ];
 }
 
+function startHealthPhotoRender($pdfPath, $page)
+{
+    $base = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('hifpre_', true);
+    $cmd = escapeshellarg(PDFTOPPM_BIN) . ' -scale-to-x 2550 -scale-to-y -1 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+        . ' -x 1450 -y 0 -W 1100 -H 1250 ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($base);
+    $pipes = [];
+    $proc = @proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    if (!is_resource($proc)) {
+        return;
+    }
+    fclose($pipes[0]);
+    $GLOBALS['healthPhotoRenders'][$pdfPath][(int) $page] = ['proc' => $proc, 'pipes' => $pipes, 'base' => $base];
+}
+
+function takeHealthPhotoRender($pdfPath, $page)
+{
+    $job = $GLOBALS['healthPhotoRenders'][$pdfPath][(int) $page] ?? null;
+    if ($job === null) {
+        return null;
+    }
+    unset($GLOBALS['healthPhotoRenders'][$pdfPath][(int) $page]);
+    stream_get_contents($job['pipes'][1]);
+    stream_get_contents($job['pipes'][2]);
+    fclose($job['pipes'][1]);
+    fclose($job['pipes'][2]);
+    proc_close($job['proc']);
+    foreach (['-1.ppm', '.ppm'] as $suffix) {
+        if (file_exists($job['base'] . $suffix)) {
+            return $job['base'] . $suffix;
+        }
+    }
+    return null;
+}
+
+function finishHealthPhotoRenders($pdfPath)
+{
+    foreach (array_keys($GLOBALS['healthPhotoRenders'][$pdfPath] ?? []) as $page) {
+        $file = takeHealthPhotoRender($pdfPath, $page);
+        if ($file !== null) {
+            @unlink($file);
+        }
+    }
+}
+
 function extractHealthPhoto($pdfPath, $page, array $fallback, $photoBase)
 {
     $sx = 1450;
@@ -634,7 +695,15 @@ function extractHealthPhoto($pdfPath, $page, array $fallback, $photoBase)
     $sh = 1250;
 
     $ppm = null;
-    foreach (['-scale-to-x 2550 -scale-to-y -1', '-r 300'] as $scale) {
+    $prerendered = takeHealthPhotoRender($pdfPath, $page);
+    if ($prerendered !== null) {
+        $ppm = readPpmPixels($prerendered);
+        @unlink($prerendered);
+        if ($ppm !== null && strlen($ppm['data']) < $ppm['width'] * $ppm['height'] * 3) {
+            $ppm = null;
+        }
+    }
+    foreach ($ppm === null ? ['-scale-to-x 2550 -scale-to-y -1', '-r 300'] : [] as $scale) {
         $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('hifphoto_', true);
         $cmd = escapeshellarg(PDFTOPPM_BIN)
             . ' ' . $scale . ' -singlefile -f ' . (int) $page . ' -l ' . (int) $page
@@ -744,11 +813,7 @@ function extractIdPhoto($pdfPath, $docType, $page = 1)
         $box = sarPhotoBox($frame);
     }
 
-    $photoDir = '../uploads/photos/';
-    if (!is_dir($photoDir)) {
-        mkdir($photoDir, 0755, true);
-    }
-    $photoBase = $photoDir . uniqid('photo_', true);
+    $photoBase = stagedPhotoBase();
 
     if ($docType === 'health_information_form') {
         return extractHealthPhoto($pdfPath, $page, $box, $photoBase);
@@ -964,7 +1029,7 @@ function handleOcrExtract($conn)
         return;
     }
 
-    $uploadDir = '../uploads/documents/';
+    $uploadDir = stagedDocumentDir();
     $saved = saveUploadedPdf('document', $uploadDir);
     if (is_string($saved)) {
         echo json_encode(['success' => false, 'message' => $saved]);
@@ -1045,6 +1110,34 @@ function minimumBirthDate()
     return ((int) date('Y') - 17) . '-12-31';
 }
 
+function keepFilledStudentFields($conn, $studentId)
+{
+    $stmt = mysqli_prepare($conn, "SELECT * FROM students WHERE student_id = ? LIMIT 1");
+    mysqli_stmt_bind_param($stmt, "i", $studentId);
+    mysqli_stmt_execute($stmt);
+    $row = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    if (!$row) {
+        return;
+    }
+    $fields = ['last_name', 'first_name', 'middle_name', 'student_number', 'course', 'year_section', 'sex',
+        'date_of_birth', 'place_of_birth', 'mobile_number', 'email', 'address', 'graduation_year',
+        'shift_from_course', 'previous_school', 'previous_course', 'previous_year_level'];
+    foreach ($fields as $field) {
+        if (array_key_exists($field, $row) && trim((string) $row[$field]) !== '') {
+            $_POST[$field] = (string) $row[$field];
+        }
+    }
+    $track = trim((string) ($row['admission_track'] ?? ''));
+    if ($track !== '') {
+        $_POST['student_type'] = studentTypeOf($track);
+        $_POST['admission_track'] = $track;
+    }
+    if (trim((string) ($row['photo_path'] ?? '')) !== '') {
+        $_POST['photo_path'] = '';
+        unset($_FILES['photo']);
+    }
+}
+
 function handleUpdateStudentInfo($conn)
 {
     $studentId = $_POST['student_id'] ?? '';
@@ -1057,6 +1150,9 @@ function handleUpdateStudentInfo($conn)
     }
 
     $studentBefore = activityFetchStudent($conn, (int) $studentId);
+    if (!can('students.edit')) {
+        keepFilledStudentFields($conn, (int) $studentId);
+    }
 
     $lastName    = trim($_POST['last_name'] ?? '');
     $firstName   = trim($_POST['first_name'] ?? '');
@@ -1146,11 +1242,7 @@ function handleUpdateStudentInfo($conn)
     if ($newPhotoPath === null) {
         $stagedPhoto = trim($_POST['photo_path'] ?? '');
         if ($stagedPhoto !== '') {
-            $realPhotoDir = realpath('../uploads/photos/');
-            $realStaged   = realpath($stagedPhoto);
-
-            if ($realPhotoDir === false || $realStaged === false || !is_file($realStaged)
-                || strpos($realStaged, $realPhotoDir . DIRECTORY_SEPARATOR) !== 0) {
+            if (!isStagedPhoto($stagedPhoto)) {
                 echo json_encode(['success' => false, 'message' => 'The scanned photo could not be found. Please scan the document again.']);
                 return;
             }
@@ -1162,7 +1254,11 @@ function handleUpdateStudentInfo($conn)
             $lookupRow    = mysqli_fetch_assoc(mysqli_stmt_get_result($lookupStmt));
             $oldPhotoPath = $lookupRow['photo_path'] ?? null;
 
-            $newPhotoPath  = '../uploads/photos/' . basename($realStaged);
+            $newPhotoPath  = claimStagedPhoto($stagedPhoto);
+            if ($newPhotoPath === null) {
+                echo json_encode(['success' => false, 'message' => 'The scanned photo could not be saved. Please scan the document again.']);
+                return;
+            }
             $photoIsStaged = true;
         }
     }
@@ -1217,6 +1313,7 @@ function handleUpdateStudentInfo($conn)
                 mysqli_stmt_execute($levelStmt);
             }
         }
+        fillGraduationYears($conn, (int) $studentId);
         applyYearLevel($conn, (int) $studentId);
         syncGraduateStatus($conn, (int) $studentId);
         if ($newPhotoPath !== null && $oldPhotoPath && $oldPhotoPath !== $newPhotoPath
@@ -1231,7 +1328,7 @@ function handleUpdateStudentInfo($conn)
             'graduated'  => studentHasGraduated($conn, (int) $studentId),
         ]);
     } else {
-        if ($newPhotoPath !== null && !$photoIsStaged) {
+        if ($newPhotoPath !== null) {
             @unlink($newPhotoPath);
         }
         echo json_encode(['success' => false, 'message' => 'Failed to update: ' . mysqli_error($conn)]);
@@ -1396,7 +1493,7 @@ function handleArchiveIfGraduated($conn)
     ]);
 }
 
-function handleDeleteStagedDocument()
+function handleDeleteStagedDocument($conn = null)
 {
     $filePath  = $_POST['file_path'] ?? '';
     $imagePath = $_POST['image_path'] ?? '';
@@ -1407,7 +1504,7 @@ function handleDeleteStagedDocument()
         return;
     }
 
-    $uploadDir = realpath('../uploads/documents/');
+    $uploadDir = realpath('../uploads/documents/') ?: realpath(stagedDocumentDir());
     if ($uploadDir === false) {
         echo json_encode(['success' => false, 'message' => 'Upload directory not found.']);
         return;
@@ -1418,7 +1515,7 @@ function handleDeleteStagedDocument()
 
     foreach ($paths as $path) {
         $targetPath = realpath($path);
-        if ($targetPath === false || strpos($targetPath, $uploadDir) !== 0) {
+        if (!isStagedDocument($path) && ($targetPath === false || strpos($targetPath, $uploadDir) !== 0 || isSavedRecordFile($conn, $targetPath))) {
             continue;
         }
         if (file_exists($targetPath) && !unlink($targetPath)) {
@@ -1429,8 +1526,9 @@ function handleDeleteStagedDocument()
     if ($photoPath !== '') {
         $photoDir        = realpath('../uploads/photos/');
         $targetPhotoPath = realpath($photoPath);
-        if ($photoDir === false || $targetPhotoPath === false
-            || strpos($targetPhotoPath, $photoDir . DIRECTORY_SEPARATOR) !== 0) {
+        if (!isStagedPhoto($photoPath) && ($photoDir === false || $targetPhotoPath === false
+            || strpos($targetPhotoPath, $photoDir . DIRECTORY_SEPARATOR) !== 0
+            || isSavedRecordFile($conn, $targetPhotoPath))) {
             $deleted = false;
         } elseif (file_exists($targetPhotoPath) && !unlink($targetPhotoPath)) {
             $deleted = false;
@@ -1509,7 +1607,7 @@ function discardUploadResult(array $result)
         if (!empty($doc['file_path']) && isPathInsideUploads($doc['file_path'])) @unlink($doc['file_path']);
     }
     foreach ([$result['photo_path'] ?? null, $result['image_path'] ?? null] as $extra) {
-        if ($extra && is_file($extra) && (strpos($extra, '../uploads/photos/') === 0 || isPathInsideUploads($extra))) {
+        if ($extra && is_file($extra) && (isStagedPhoto($extra) || strpos($extra, '../uploads/photos/') === 0 || isPathInsideUploads($extra))) {
             @unlink($extra);
         }
     }
@@ -1541,7 +1639,7 @@ function handleReplaceDocument($conn)
         return;
     }
 
-    $uploadDir = '../uploads/documents/';
+    $uploadDir = stagedDocumentDir();
     $saved = saveUploadedPdf('document', $uploadDir);
     if (is_string($saved)) {
         echo json_encode(['success' => false, 'message' => $saved]);
@@ -1606,6 +1704,13 @@ function handleReplaceDocument($conn)
         ]);
         return;
     }
+
+    $claimedPath = claimStagedDocument($new['file_path']);
+    if ($claimedPath === null) {
+        echo json_encode(['success' => false, 'message' => 'The new file could not be saved. Please replace it again.']);
+        return;
+    }
+    $new['file_path'] = $claimedPath;
 
     $label = requirementLabel($code);
     $updateSql  = "UPDATE documents
@@ -1697,6 +1802,13 @@ function handleCommitReplaceDocument($conn)
         echo json_encode(['success' => false, 'message' => 'This exact file is already on record as ' . $sameFile['document_type'] . ' (' . $sameFile['file_name'] . ').']);
         return;
     }
+
+    $claimedPath = claimStagedDocument($filePath);
+    if ($claimedPath === null) {
+        echo json_encode(['success' => false, 'message' => 'The replacement for "' . $row['file_name'] . '" could not be saved. Please replace it again.']);
+        return;
+    }
+    $filePath = $claimedPath;
 
     $label = requirementLabel($code);
     $updateStmt = mysqli_prepare($conn, "UPDATE documents
@@ -1847,6 +1959,15 @@ function handleAddDocuments($conn)
                     'label' => requirementLabel($code), 'hash' => $hash];
     }
 
+    foreach ($clean as $i => $d) {
+        $claimedPath = claimStagedDocument($d['file_path']);
+        if ($claimedPath === null) {
+            echo json_encode(['success' => false, 'message' => 'The file "' . $d['file_name'] . '" could not be saved. Please upload it again.']);
+            return;
+        }
+        $clean[$i]['file_path'] = $claimedPath;
+    }
+
     $addedBy = $_SESSION['name'] ?? '';
     mysqli_begin_transaction($conn);
     try {
@@ -1887,6 +2008,7 @@ if ($studentId === '' || !ctype_digit((string) $studentId)) {
 
 ensureStudentArchivedAt($conn);
 ensureStudentTypeColumns($conn);
+fillGraduationYears($conn);
 organizeStudentDocuments($conn, (int) $studentId);
 $sql  = "SELECT * FROM students WHERE student_id = ?";
 $stmt = mysqli_prepare($conn, $sql);
@@ -1900,6 +2022,10 @@ if (!$student) {
 }
 
 $isArchivedView = isStudentArchived($student);
+if ($isArchivedView && !can('archive.view')) {
+    header("Location: student_directory.php");
+    exit();
+}
 
 $docsSql  = "SELECT document_id, document_type, requirement_code, file_name, file_path, uploaded_at
              FROM documents WHERE student_id = ? ORDER BY uploaded_at DESC, document_id DESC";
@@ -1940,6 +2066,15 @@ if (!empty($issuedInfo['uploaded_at'])) {
     $dateIssued = date('F j, Y', strtotime($issuedInfo['uploaded_at']));
 }
 $issuedBy = $issuedInfo['added_by'] ?? '';
+if ($issuedBy !== '') {
+    $issuedRoleStmt = mysqli_prepare($conn, "SELECT role FROM accounts WHERE name = ? ORDER BY FIELD(role, 'Admin', 'Staff', 'OJT Intern', 'Super Admin') LIMIT 1");
+    mysqli_stmt_bind_param($issuedRoleStmt, "s", $issuedBy);
+    mysqli_stmt_execute($issuedRoleStmt);
+    $issuedRole = mysqli_fetch_assoc(mysqli_stmt_get_result($issuedRoleStmt))['role'] ?? '';
+    if ($issuedRole !== '') {
+        $issuedBy .= ' (' . $issuedRole . ')';
+    }
+}
 
 $statusLabels = ['enrollee' => 'Enrollee', 'active' => 'Enrollee', 'graduated' => 'Graduate', 'withdrawn' => 'Withdrawn', 'inactive' => 'Withdrawn', 'onleave' => 'On-leave', 'transferred' => 'Transferred'];
 $savedGradYear    = !empty($student['graduation_year']) ? (int) $student['graduation_year'] : null;
@@ -2004,6 +2139,8 @@ include 'navbar.php';
                     <span class="profile-status profile-status-<?= htmlspecialchars(in_array($student['status'] ?? '', ['inactive', 'withdrawn'], true) ? 'withdrawn' : (($student['status'] ?? '') === 'graduated' ? 'graduate' : ($student['status'] ?? ''))) ?>"><?= htmlspecialchars($statusLabel) ?></span>
                     <?php elseif (($student['status'] ?? '') === 'graduated'): ?>
                     <span class="profile-status profile-status-graduate"><?= htmlspecialchars($statusLabel) ?></span>
+                    <?php elseif (!can('students.status')): ?>
+                    <span class="profile-status"><?= htmlspecialchars($statusLabel) ?></span>
                     <?php else: ?>
                     <div class="dropdown status-dropdown">
                         <button type="button" class="profile-status status-dropdown-toggle dropdown-toggle" aria-haspopup="true" aria-expanded="false" aria-label="Change status">
@@ -2032,9 +2169,11 @@ include 'navbar.php';
             </div>
             <?php if (!$isArchivedView): ?>
             <div class="profile-actions">
+                <?php if (can('reports')): ?>
                 <button class="profile-btn profile-btn-secondary" type="button" id="generateReportBtn" data-student-id="<?= (int) $studentId ?>">
                     <i class="bi bi-file-earmark-pdf"></i> Generate report
                 </button>
+                <?php endif; ?>
                 <?php if (($student['status'] ?? '') !== 'graduated'): ?>
                 <button class="profile-btn profile-btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#addRecordsModal">
                     <i class="bi bi-pencil"></i> Update record
@@ -2192,7 +2331,7 @@ include 'navbar.php';
 
                 <div id="ocrStatus" class="ocr-status"></div>
 
-                <form method="POST" id="updateRecordForm">
+                <form method="POST" id="updateRecordForm" data-can-edit-info="<?= can('students.edit') ? '1' : '0' ?>" data-has-photo="<?= $photoUrl !== $defaultAvatarUri ? '1' : '0' ?>">
                     <input type="hidden" name="student_id" value="<?= (int) $studentId ?>">
                     <input type="hidden" id="stagedPhotoPath" name="photo_path" value="">
 
@@ -2205,9 +2344,11 @@ include 'navbar.php';
                                     <img src="<?= htmlspecialchars($photoUrl) ?>" alt="Student photo" class="photo-img" id="modalStudentPhoto">
                                 </div>
                                 <span class="photo-caption">Student photo</span>
+                                <?php if (can('students.edit')): ?>
                                 <small class="photo-hint">JPG or PNG</small>
+                                <?php endif; ?>
                                 <input type="file" id="replacePhotoInput" name="photo" accept=".jpg,.jpeg,.png" hidden>
-                                <button type="button" class="btn btn-sm btn-outline-secondary replace-photo-btn" id="replacePhotoBtn">
+                                <button type="button" class="btn btn-sm btn-outline-secondary replace-photo-btn" id="replacePhotoBtn"<?= can('students.edit') ? '' : ' hidden' ?>>
                                     <?php if ($photoUrl !== $defaultAvatarUri): ?>
                                         <i class="bi bi-arrow-repeat"></i> Replace photo
                                     <?php else: ?>
@@ -2236,6 +2377,9 @@ include 'navbar.php';
                                 <div class="tab-content border border-top-0 p-3 pt-4 ps-4">
 
                                     <div class="tab-pane fade show active" id="edit-info" role="tabpanel">
+                                        <?php if (!can('students.edit')): ?>
+                                            <div class="alert alert-secondary small mb-3">Only the Admin can edit student information. Blank fields are filled in from the documents you upload.</div>
+                                        <?php endif; ?>
                                         <div class="row">
                                             <div class="col-md-6">
                                                 <div class="d-flex align-items-center mb-3">
@@ -2428,9 +2572,11 @@ include 'navbar.php';
                                                                     <button type="button" class="btn btn-sm btn-outline-secondary document-change-btn" title="Replace file">
                                                                         <i class="bi bi-arrow-repeat"></i>
                                                                     </button>
+                                                                    <?php if (can('documents.delete')): ?>
                                                                     <button type="button" class="btn btn-sm btn-outline-danger document-delete-btn" title="Delete file">
                                                                         <i class="bi bi-trash"></i>
                                                                     </button>
+                                                                    <?php endif; ?>
                                                                 </div>
                                                             </div>
                                                         <?php endforeach; ?>
@@ -2515,7 +2661,7 @@ include 'navbar.php';
         </div>
     </div>
 
-    <?php if (($student['status'] ?? '') !== 'graduated' && !$isArchivedView): ?>
+    <?php if (($student['status'] ?? '') !== 'graduated' && !$isArchivedView && can('students.status')): ?>
     <div class="modal fade" id="changeStatusModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">

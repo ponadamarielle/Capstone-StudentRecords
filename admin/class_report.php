@@ -8,10 +8,13 @@ require_once __DIR__ . '/requirement_status.php';
 require_once __DIR__ . '/../activity_log.php';
 require_once __DIR__ . '/../lib/fpdf/fpdf.php';
 
-if (!isset($_SESSION['name'], $_SESSION['role']) || $_SESSION['role'] !== 'Admin') {
+require_once __DIR__ . '/../access_control.php';
+require_once __DIR__ . '/../report_template.php';
+if (!isset($_SESSION['name'], $_SESSION['role']) || !isOfficeRole()) {
     header('Location: ../signin.php');
     exit();
 }
+requirePermission('reports');
 
 require_once __DIR__ . '/../account_guard.php';
 requireActiveAccount(false);
@@ -143,9 +146,20 @@ class ClassReportPdf extends FPDF
         $this->Ln(1);
     }
 
+    function StatusHeading($text)
+    {
+        $this->EnsureSpace(55);
+        $this->Ln(2);
+        $this->SetTextColor(128, 0, 0);
+        $this->SetFont('Helvetica', 'B', 10);
+        $this->Cell(0, 6, reportText($text), 'B', 1, 'L');
+        $this->SetTextColor(0, 0, 0);
+        $this->Ln(1);
+    }
+
     function SubHeading($text)
     {
-        $this->EnsureSpace(22);
+        $this->EnsureSpace(45);
         $this->Ln(1);
         $this->SetFont('Helvetica', 'B', 9.5);
         $this->Cell(0, 6, reportText($text), 0, 1, 'L');
@@ -504,7 +518,7 @@ if ($typeFilter === 'shiftee' || $typeFilter === 'transferee') {
     $conditions[] = "(admission_track IS NULL OR admission_track NOT IN ('shiftee', 'transferee'))";
 }
 
-$sql = 'SELECT student_id, student_number, name, course, year_section, status, admission_track FROM students WHERE '
+$sql = 'SELECT student_id, student_number, name, course, year_section, graduation_year, status, admission_track FROM students WHERE '
     . implode(' AND ', $conditions) . ' ORDER BY course ASC, year_section ASC, name ASC';
 if ($params) {
     $stmt = mysqli_prepare($conn, $sql);
@@ -539,14 +553,44 @@ arsort($missingCounts);
 $groupCounts = [];
 foreach ($students as &$row) {
     $row['group_course'] = trim((string) ($row['course'] ?? '')) !== '' ? trim((string) $row['course']) : 'No Course';
-    $row['group_section'] = trim((string) ($row['year_section'] ?? '')) !== '' ? trim((string) $row['year_section']) : 'No Section';
-    $groupCounts[$row['group_course']][$row['group_section']] = ($groupCounts[$row['group_course']][$row['group_section']] ?? 0) + 1;
+    $row['group_status'] = ($row['status'] ?? '') === 'graduated' ? 'Graduates' : 'Enrollees';
+    if ($row['group_status'] === 'Graduates') {
+        $graduationYear = (int) (expectedGraduationYear($row) ?? 0);
+        $row['group_section'] = $graduationYear > 0 ? (string) $graduationYear : 'No Year';
+    } else {
+        $row['group_section'] = trim((string) ($row['year_section'] ?? '')) !== '' ? trim((string) $row['year_section']) : 'No Section';
+    }
+    $groupCounts[$row['group_course']][$row['group_status']][$row['group_section']] = ($groupCounts[$row['group_course']][$row['group_status']][$row['group_section']] ?? 0) + 1;
 }
 unset($row);
+usort($students, function ($a, $b) {
+    $byCourse = strcmp($a['group_course'], $b['group_course']);
+    if ($byCourse !== 0) {
+        return $byCourse;
+    }
+    if ($a['group_status'] !== $b['group_status']) {
+        return $a['group_status'] === 'Enrollees' ? -1 : 1;
+    }
+    $aNone = in_array($a['group_section'], ['No Section', 'No Year'], true);
+    $bNone = in_array($b['group_section'], ['No Section', 'No Year'], true);
+    if ($aNone !== $bNone) {
+        return $aNone ? 1 : -1;
+    }
+    $bySection = $a['group_status'] === 'Graduates'
+        ? strnatcasecmp($b['group_section'], $a['group_section'])
+        : strnatcasecmp($a['group_section'], $b['group_section']);
+    return $bySection !== 0 ? $bySection : strnatcasecmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
+});
 
-function reportSectionText($section, $count)
+function reportStatusText($course, $status, array $groupCounts)
 {
-    return 'Year & Section: ' . $section . '  (' . $count . ' student' . ($count === 1 ? '' : 's') . ')';
+    $count = array_sum($groupCounts[$course][$status] ?? []);
+    return strtoupper($status) . '  (' . $count . ' student' . ($count === 1 ? '' : 's') . ')';
+}
+
+function reportSectionText($section, $count, $status = 'Enrollees')
+{
+    return ($status === 'Graduates' ? 'Year Graduated: ' : 'Year & Section: ') . $section . '  (' . $count . ' student' . ($count === 1 ? '' : 's') . ')';
 }
 
 function xlsxGroupRow($text, $style, $columns)
@@ -581,6 +625,8 @@ $filterRows = [
 ];
 $generatedAt = date('F j, Y \a\t g:i A');
 $preparedBy = (string) ($_SESSION['name'] ?? '');
+$preparedRole = (string) ($_SESSION['role'] ?? '');
+$preparedTitle = $preparedRole === 'Admin' || $preparedRole === '' ? reportEnv('REPORT_PREPARED_TITLE', 'Admin') : $preparedRole;
 
 $total = count($students);
 $namePart = preg_replace('/[^A-Za-z0-9-]+/', '', ($courseFilter !== '' ? $courseFilter : 'All') . ($yearSectionFilter !== '' ? '_' . $yearSectionFilter : ''));
@@ -615,7 +661,7 @@ if ($format === 'xlsx') {
     if (!$courseStats) {
         $rows[] = [['-', 3], ['No students match the selected filters.', 3], [0, 3], [0, 3], [0, 3]];
     }
-    $preparedRow = [['Prepared by: ' . $preparedBy . ' (' . reportEnv('REPORT_PREPARED_TITLE', 'Admin') . ')', 1]];
+    $preparedRow = [['Prepared by: ' . $preparedBy . ' (' . $preparedTitle . ')', 1]];
     $rows[] = [];
     $rows[] = $preparedRow;
     $sheets = ['Summary' => xlsxSheet($rows, [6, 50, 14, 14, 14])];
@@ -628,17 +674,36 @@ if ($format === 'xlsx') {
     }
     foreach ($byCourse as $course => $courseStudents) {
         $courseRows = [
-            xlsxGroupRow($course, 7, 11),
-            [],
-            array_map(fn($h) => [$h, 2], $headers),
+            xlsxGroupRow($course . '  (' . count($courseStudents) . ' student' . (count($courseStudents) === 1 ? '' : 's') . ')', 7, 11),
         ];
-        foreach ($courseStudents as $i => $row) {
+        $currentStatus = null;
+        $currentSection = null;
+        $i = 0;
+        foreach ($courseStudents as $row) {
+            if ($row['group_status'] !== $currentStatus) {
+                $currentStatus = $row['group_status'];
+                $currentSection = null;
+                $courseRows[] = [];
+                $courseRows[] = xlsxGroupRow(reportStatusText($course, $currentStatus, $groupCounts), 6, 11);
+            }
+            if ($row['group_section'] !== $currentSection) {
+                $currentSection = $row['group_section'];
+                $i = 0;
+                $courseRows[] = [];
+                $courseRows[] = xlsxGroupRow(reportSectionText($currentSection, $groupCounts[$course][$currentStatus][$currentSection], $currentStatus), 8, 11);
+                $groupHeaders = $headers;
+                if ($currentStatus === 'Graduates') {
+                    $groupHeaders[3] = 'Year Graduated';
+                }
+                $courseRows[] = array_map(fn($h) => [$h, 2], $groupHeaders);
+            }
+            $i++;
             $completion = $row['completion'];
             $info = [
-                [$i + 1, 3],
+                [$i, 3],
                 [(string) ($row['student_number'] ?? ''), 3],
                 [(string) ($row['name'] ?? ''), 3],
-                [(string) ($row['year_section'] ?? ''), 3],
+                [$row['group_status'] === 'Graduates' ? ($row['group_section'] === 'No Year' ? '' : $row['group_section']) : (string) ($row['year_section'] ?? ''), 3],
                 [STUDENT_TYPES[studentTypeOf($row['admission_track'] ?? '')] ?? 'Regular', 3],
                 [($row['status'] ?? '') === 'graduated' ? 'Graduate' : 'Enrollee', 3],
                 [$completion['complete'] ? 'Complete' : 'Incomplete (' . $completion['fulfilled'] . ' of ' . $completion['total'] . ')',
@@ -720,10 +785,7 @@ $pdf = new ClassReportPdf('P', 'mm', [215.9, 355.6]);
 $pdf->AliasNbPages();
 $pdf->SetTitle(reportText('Students Record Report - ' . $courseLabel . ($yearSectionFilter !== '' ? ' ' . $yearSectionFilter : '')));
 $pdf->SetAuthor(reportText('PUP eRecords'));
-$pdf->headerImage = __DIR__ . '/../images/letterhead-header.jpg';
-$pdf->footerImage = __DIR__ . '/../images/letterhead-footer.jpg';
-$pdf->headerHeight = 215.9 * 292 / 1700;
-$pdf->footerHeight = 215.9 * 215 / 1700;
+applyReportTemplate($pdf, 215.9);
 $pdf->SetMargins(18, $pdf->headerHeight + 6, 18);
 $pdf->SetAutoPageBreak(true, $pdf->footerHeight + 10);
 $pdf->AddPage();
@@ -770,10 +832,23 @@ if (!$students) {
     }
     foreach ($byCourse as $course => $courseStudents) {
         $pdf->CourseHeading($course . '  (' . count($courseStudents) . ' student' . (count($courseStudents) === 1 ? '' : 's') . ')');
-        $pdf->TableHeader($widths, $titles);
-        foreach ($courseStudents as $i => $row) {
+        $currentStatus = null;
+        $currentSection = null;
+        $i = 0;
+        foreach ($courseStudents as $row) {
+            if ($row['group_status'] !== $currentStatus) {
+                $currentStatus = $row['group_status'];
+                $currentSection = null;
+                $pdf->StatusHeading(reportStatusText($course, $currentStatus, $groupCounts));
+            }
+            if ($row['group_section'] !== $currentSection) {
+                $currentSection = $row['group_section'];
+                $i = 0;
+                $pdf->SubHeading(reportSectionText($currentSection, $groupCounts[$course][$currentStatus][$currentSection], $currentStatus));
+                $pdf->TableHeader($widths, $titles);
+            }
             $completion = $row['completion'];
-            $details = trim((string) ($row['year_section'] ?? '')) !== '' ? $row['year_section'] . ' | ' : '';
+            $details = $row['group_status'] === 'Enrollees' && trim((string) ($row['year_section'] ?? '')) !== '' ? $row['year_section'] . ' | ' : '';
             $details .= (STUDENT_TYPES[studentTypeOf($row['admission_track'] ?? '')] ?? 'Regular') . ' | '
                 . (($row['status'] ?? '') === 'graduated' ? 'Graduate' : 'Enrollee');
             $left = [
@@ -807,6 +882,7 @@ if (!$students) {
                 $lines[] = [['No documents submitted', ['font' => 'I']], ['-', []], ['-', []], ['-', []]];
             }
             $pdf->GroupRow($widths, $titles, $left, $leftStyles, $lines, $i % 2 === 1);
+            $i++;
         }
     }
 }
@@ -822,7 +898,7 @@ if ($missingCounts) {
 }
 
 $signatories = [
-    ['Prepared by:', $preparedBy, reportEnv('REPORT_PREPARED_TITLE', 'Admin')],
+    ['Prepared by:', $preparedBy, $preparedTitle],
 ];
 $pdf->Ln(14);
 $pdf->EnsureSpace(30);

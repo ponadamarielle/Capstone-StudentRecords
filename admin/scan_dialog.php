@@ -1,6 +1,7 @@
 <?php
 session_start();
-if (!isset($_SESSION['name'], $_SESSION['role']) || $_SESSION['role'] !== 'Admin') {
+require_once __DIR__ . '/../access_control.php';
+if (!isset($_SESSION['name'], $_SESSION['role']) || !isOfficeRole()) {
     http_response_code(403);
     exit();
 }

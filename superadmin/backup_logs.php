@@ -210,11 +210,57 @@ while ($res && ($row = mysqli_fetch_assoc($res))) {
 }
 
 $users = [];
-$userRes = mysqli_query($conn, "SELECT name FROM accounts WHERE role = 'Admin' AND status = 'Active' ORDER BY name");
+$userRes = mysqli_query($conn, "SELECT a.name, MIN(FIELD(a.role, 'Super Admin', 'Admin', 'Staff', 'OJT Intern')) AS role_order FROM accounts a"
+    . " WHERE EXISTS (SELECT 1 FROM activity_logs l WHERE l.user_name = a.name)"
+    . " GROUP BY a.name ORDER BY role_order, a.name");
 while ($userRes && ($row = mysqli_fetch_row($userRes))) {
     $users[] = $row[0];
 }
 
+
+function logDeviceLabel($agent)
+{
+    $agent = trim($agent);
+    if ($agent === '') {
+        return '-';
+    }
+    $browsers = [
+        'Edge'    => '/Edg(?:e|A|iOS)?\/(\d+)/',
+        'Opera'   => '/(?:OPR|Opera)\/(\d+)/',
+        'Samsung Internet' => '/SamsungBrowser\/(\d+)/',
+        'Firefox' => '/(?:Firefox|FxiOS)\/(\d+)/',
+        'Chrome'  => '/(?:Chrome|CriOS)\/(\d+)/',
+        'Safari'  => '/Version\/(\d+).*Safari/',
+    ];
+    $browser = 'Unknown browser';
+    foreach ($browsers as $name => $pattern) {
+        if (preg_match($pattern, $agent, $m)) {
+            $browser = $name . ' ' . $m[1];
+            break;
+        }
+    }
+    $systems = [
+        'Windows 10/11' => '/Windows NT 10\.0/',
+        'Windows 8.1'   => '/Windows NT 6\.3/',
+        'Windows 8'     => '/Windows NT 6\.2/',
+        'Windows 7'     => '/Windows NT 6\.1/',
+        'Windows'       => '/Windows/',
+        'Android'       => '/Android/',
+        'iPhone'        => '/iPhone/',
+        'iPad'          => '/iPad/',
+        'macOS'         => '/Mac OS X|Macintosh/',
+        'ChromeOS'      => '/CrOS/',
+        'Linux'         => '/Linux/',
+    ];
+    $system = '';
+    foreach ($systems as $name => $pattern) {
+        if (preg_match($pattern, $agent)) {
+            $system = $name;
+            break;
+        }
+    }
+    return $system !== '' ? $browser . ' on ' . $system : $browser;
+}
 
 function logPageUrl(array $filters, array $extra = [])
 {
@@ -481,10 +527,9 @@ include 'navbar.php';
                                     <?php endif; ?>
                                 </div>
                                 <div class="log-details-meta">
-                                    <div><span>Log ID</span><?= (int) $log['log_id'] ?></div>
                                     <div><span>Recorded</span><?= htmlspecialchars($log['created_at']) ?></div>
                                     <div><span>IP address</span><?= htmlspecialchars($log['ip_address'] ?: '-') ?></div>
-                                    <div><span>Browser / device</span><?= htmlspecialchars($log['user_agent'] ?: '-') ?></div>
+                                    <div><span>Browser / device</span><?= htmlspecialchars(logDeviceLabel((string) ($log['user_agent'] ?? ''))) ?></div>
                                 </div>
                             </div>
                         </td>

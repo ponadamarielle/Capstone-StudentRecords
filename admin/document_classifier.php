@@ -698,14 +698,20 @@ function groupClassifiedPages(array $pages)
     $skipped = [];
     $current = null;
 
+    $previousSkipped = null;
     foreach ($pages as $p) {
         $code = $p['code'];
+        if ($code === null && $previousSkipped !== null && isExtractOnlyRequirement($previousSkipped)) {
+            $code = $previousSkipped;
+        }
 
         if ($code !== null && !isStorableRequirement($code)) {
             $skipped[] = ['page' => $p['page'], 'code' => $code, 'label' => requirementLabel($code)];
             $current = null;
+            $previousSkipped = $code;
             continue;
         }
+        $previousSkipped = null;
 
         if ($current !== null && ($code === null || $code === $groups[$current]['code'])) {
             $groups[$current]['pages'][] = $p['page'];
@@ -810,6 +816,11 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     $sourceHash = hash_file('sha256', $destPath);
     $pageCount  = pdfPageCount($destPath);
     $warnings   = [];
+    if ($pageCount <= 3 && function_exists('startHealthPhotoRender')) {
+        for ($p = 1; $p <= $pageCount; $p++) {
+            startHealthPhotoRender($destPath, $p);
+        }
+    }
 
     $aiCache      = [];
     $aiFailed     = false;
@@ -895,6 +906,16 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
         $c = $ai['pages'][$p] ?? ['code' => null, 'confidence' => 'none', 'reason' => ''];
         $pages[] = ['page' => $p, 'code' => $c['code'], 'confidence' => $c['confidence'], 'reason' => $c['reason']];
     }
+    foreach ($pages as &$pageInfo) {
+        $pageText = (string) ($aiCache[$pageInfo['page']]['text'] ?? ($pageTexts[$pageInfo['page']] ?? ''));
+        if ($pageInfo['code'] !== 'health_information_form'
+            && preg_match('/HEALTH\s+INFORMATION\s+FORM/i', substr($pageText, 0, 1200))) {
+            $pageInfo['code'] = 'health_information_form';
+            $pageInfo['confidence'] = 'high';
+            $pageInfo['reason'] = 'The page title is Health Information Form.';
+        }
+    }
+    unset($pageInfo);
 
     $grouped = groupClassifiedPages($pages);
     $groups  = $grouped['groups'];
@@ -917,6 +938,9 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     $extractOnlyPages = array_column($extractOnly, 'page');
 
     if (empty($groups) && empty($extractGroups)) {
+        if (function_exists('finishHealthPhotoRenders')) {
+            finishHealthPhotoRenders($destPath);
+        }
         @unlink($destPath);
         return [
             'success' => false,
@@ -973,6 +997,9 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     }
 
     $timings['fields'] = microtime(true) - $mark - $photoTime;
+    if (function_exists('finishHealthPhotoRenders')) {
+        finishHealthPhotoRenders($destPath);
+    }
     $timings['photo'] = $photoTime;
     $mark = microtime(true);
 

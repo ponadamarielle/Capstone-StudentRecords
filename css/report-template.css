@@ -1,0 +1,231 @@
+.rt-container {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 28px 32px;
+}
+
+.rt-card {
+    padding: 24px;
+    border: 1px solid var(--neutral-border, #E9E5E0);
+    border-radius: 16px;
+    background: var(--neutral-surface, #ffffff);
+    box-shadow: 0 1px 2px rgba(28, 25, 23, 0.04);
+}
+
+.rt-card[hidden],
+.rt-flash[hidden],
+.rt-btn[hidden] {
+    display: none !important;
+}
+
+.rt-card-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 12px;
+}
+
+.rt-title {
+    margin: 0 0 4px;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-primary, #1C1917);
+}
+
+.rt-subtitle,
+.rt-help {
+    margin: 0;
+    font-size: 14px;
+    line-height: 20px;
+    color: var(--text-secondary, #625B55);
+}
+
+.rt-help {
+    margin-bottom: 20px;
+}
+
+.rt-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.rt-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 40px;
+    margin: 0;
+    padding: 0 16px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.rt-btn:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+}
+
+.rt-btn-primary {
+    background: var(--brand-maroon, #7B1113);
+    color: #ffffff;
+}
+
+.rt-btn-primary:hover {
+    background: #5A0B0D;
+}
+
+.rt-btn-outline {
+    border-color: var(--neutral-border, #E9E5E0);
+    background: #ffffff;
+    color: var(--text-primary, #1C1917);
+}
+
+.rt-btn-outline:hover {
+    background: var(--neutral-subtle, #FAF9F7);
+}
+
+.rt-paper {
+    display: flex;
+    flex-direction: column;
+    max-width: 640px;
+    min-height: 420px;
+    margin: 0 auto;
+    border: 1px solid var(--neutral-border, #E9E5E0);
+    background: #ffffff;
+    box-shadow: 0 6px 20px rgba(28, 25, 23, 0.08);
+}
+
+.rt-paper img {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.rt-paper-body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 10px;
+    padding: 28px 48px;
+}
+
+.rt-paper-body span {
+    display: block;
+    height: 8px;
+    border-radius: 4px;
+    background: #EFECE8;
+}
+
+.rt-paper-body .rt-short {
+    width: 60%;
+    margin-bottom: 14px;
+}
+
+.rt-stage {
+    position: relative;
+    max-width: 640px;
+    margin: 0 auto;
+    border: 1px solid var(--neutral-border, #E9E5E0);
+    user-select: none;
+    touch-action: none;
+}
+
+.rt-stage img {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.rt-shade {
+    position: absolute;
+    left: 0;
+    right: 0;
+    background: rgba(123, 17, 19, 0.08);
+    pointer-events: none;
+}
+
+.rt-shade-top {
+    top: 0;
+}
+
+.rt-line {
+    position: absolute;
+    left: -8px;
+    right: -8px;
+    height: 0;
+    border-top: 2px dashed var(--brand-maroon, #7B1113);
+    cursor: ns-resize;
+    outline: none;
+}
+
+.rt-line::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -10px;
+    height: 20px;
+}
+
+.rt-line:focus-visible,
+.rt-line.dragging {
+    border-top-style: solid;
+}
+
+.rt-line-label {
+    position: absolute;
+    right: 12px;
+    top: -13px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: var(--brand-maroon, #7B1113);
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.rt-flash {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border: 1px solid;
+    border-radius: 12px;
+    font-size: 14px;
+}
+
+.rt-flash-success {
+    border-color: #BFE3CC;
+    background: #EEF8F1;
+    color: #1E6B3A;
+}
+
+.rt-flash-error {
+    border-color: #F1C2C4;
+    background: #FDF0F0;
+    color: #A3191E;
+}
+
+.rt-flash-busy {
+    border-color: var(--neutral-border, #E9E5E0);
+    background: #ffffff;
+    color: var(--text-secondary, #625B55);
+}
+
+@media (max-width: 768px) {
+    .rt-container {
+        padding: 20px 16px;
+    }
+}

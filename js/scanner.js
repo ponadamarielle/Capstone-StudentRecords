@@ -272,7 +272,7 @@ document.addEventListener('DOMContentLoaded', function () {
         replacePage = 0;
         currentToken = result.token;
         currentPages = result.pages || 0;
-        previewFrame.src = result.url + '&t=' + Date.now() + '#page=' + (replaced || 1) + '&view=Fit&pagemode=none&toolbar=1';
+        previewFrame.src = result.url + '&t=' + Date.now() + '#page=' + (replaced || 1) + '&view=FitH&pagemode=none&toolbar=1';
         previewInfo.textContent = (replaced ? 'Page ' + replaced + ' was rescanned. ' : '')
             + result.pages + ' page' + (result.pages === 1 ? '' : 's')
             + ' scanned. Check that the scan is clear and complete before using it.';

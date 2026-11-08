@@ -3,6 +3,7 @@
 include 'security_headers.php';
 session_start();
 require_once __DIR__ . '/activity_log.php';
+require_once __DIR__ . '/access_control.php';
 
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 header('Pragma: no-cache');
@@ -13,7 +14,7 @@ const LOGIN_LOCK_MINUTES    = 5;
 const LOGIN_ATTEMPT_WINDOW  = 15;
 
 if (isset($_SESSION['name'], $_SESSION['role'])) {
-    if ($_SESSION['role'] === 'Admin' && ($_SESSION['is_first_login'] ?? 0) == 1) {
+    if (in_array($_SESSION['role'], ['Admin', 'Staff', 'OJT Intern'], true) && ($_SESSION['is_first_login'] ?? 0) == 1) {
         header("Location: change_password.php");
         exit();
     }
@@ -21,7 +22,7 @@ if (isset($_SESSION['name'], $_SESSION['role'])) {
         header("Location: superadmin/dashboard.php");
         exit();
     }
-    if ($_SESSION['role'] === 'Admin') {
+    if (in_array($_SESSION['role'], ['Admin', 'Staff', 'OJT Intern'], true)) {
         header("Location: admin/student_directory.php");
         exit();
     }
@@ -34,7 +35,9 @@ if (!isset($_SESSION['csrf_token'])) {
 
 $error = "";
 if (isset($_GET['deactivated'])) {
-    $error = "Your account has been deactivated. Please contact the Super Admin.";
+    $error = $_GET['deactivated'] === 'access'
+        ? "Your access has been removed. Please contact the Admin."
+        : "Your account has been deactivated. Please contact the Super Admin.";
 }
 
 $DBHost = "localhost";
@@ -47,6 +50,8 @@ $conn = mysqli_connect($DBHost, $DBUser, $DBPass, $DBName);
 if(!$conn) {
     die("Connection failed: " .mysqli_connect_error());
 }
+
+ensureAccountRoles($conn);
 
 mysqli_query($conn, "CREATE TABLE IF NOT EXISTS login_attempts (
     email        VARCHAR(255) NOT NULL PRIMARY KEY,
@@ -138,7 +143,9 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
     } elseif ($row && password_verify($pass, $row['pass'])) {
         clearFailedLogins($conn, $attemptKey);
         if($row['status'] !== 'Active') {
-            $error = "Your account is inactive. Please contact super admin.";
+            $error = in_array($row['role'], ['Staff', 'OJT Intern'], true)
+                ? "Your account is inactive. Please contact the Admin."
+                : "Your account is inactive. Please contact super admin.";
         } else {
             session_regenerate_id(true);
             $_SESSION['email'] = $row['email'];
@@ -153,7 +160,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
                 'details'   => ['email' => $row['email']],
             ]);
 
-            if($row['is_first_login'] == 1 && $row['role'] == 'Admin') {
+            if($row['is_first_login'] == 1 && in_array($row['role'], ['Admin', 'Staff', 'OJT Intern'], true)) {
                 header("Location: change_password.php");
                 exit();
             }
@@ -161,7 +168,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
             if ($row['role'] == 'Super Admin') {
                 header("Location: superadmin/dashboard.php");
                 exit();
-            } elseif ($row['role'] == 'Admin') {
+            } elseif (in_array($row['role'], ['Admin', 'Staff', 'OJT Intern'], true)) {
                 header("Location: admin/student_directory.php");
                 exit();
             }

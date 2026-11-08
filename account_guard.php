@@ -35,7 +35,9 @@ function requireActiveAccount($isAjax = false)
         return;
     }
 
-    logActivity('logout', 'Signed out automatically: the account was deactivated', [
+    $removedAccess = in_array($_SESSION['role'], ['Staff', 'OJT Intern'], true);
+    $redirect = '../signin.php?deactivated=' . ($removedAccess ? 'access' : '1');
+    logActivity('logout', 'Signed out automatically: ' . ($removedAccess ? 'the access was removed' : 'the account was deactivated'), [
         'details' => ['email' => $_SESSION['email'] ?? '', 'reason' => $row ? 'Account status is ' . $row['status'] : 'Account no longer exists'],
     ]);
 
@@ -51,13 +53,15 @@ function requireActiveAccount($isAjax = false)
         http_response_code(401);
         echo json_encode([
             'success'  => false,
-            'message'  => 'Your account has been deactivated. Please contact the Super Admin.',
-            'redirect' => '../signin.php?deactivated=1',
+            'message'  => $removedAccess
+                ? 'Your access has been removed. Please contact the Admin.'
+                : 'Your account has been deactivated. Please contact the Super Admin.',
+            'redirect' => $redirect,
         ]);
         exit();
     }
 
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-    header('Location: ../signin.php?deactivated=1');
+    header('Location: ' . $redirect);
     exit();
 }

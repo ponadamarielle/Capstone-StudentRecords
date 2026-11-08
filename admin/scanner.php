@@ -15,7 +15,8 @@ function scanJson(array $data, $status = 200)
     exit();
 }
 
-if (!isset($_SESSION['name'], $_SESSION['role']) || $_SESSION['role'] !== 'Admin') {
+require_once __DIR__ . '/../access_control.php';
+if (!isset($_SESSION['name'], $_SESSION['role']) || !isOfficeRole()) {
     scanJson(['success' => false, 'message' => 'Unauthorized. Please sign in again.'], 403);
 }
 
@@ -695,9 +696,93 @@ if ($action === 'close_folder') {
     scanJson(['success' => true]);
 }
 
+function scanStartDialogHider()
+{
+    if (PHP_OS_FAMILY !== 'Windows' || scanEnv('SCANNER_HIDE_DIALOG', '1') === '0') {
+        return;
+    }
+    $seconds = 300;
+    $marker  = scanTempDir() . DIRECTORY_SEPARATOR . 'dialog_hider.lock';
+    if (is_file($marker) && filemtime($marker) > time() - ($seconds - 60)) {
+        return;
+    }
+    @touch($marker);
+
+    $title  = str_replace("'", "''", scanEnv('SCANNER_DIALOG_TITLE', '^\s*Scan\s*$'));
+    $script = <<<'PS'
+param([int]$Seconds = 300)
+$Title = '__TITLE__'
+Add-Type -TypeDefinition @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
+public static class PupScanDialog {
+    public delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, IntPtr l);
+    [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr p, EnumProc f, IntPtr l);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+    static string Text(IntPtr h) { var s = new StringBuilder(256); GetWindowText(h, s, 256); return s.ToString(); }
+    static string Cls(IntPtr h) { var s = new StringBuilder(256); GetClassName(h, s, 256); return s.ToString(); }
+    static bool HasProgressBar(IntPtr h) {
+        bool found = false;
+        EnumChildWindows(h, (c, l) => { if (Cls(c) == "msctls_progress32") { found = true; return false; } return true; }, IntPtr.Zero);
+        return found;
+    }
+    public static int Hide(string pattern) {
+        int n = 0;
+        var re = new Regex(pattern, RegexOptions.IgnoreCase);
+        EnumWindows((h, l) => {
+            if (IsWindowVisible(h) && re.IsMatch(Text(h)) && HasProgressBar(h)) { ShowWindow(h, 0); n++; }
+            return true;
+        }, IntPtr.Zero);
+        return n;
+    }
+}
+"@
+$end = (Get-Date).AddSeconds($Seconds)
+while ((Get-Date) -lt $end) {
+    try { [void][PupScanDialog]::Hide($Title) } catch {}
+    Start-Sleep -Milliseconds 150
+}
+PS;
+    $script = str_replace('__TITLE__', $title, $script);
+    $file   = scanTempDir() . DIRECTORY_SEPARATOR . 'hide_scan_dialog.ps1';
+    if (!is_file($file) || @file_get_contents($file) !== $script) {
+        if (@file_put_contents($file, $script) === false) {
+            return;
+        }
+    }
+
+    $command = 'powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "'
+        . $file . '" -Seconds ' . $seconds;
+    if (class_exists('COM')) {
+        try {
+            $shell = new COM('WScript.Shell');
+            $shell->Run($command, 0, false);
+            return;
+        } catch (Throwable $e) {
+        }
+    }
+    $handle = @popen('start "" /B ' . $command . ' >NUL 2>&1', 'r');
+    if ($handle) {
+        pclose($handle);
+    }
+}
+
+if ($action === 'hide_dialog') {
+    session_write_close();
+    scanStartDialogHider();
+    scanJson(['success' => true]);
+}
+
 if ($action === 'watch_start') {
     $_SESSION['scan_watch'] = ['since' => time(), 'known' => scanWatchFiles()];
     session_write_close();
+    scanStartDialogHider();
     scanJson(['success' => true]);
 }
 
@@ -833,6 +918,7 @@ if ($action === 'scan') {
 
     @set_time_limit(SCAN_TIMEOUT + 120);
     @ini_set('memory_limit', '512M');
+    scanStartDialogHider();
     $dir = scanTokenDir($token);
     @mkdir($dir, 0700, true);
     $dpi = (int) scanEnv('SCANNER_DPI', '300');

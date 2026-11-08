@@ -8,10 +8,13 @@ require_once __DIR__ . '/requirement_status.php';
 require_once __DIR__ . '/../activity_log.php';
 require_once __DIR__ . '/../lib/fpdf/fpdf.php';
 
-if (!isset($_SESSION['name'], $_SESSION['role']) || $_SESSION['role'] !== 'Admin') {
+require_once __DIR__ . '/../access_control.php';
+require_once __DIR__ . '/../report_template.php';
+if (!isset($_SESSION['name'], $_SESSION['role']) || !isOfficeRole()) {
     header('Location: ../signin.php');
     exit();
 }
+requirePermission('reports');
 
 require_once __DIR__ . '/../account_guard.php';
 requireActiveAccount(false);
@@ -260,15 +263,14 @@ $gradYear = function_exists('expectedGraduationYear') ? expectedGraduationYear($
 $gradLabel = $gradYear ? schoolYearLabel($gradYear) : '';
 $generatedAt = date('F j, Y \a\t g:i A');
 $preparedBy = (string) ($_SESSION['name'] ?? '');
+$preparedRole = (string) ($_SESSION['role'] ?? '');
+$preparedTitle = $preparedRole === 'Admin' || $preparedRole === '' ? reportEnv('REPORT_PREPARED_TITLE', 'Admin') : $preparedRole;
 
 $pdf = new StudentReportPdf('P', 'mm', [215.9, 355.6]);
 $pdf->AliasNbPages();
 $pdf->SetTitle(reportText('Student Record Report - ' . $fullName));
 $pdf->SetAuthor(reportText('PUP eRecords'));
-$pdf->headerImage = __DIR__ . '/../images/letterhead-header.jpg';
-$pdf->footerImage = __DIR__ . '/../images/letterhead-footer.jpg';
-$pdf->headerHeight = 215.9 * 292 / 1700;
-$pdf->footerHeight = 215.9 * 215 / 1700;
+applyReportTemplate($pdf, 215.9);
 $pdf->SetMargins(18, $pdf->headerHeight + 6, 18);
 $pdf->SetAutoPageBreak(true, $pdf->footerHeight + 10);
 $pdf->AddPage();
@@ -392,7 +394,7 @@ if (!$documents) {
 }
 
 $signatories = [
-    ['Prepared by:', $preparedBy, reportEnv('REPORT_PREPARED_TITLE', 'Admin')],
+    ['Prepared by:', $preparedBy, $preparedTitle],
 ];
 $pdf->Ln(14);
 $pdf->EnsureSpace(30);

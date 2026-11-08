@@ -1,5 +1,6 @@
 <?php 
     require_once __DIR__ . '/../account_guard.php';
+    require_once __DIR__ . '/../access_control.php';
     requireActiveAccount(false);
     $userName = $_SESSION['name'];
     $userRole = $_SESSION['role'];
@@ -15,14 +16,20 @@
 <script src="../js/bootstrap.bundle.min.js"></script>
 <script src="../js/sidebar.js"></script>
 <script src="../js/navbar-admin.js"></script>
+<script src="../js/session-check.js?v=<?php echo @filemtime(__DIR__ . '/../js/session-check.js'); ?>"></script>
 
 <?php
     $pageTitles = [
         'student_directory.php' => ['Student Directory', 'Search, view and manage student records.'],
         'archive.php'           => ['Archived Records', 'Records of students who have been archived.'],
         'view_student.php'      => ['Student Profile', 'View and update the student record and documents.'],
+        'access.php'            => ['User Management', 'Manage Staff and OJT Intern accounts and what they can access.'],
     ];
     [$pageTitle, $pageSubtitle] = $pageTitles[$currentPage] ?? ['PUP eRecords', ''];
+    if ($currentPage === 'student_directory.php' && !can('students.list')) {
+        $pageTitle = 'Add Student';
+        $pageSubtitle = 'Scan or upload the documents of a new student.';
+    }
     $viewingArchived = $currentPage === 'view_student.php' && !empty($isArchivedView);
     if ($currentPage === 'view_student.php' && !empty($student['name'])) {
         $pageSubtitle = ($viewingArchived ? 'Archived Records / ' : 'Student Directory / ') . $student['name'];
@@ -49,12 +56,19 @@
 
         <p class="admin-menu-label">Main menu</p>
         <nav class="admin-menu">
-            <a class="admin-menu-item <?php echo ($currentPage == 'student_directory.php' || ($currentPage == 'view_student.php' && !$viewingArchived)) ? 'active' : ''; ?>" href="student_directory.php" title="Student Directory">
-                <i class="bi bi-mortarboard"></i><span>Student Directory</span>
+            <a class="admin-menu-item <?php echo ($currentPage == 'student_directory.php' || ($currentPage == 'view_student.php' && !$viewingArchived)) ? 'active' : ''; ?>" href="student_directory.php" title="<?php echo can('students.list') ? 'Student Directory' : 'Add Student'; ?>">
+                <i class="bi <?php echo can('students.list') ? 'bi-mortarboard' : 'bi-person-plus'; ?>"></i><span><?php echo can('students.list') ? 'Student Directory' : 'Add Student'; ?></span>
             </a>
+            <?php if (can('access.manage')): ?>
+            <a class="admin-menu-item <?php echo ($currentPage == 'access.php') ? 'active' : ''; ?>" href="access.php" title="User Management">
+                <i class="bi bi-people"></i><span>User Management</span>
+            </a>
+            <?php endif; ?>
+            <?php if (can('archive.view')): ?>
             <a class="admin-menu-item <?php echo ($currentPage == 'archive.php' || $viewingArchived) ? 'active' : ''; ?>" href="archive.php" title="Archived Records">
                 <i class="bi bi-archive"></i><span>Archived Records</span>
             </a>
+            <?php endif; ?>
         </nav>
 
         <div class="admin-sidebar-bottom">

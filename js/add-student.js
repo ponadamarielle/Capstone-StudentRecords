@@ -367,6 +367,11 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
+    function setDefaultTrack() {
+        if (trackSelect && ADMISSION_TRACKS.shs_current) trackSelect.value = 'shs_current';
+    }
+    setDefaultTrack();
+
     if (trackSelect) {
         trackSelect.addEventListener('change', function () {
             trackTouched = true;
@@ -1001,7 +1006,7 @@ document.addEventListener('DOMContentLoaded', function () {
     function renderRequirementChecklist() {
         if (!requirementChecklist) return;
         requirementChecklist.innerHTML = '';
-        if (!REQUIREMENTS.length || uploadedDocuments.length === 0) return;
+        if (!REQUIREMENTS.length) return;
 
         const required = REQUIREMENTS.filter(isRequiredForTrack);
         const attachedRequired = required.filter(function (r) { return findDocByRequirement(r.code, -1) !== -1; });
@@ -1430,6 +1435,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 rerenderDocumentList();
                 resetStudentPhoto();
                 form.reset();
+                setDefaultTrack();
                 applyStudentType();
                 document.querySelectorAll('#shift_from_course, #previous_school, #previous_course, #previous_year_level').forEach(function (el) { el.classList.remove('is-invalid'); });
                 rerenderDocumentList();

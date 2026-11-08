@@ -1,5 +1,6 @@
 <?php
 session_start(['read_and_close' => true]);
+require_once __DIR__ . '/../access_control.php';
 
 function guardDeny($status, $message, $showSignin = true)
 {
@@ -19,7 +20,7 @@ function guardDeny($status, $message, $showSignin = true)
 if (!isset($_SESSION['name'], $_SESSION['role'])) {
     guardDeny(403, 'Please sign in to open this file.');
 }
-if ($_SESSION['role'] !== 'Admin') {
+if (!in_array($_SESSION['role'], OFFICE_ROLES, true)) {
     guardDeny(403, 'You do not have permission to open this file.', false);
 }
 
@@ -55,6 +56,22 @@ if ($baseDir === false || $filePath === false || !is_file($filePath)
     || strpos($filePath, $baseDir . DIRECTORY_SEPARATOR) !== 0
     || in_array(strtolower(basename($filePath)), ['.htaccess', '_guard.php'], true)) {
     guardDeny(404, 'File not found.');
+}
+
+if (!can('documents.view', $_SESSION['role'])) {
+    $savedFile = true;
+    try {
+        $recordConn = mysqli_connect('localhost', 'root', '', 'db_pup_eRecords');
+        if ($recordConn) {
+            $savedFile = isSavedRecordFile($recordConn, $filePath);
+            mysqli_close($recordConn);
+        }
+    } catch (Throwable $e) {
+        error_log('Upload guard: saved file check failed: ' . $e->getMessage());
+    }
+    if ($savedFile) {
+        guardDeny(403, 'You do not have permission to open this file.', false);
+    }
 }
 
 $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));

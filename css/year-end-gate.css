@@ -1,0 +1,110 @@
+#yearEndGate .ye-content {
+    border: none;
+    border-radius: 16px;
+    overflow: hidden;
+}
+
+#yearEndGate .ye-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--neutral-border, #E9E5E0);
+}
+
+#yearEndGate .ye-icon {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: var(--brand-maroon-50, #FBF1F1);
+    color: var(--brand-maroon, #7B1113);
+    font-size: 22px;
+}
+
+#yearEndGate .ye-title {
+    margin: 0 0 4px;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-primary, #1C1917);
+}
+
+#yearEndGate .ye-subtitle {
+    margin: 0;
+    font-size: 14px;
+    line-height: 20px;
+    color: var(--text-secondary, #625B55);
+}
+
+#yearEndGate .ye-body {
+    padding: 20px 24px;
+}
+
+#yearEndGate .ye-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+#yearEndGate .ye-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 14px 16px;
+    border-radius: 12px;
+    background: var(--neutral-subtle, #FAF9F7);
+}
+
+#yearEndGate .ye-stat-label {
+    font-size: 13px;
+    color: var(--text-secondary, #625B55);
+}
+
+#yearEndGate .ye-stat-value {
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--text-primary, #1C1917);
+}
+
+#yearEndGate .ye-error {
+    margin-top: 14px;
+    padding: 10px 14px;
+    border: 1px solid #F1C2C4;
+    border-radius: 10px;
+    background: #FDF0F0;
+    color: #A3191E;
+    font-size: 14px;
+}
+
+#yearEndGate .ye-error[hidden] {
+    display: none;
+}
+
+#yearEndGate .ye-foot {
+    display: flex;
+    justify-content: flex-end;
+    padding: 16px 24px;
+    border-top: 1px solid var(--neutral-border, #E9E5E0);
+}
+
+#yearEndGate .ye-confirm {
+    height: 44px;
+    padding: 0 20px;
+    border: none;
+    border-radius: 10px;
+    background: var(--brand-maroon, #7B1113);
+    color: #ffffff;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+#yearEndGate .ye-confirm:hover {
+    background: #5A0B0D;
+}
+
+#yearEndGate .ye-confirm:disabled {
+    opacity: 0.65;
+}

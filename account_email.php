@@ -8,27 +8,29 @@ function accountSignInUrl()
     return ($https ? 'https' : 'http') . '://' . $host . $base . '/signin.php';
 }
 
-function buildTemporaryPasswordEmail($name, $email, $password, $refNumber, $reset = false)
+function buildTemporaryPasswordEmail($name, $email, $password, $refNumber, $reset = false, $role = 'Admin', $sender = 'Super Admin')
 {
+    $role = htmlspecialchars((string) $role, ENT_QUOTES, 'UTF-8');
+    $sender = htmlspecialchars((string) $sender, ENT_QUOTES, 'UTF-8');
     $copy = $reset ? [
         'title'    => 'Your PUP eRecords password was reset',
         'preview'  => 'Your password was reset. Sign in with your temporary password and set a new one.',
         'eyebrow'  => 'Password Reset',
         'heading'  => 'Your password was reset',
-        'intro'    => 'The Super Admin has reset the password of your <strong>Admin</strong> account in PUP eRecords, the student records system of PUP Bi&ntilde;an Campus. Use the temporary password below to sign in, then set a new password.',
-        'note'     => 'If you did not ask for a password reset, please contact the Super Admin right away.',
+        'intro'    => 'The ' . $sender . ' has reset the password of your <strong>' . $role . '</strong> account in PUP eRecords, the student records system of PUP Bi&ntilde;an Campus. Use the temporary password below to sign in, then set a new password.',
+        'note'     => 'If you did not ask for a password reset, please contact the ' . $sender . ' right away.',
         'closing'  => 'Regards,',
-        'text'     => 'The Super Admin has reset the password of your Admin account in PUP eRecords.',
+        'text'     => 'The ' . $sender . ' has reset the password of your ' . $role . ' account in PUP eRecords.',
         'textNext' => 'You will be asked to set a new password when you sign in.',
     ] : [
-        'title'    => 'Your PUP eRecords Admin Account',
-        'preview'  => 'Your Admin account is ready. Sign in with your temporary password and set a new one.',
-        'eyebrow'  => 'Admin Account Created',
+        'title'    => 'Your PUP eRecords ' . $role . ' Account',
+        'preview'  => 'Your ' . $role . ' account is ready. Sign in with your temporary password and set a new one.',
+        'eyebrow'  => $role . ' Account Created',
         'heading'  => 'Welcome to PUP eRecords',
-        'intro'    => 'An <strong>Admin</strong> account has been created for you in PUP eRecords, the student records system of PUP Bi&ntilde;an Campus. Use the temporary credentials below to sign in for the first time.',
-        'note'     => 'If you did not expect this email, please contact the Super Admin.',
+        'intro'    => 'A' . (preg_match('/^[AEIOU]/i', $role) ? 'n' : '') . ' <strong>' . $role . '</strong> account has been created for you in PUP eRecords, the student records system of PUP Bi&ntilde;an Campus. Use the temporary credentials below to sign in for the first time.',
+        'note'     => 'If you did not expect this email, please contact the ' . $sender . '.',
         'closing'  => 'Welcome aboard,',
-        'text'     => 'An Admin account has been created for you in PUP eRecords.',
+        'text'     => 'A' . (preg_match('/^[AEIOU]/i', $role) ? 'n' : '') . ' ' . $role . ' account has been created for you in PUP eRecords.',
         'textNext' => 'You will be asked to change your password on your first sign-in.',
     ];
     $e = fn($v) => htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8');
@@ -87,7 +89,7 @@ function buildTemporaryPasswordEmail($name, $email, $password, $refNumber, $rese
         . '</td></tr>'
 
         . '<tr><td style="padding:24px 32px 30px 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:22px;color:#3b3b3b;">'
-        . '<p style="margin:0;">' . $copy['closing'] . '<br><span style="font-family:Georgia,serif;font-size:16px;color:#6e0000;font-weight:bold;">PUP eRecords Super Admin</span><br>'
+        . '<p style="margin:0;">' . $copy['closing'] . '<br><span style="font-family:Georgia,serif;font-size:16px;color:#6e0000;font-weight:bold;">PUP eRecords ' . $sender . '</span><br>'
         . '<span style="font-size:13px;color:#8a7b74;">PUP Bi&ntilde;an Campus</span></p>'
         . '</td></tr>'
 
@@ -105,7 +107,7 @@ function buildTemporaryPasswordEmail($name, $email, $password, $refNumber, $rese
         . "Sign in: {$url}\n"
         . $copy['textNext'] . "\n\n"
         . "Do not share your password with anyone.\n\n"
-        . "PUP eRecords Super Admin\nPUP Biñan Campus\nRef {$refNumber}";
+        . "PUP eRecords " . html_entity_decode($sender) . "\nPUP Biñan Campus\nRef {$refNumber}";
 
     return [$html, $text];
 }

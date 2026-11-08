@@ -9,6 +9,8 @@ require_once __DIR__ . '/requirement_status.php';
 require_once __DIR__ . '/../activity_log.php';
 require_once __DIR__ . '/../database_backup.php';
 require_once __DIR__ . '/../student_notifications.php';
+require_once __DIR__ . '/../access_control.php';
+require_once __DIR__ . '/../year_end_notice.php';
 
 function loadEnv($path)
 {
@@ -33,7 +35,7 @@ function loadEnv($path)
 $action = $_GET['action'] ?? '';
 $isAjaxAction = $action !== '';
 
-if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] !== 'Admin') {
+if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || !isOfficeRole()) {
     if ($isAjaxAction) {
         header('Content-Type: application/json');
         http_response_code(403);
@@ -87,10 +89,11 @@ if ($isAjaxAction) {
             handleAddStudent($conn);
             break;
         case 'update_status':
+            requirePermission('students.status', true);
             handleUpdateStatus($conn);
             break;
         case 'delete_document':
-            handleDeleteDocument();
+            handleDeleteDocument($conn);
             break;
         default:
             echo json_encode(['success' => false, 'message' => 'Invalid action.']);
@@ -386,6 +389,154 @@ function savePhotoWithTopSpace($pdfPath, $page, array $box, $photoBase, $spaceRa
     return writePngRgb($path, $w, $h + $space, $rgb) ? $path : null;
 }
 
+function findHealthPhotoBox(array $ppm)
+{
+    $w = $ppm['width'];
+    $h = $ppm['height'];
+    $data = $ppm['data'];
+    $hw = intdiv($w, 2);
+    $hh = intdiv($h, 2);
+    if ($hw < 300 || $hh < 300) {
+        return null;
+    }
+
+    $lum = function ($x, $y) use ($data, $w, $h) {
+        if ($x < 0 || $y < 0 || $x >= $w || $y >= $h) {
+            return 765;
+        }
+        $o = ($y * $w + $x) * 3;
+        return ord($data[$o]) + ord($data[$o + 1]) + ord($data[$o + 2]);
+    };
+    $rows = [];   // horizontal line pixels
+    $vrows = [];  // vertical line pixels
+    for ($y = 0; $y < $hh; $y++) {
+        $row = str_repeat("\0", $hw);
+        $vrow = $row;
+        $fy = $y * 2;
+        for ($x = 0; $x < $hw; $x++) {
+            $fx = $x * 2;
+            if (min($lum($fx, $fy), $lum($fx + 1, $fy), $lum($fx, $fy + 1), $lum($fx + 1, $fy + 1)) >= 560) {
+                continue;
+            }
+            if ($lum($fx, $fy - 8) > 600 || $lum($fx, $fy + 8) > 600) {
+                $row[$x] = "\1";
+            }
+            if ($lum($fx - 8, $fy) > 600 || $lum($fx + 8, $fy) > 600) {
+                $vrow[$x] = "\1";
+            }
+        }
+        $rows[] = $row;
+        $vrows[] = $vrow;
+    }
+
+    $band = 6;
+    $gap = 3;
+    $minRun = 160;
+
+    $wide = [];
+    foreach ($vrows as $row) {
+        $o = $row;
+        for ($b = 1; $b <= $band; $b++) {
+            $o |= substr($row, $b) . str_repeat("\0", $b);
+            $o |= str_repeat("\0", $b) . substr($row, 0, $hw - $b);
+        }
+        $wide[] = $o;
+    }
+    $colRun = array_fill(0, $hw, 0);
+    for ($x = 0; $x < $hw; $x++) {
+        $run = 0;
+        $miss = 0;
+        $best = 0;
+        for ($y = 0; $y < $hh; $y++) {
+            if ($wide[$y][$x] === "\1") {
+                $run += $miss + 1;
+                $miss = 0;
+                if ($run > $best) {
+                    $best = $run;
+                }
+            } elseif ($run > 0 && ++$miss > $gap) {
+                $run = 0;
+                $miss = 0;
+            }
+        }
+        $colRun[$x] = $best;
+    }
+    $lines = function (array $runs, $min) {
+        $found = [];
+        $start = null;
+        foreach ($runs as $i => $run) {
+            if ($run >= $min) {
+                if ($start === null) {
+                    $start = $i;
+                }
+                $end = $i;
+            } elseif ($start !== null) {
+                $found[] = (int) round(($start + $end) / 2);
+                $start = null;
+            }
+        }
+        if ($start !== null) {
+            $found[] = (int) round(($start + $end) / 2);
+        }
+        return $found;
+    };
+    $cols = $lines($colRun, $minRun);
+
+    $best = null;
+    foreach ($cols as $i => $left) {
+        foreach (array_slice($cols, $i + 1) as $right) {
+            $size = $right - $left;
+            if ($size < 225 || $size > 400) {
+                continue;
+            }
+            $span = $size + 1;
+            $rowHits = array_fill(0, $hh, 0);
+            for ($y = 0; $y < $hh; $y++) {
+                $o = $rows[$y];
+                for ($b = 1; $b <= $band; $b++) {
+                    if ($y + $b < $hh) {
+                        $o |= $rows[$y + $b];
+                    }
+                    if ($y - $b >= 0) {
+                        $o |= $rows[$y - $b];
+                    }
+                }
+                $piece = substr($o, $left, $span);
+                if (substr_count($piece, "\1") < $span * 0.8) {
+                    continue;
+                }
+                if (preg_match_all('/\x01(?:\x00{0,' . $gap . '}\x01)*/', $piece, $m) && max(array_map('strlen', $m[0])) >= $span * 0.8) {
+                    $rowHits[$y] = 1;
+                }
+            }
+            $hLines = $lines($rowHits, 1);
+            foreach ($hLines as $top) {
+                foreach ($hLines as $bottom) {
+                    if ($bottom - $top >= $size * 0.75 && $bottom - $top <= $size * 1.25) {
+                        $score = abs(($bottom - $top) - $size) + abs($size - 300) * 0.2;
+                        if ($best === null || $score < $best['score']) {
+                            $best = ['score' => $score, 'l' => $left, 'r' => $right, 't' => $top, 'b' => $bottom];
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if ($best === null) {
+        return null;
+    }
+
+    $inset = 18;
+    $box = [
+        'x'      => $best['l'] * 2 + $inset,
+        'y'      => $best['t'] * 2 + $inset,
+        'width'  => ($best['r'] - $best['l']) * 2 - 2 * $inset,
+        'height' => ($best['b'] - $best['t']) * 2 - 2 * $inset,
+    ];
+    return $box['y'] <= 450 ? $box : null;
+}
+
 function findHealthPhotoFrame(array $ppm, $threshold = 300)
 {
     $w = $ppm['width'];
@@ -530,6 +681,50 @@ function healthPhotoSquare(array $box)
     ];
 }
 
+function startHealthPhotoRender($pdfPath, $page)
+{
+    $base = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('hifpre_', true);
+    $cmd = escapeshellarg(PDFTOPPM_BIN) . ' -scale-to-x 2550 -scale-to-y -1 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+        . ' -x 1450 -y 0 -W 1100 -H 1250 ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($base);
+    $pipes = [];
+    $proc = @proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    if (!is_resource($proc)) {
+        return;
+    }
+    fclose($pipes[0]);
+    $GLOBALS['healthPhotoRenders'][$pdfPath][(int) $page] = ['proc' => $proc, 'pipes' => $pipes, 'base' => $base];
+}
+
+function takeHealthPhotoRender($pdfPath, $page)
+{
+    $job = $GLOBALS['healthPhotoRenders'][$pdfPath][(int) $page] ?? null;
+    if ($job === null) {
+        return null;
+    }
+    unset($GLOBALS['healthPhotoRenders'][$pdfPath][(int) $page]);
+    stream_get_contents($job['pipes'][1]);
+    stream_get_contents($job['pipes'][2]);
+    fclose($job['pipes'][1]);
+    fclose($job['pipes'][2]);
+    proc_close($job['proc']);
+    foreach (['-1.ppm', '.ppm'] as $suffix) {
+        if (file_exists($job['base'] . $suffix)) {
+            return $job['base'] . $suffix;
+        }
+    }
+    return null;
+}
+
+function finishHealthPhotoRenders($pdfPath)
+{
+    foreach (array_keys($GLOBALS['healthPhotoRenders'][$pdfPath] ?? []) as $page) {
+        $file = takeHealthPhotoRender($pdfPath, $page);
+        if ($file !== null) {
+            @unlink($file);
+        }
+    }
+}
+
 function extractHealthPhoto($pdfPath, $page, array $fallback, $photoBase)
 {
     $sx = 1450;
@@ -538,7 +733,15 @@ function extractHealthPhoto($pdfPath, $page, array $fallback, $photoBase)
     $sh = 1250;
 
     $ppm = null;
-    foreach (['-scale-to-x 2550 -scale-to-y -1', '-r 300'] as $scale) {
+    $prerendered = takeHealthPhotoRender($pdfPath, $page);
+    if ($prerendered !== null) {
+        $ppm = readPpmPixels($prerendered);
+        @unlink($prerendered);
+        if ($ppm !== null && strlen($ppm['data']) < $ppm['width'] * $ppm['height'] * 3) {
+            $ppm = null;
+        }
+    }
+    foreach ($ppm === null ? ['-scale-to-x 2550 -scale-to-y -1', '-r 300'] : [] as $scale) {
         $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('hifphoto_', true);
         $cmd = escapeshellarg(PDFTOPPM_BIN)
             . ' ' . $scale . ' -singlefile -f ' . (int) $page . ' -l ' . (int) $page
@@ -566,6 +769,10 @@ function extractHealthPhoto($pdfPath, $page, array $fallback, $photoBase)
     }
 
     $candidates = [];
+    $followed = findHealthPhotoBox($ppm);
+    if ($followed !== null) {
+        $candidates[] = ['photo box', $followed];
+    }
     foreach ([300, 450, 560, 650] as $threshold) {
         $frame = findHealthPhotoFrame($ppm, $threshold);
         if ($frame !== null && $frame['y'] <= 450) {
@@ -614,8 +821,11 @@ function extractHealthPhoto($pdfPath, $page, array $fallback, $photoBase)
             }
         }
         $ratio = $count ? $skin / $count : 0;
-        if ($best === null || $ratio > $best['ratio'] + 0.02) {
-            $best = ['method' => $method, 'box' => $square, 'crop' => $crop, 'ratio' => $ratio];
+        $fullSize = $square['width'] >= 450 && $square['width'] <= 720;
+        if ($fullSize && $ratio >= 0.03 && ($best === null || empty($best['full']))) {
+            $best = ['method' => $method, 'box' => $square, 'crop' => $crop, 'ratio' => $ratio, 'full' => true];
+        } elseif (($best === null || empty($best['full'])) && ($best === null || $ratio > $best['ratio'] + 0.02)) {
+            $best = ['method' => $method, 'box' => $square, 'crop' => $crop, 'ratio' => $ratio, 'full' => false];
         }
     }
     if ($best === null || $best['ratio'] < 0.03) {
@@ -627,8 +837,108 @@ function extractHealthPhoto($pdfPath, $page, array $fallback, $photoBase)
     error_log('Health form photo: found by ' . $best['method'] . ', ' . $box['width'] . 'x' . $box['height'] . ' at '
         . ($box['x'] + $sx) . ',' . ($box['y'] + $sy) . ', skin ' . round($best['ratio'] * 100, 1) . '%.');
 
+    [$outW, $outH, $outData] = tidyHealthPhotoCrop($box['width'], $box['height'], $crop);
+
     $path = $photoBase . '.png';
-    return writePngRgb($path, $box['width'], $box['height'], $crop) ? $path : null;
+    return writePngRgb($path, $outW, $outH, $outData) ? $path : null;
+}
+
+function tidyHealthPhotoCrop($w, $h, $data, $spaceRatio = 0.02)
+{
+    $isDark = function ($x, $y) use ($data, $w) {
+        $o = ($y * $w + $x) * 3;
+        return ord($data[$o]) + ord($data[$o + 1]) + ord($data[$o + 2]) < 450;
+    };
+    $rowIsLine = function ($y, $x0, $x1) use ($isDark) {
+        $hits = 0;
+        $n = 0;
+        for ($x = $x0; $x < $x1; $x += 2) {
+            $n++;
+            if ($isDark($x, $y)) {
+                $hits++;
+            }
+        }
+        return $n > 0 && $hits >= $n * 0.85;
+    };
+    $colIsLine = function ($x, $y0, $y1) use ($isDark) {
+        $hits = 0;
+        $n = 0;
+        for ($y = $y0; $y < $y1; $y += 2) {
+            $n++;
+            if ($isDark($x, $y)) {
+                $hits++;
+            }
+        }
+        return $n > 0 && $hits >= $n * 0.85;
+    };
+
+    $top = 0;
+    $bottom = $h;
+    $left = 0;
+    $right = $w;
+    $window = min(40, (int) ($h / 10), (int) ($w / 10));
+
+    if ($window > 0) {
+        for ($y = 0; $y < $window; $y++) {
+            if ($rowIsLine($y, 0, $w)) {
+                $top = $y + 1;
+            }
+        }
+        for ($y = $h - $window; $y < $h; $y++) {
+            if ($rowIsLine($y, 0, $w)) {
+                $bottom = $y;
+                break;
+            }
+        }
+        for ($x = 0; $x < $window; $x++) {
+            if ($colIsLine($x, $top, $bottom)) {
+                $left = $x + 1;
+            }
+        }
+        for ($x = $w - $window; $x < $w; $x++) {
+            if ($colIsLine($x, $top, $bottom)) {
+                $right = $x;
+                break;
+            }
+        }
+    }
+
+    $cw = $right - $left;
+    $ch = $bottom - $top;
+    $size = min($cw, $ch);
+    if ($size < 100) {
+        return [$w, $h, $data];
+    }
+    $x0 = $left + intdiv($cw - $size, 2);
+    $y0 = $top;
+
+    $sum = [0, 0, 0];
+    $count = 0;
+    for ($y = $y0; $y < $y0 + min(6, $size); $y++) {
+        for ($x = $x0; $x < $x0 + $size; $x++) {
+            $o = ($y * $w + $x) * 3;
+            $r = ord($data[$o]);
+            $g = ord($data[$o + 1]);
+            $b = ord($data[$o + 2]);
+            if ($r + $g + $b > 540) {
+                $sum[0] += $r;
+                $sum[1] += $g;
+                $sum[2] += $b;
+                $count++;
+            }
+        }
+    }
+    $bg = $count > 0
+        ? chr((int) ($sum[0] / $count)) . chr((int) ($sum[1] / $count)) . chr((int) ($sum[2] / $count))
+        : "\xFF\xFF\xFF";
+
+    $space = (int) round($size * $spaceRatio);
+    $keep = $size - $space;
+    $out = str_repeat(str_repeat($bg, $size), $space);
+    for ($y = $y0; $y < $y0 + $keep; $y++) {
+        $out .= substr($data, ($y * $w + $x0) * 3, $size * 3);
+    }
+    return [$size, $size, $out];
 }
 
 function extractIdPhoto($pdfPath, $docType, $page = 1)
@@ -647,11 +957,7 @@ function extractIdPhoto($pdfPath, $docType, $page = 1)
         $box = sarPhotoBox($frame);
     }
 
-    $photoDir = '../uploads/photos/';
-    if (!is_dir($photoDir)) {
-        mkdir($photoDir, 0755, true);
-    }
-    $photoBase = $photoDir . uniqid('photo_', true);
+    $photoBase = stagedPhotoBase();
 
     if ($docType === 'health_information_form') {
         return extractHealthPhoto($pdfPath, $page, $box, $photoBase);
@@ -843,10 +1149,7 @@ function handleOcrExtract()
         return;
     }
 
-    $uploadDir = '../uploads/documents/';
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0755, true);
-    }
+    $uploadDir = stagedDocumentDir();
 
     $destPath = $uploadDir . uniqid('doc_', true) . '.pdf';
     if (!move_uploaded_file($_FILES['document']['tmp_name'], $destPath)) {
@@ -896,7 +1199,7 @@ function handleCheckStudentNumber($conn)
     ]);
 }
 
-function handleDeleteDocument()
+function handleDeleteDocument($conn = null)
 {
     $filePath = $_POST['file_path'] ?? '';
     $imagePath = $_POST['image_path'] ?? '';
@@ -906,7 +1209,7 @@ function handleDeleteDocument()
         return;
     }
 
-    $uploadDir = realpath('../uploads/documents/');
+    $uploadDir = realpath('../uploads/documents/') ?: realpath(stagedDocumentDir());
     $photoDir = realpath('../uploads/photos/');
     if ($uploadDir === false) {
         echo json_encode(['success' => false, 'message' => 'Upload directory not found.']);
@@ -918,7 +1221,7 @@ function handleDeleteDocument()
 
     foreach ($paths as $path) {
         $targetPath = realpath($path);
-        if ($targetPath === false || strpos($targetPath, $uploadDir) !== 0) {
+        if (!isStagedDocument($path) && ($targetPath === false || strpos($targetPath, $uploadDir) !== 0 || isSavedRecordFile($conn, $targetPath))) {
             $deleted = false;
             continue;
         }
@@ -929,7 +1232,8 @@ function handleDeleteDocument()
 
     if ($photoPath !== '') {
         $targetPhotoPath = realpath($photoPath);
-        if ($photoDir === false || $targetPhotoPath === false || strpos($targetPhotoPath, $photoDir) !== 0) {
+        if (!isStagedPhoto($photoPath) && ($photoDir === false || $targetPhotoPath === false || strpos($targetPhotoPath, $photoDir) !== 0
+            || isSavedRecordFile($conn, $targetPhotoPath))) {
             $deleted = false;
         } elseif (file_exists($targetPhotoPath) && !unlink($targetPhotoPath)) {
             $deleted = false;
@@ -1097,9 +1401,7 @@ function handleAddStudent($conn)
     }
 
     if ($photoBinary === null && $photoData !== '' && !str_starts_with($photoData, 'data:image')) {
-        $realPath = realpath($photoData);
-        $realPhotoDir = realpath('../uploads/photos/');
-        if ($realPath !== false && $realPhotoDir !== false && str_starts_with($realPath, $realPhotoDir)) {
+        if (isStagedPhoto($photoData)) {
             $photoPathFromOcr = $photoData;
         }
     }
@@ -1120,7 +1422,7 @@ function handleAddStudent($conn)
     foreach ($submittedDocs as $doc) {
         $filePath = $doc['file_path'] ?? '';
         $fileName = $doc['file_name'] ?? basename($filePath);
-        if ($filePath === '' || !is_file($filePath) || !pathIsInside($filePath, '../uploads/documents/')) {
+        if ($filePath === '' || !is_file($filePath) || (!isStagedDocument($filePath) && !pathIsInside($filePath, '../uploads/documents/'))) {
             echo json_encode(['success' => false, 'message' => 'The file "' . $fileName . '" is missing on the server. Please upload it again.']);
             return;
         }
@@ -1164,6 +1466,15 @@ function handleAddStudent($conn)
             'document_type'    => requirementLabel($code),
             'file_hash'        => $hash,
         ];
+    }
+
+    foreach ($documents as $i => $doc) {
+        $claimed = claimStagedDocument($doc['file_path']);
+        if ($claimed === null) {
+            echo json_encode(['success' => false, 'message' => 'The file "' . $doc['file_name'] . '" could not be saved. Please upload it again.']);
+            return;
+        }
+        $documents[$i]['file_path'] = $claimed;
     }
 
     $cleanupLocalFiles = function () use ($documents) {
@@ -1229,7 +1540,7 @@ function handleAddStudent($conn)
             $photoPath = $photoDir . uniqid('photo_', true) . '.' . $photoExt;
             file_put_contents($photoPath, $photoBinary);
         } elseif ($photoPathFromOcr !== null) {
-            $photoPath = $photoPathFromOcr;
+            $photoPath = claimStagedPhoto($photoPathFromOcr);
         }
 
         if ($photoPath !== null) {
@@ -1251,6 +1562,7 @@ function handleAddStudent($conn)
                 mysqli_stmt_bind_param($gradStmt, "ii", $gradForLevel, $studentId);
                 mysqli_stmt_execute($gradStmt);
             }
+            fillGraduationYears($conn, (int) $studentId);
         }
 
         $studentOpts = activityStudentOpts($conn, $studentId);
@@ -1302,11 +1614,13 @@ function handleAddStudent($conn)
     }
 }
 
+fillGraduationYears($conn);
 archiveGraduatedStudents($conn);
 updateYearLevels($conn);
 organizeStudentDocuments($conn);
 ensureStudentTypeColumns($conn);
 schoolYearReminderIfDue();
+yearEndNotifyIfDue($conn);
 runScheduledBackupIfDue();
 
 $search            = isset($_GET['search']) ? trim(preg_replace('/\s+/u', ' ', preg_replace("/[^\\p{L}\\p{M}0-9\\s.,'\\-]/u", '', $_GET['search']))) : '';
@@ -1428,7 +1742,7 @@ include 'navbar.php';
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Student Directory</title>
+    <title><?= can('students.list') ? 'Student Directory' : 'Add Student' ?></title>
     <link href="../css/bootstrap.min.css" rel="stylesheet">
     <link href="../css/bootstrap-icons.css" rel="stylesheet">
     <link href="../css/font.css" rel="stylesheet">
@@ -1437,12 +1751,17 @@ include 'navbar.php';
     <link href="../css/scanner.css?v=<?= @filemtime(__DIR__ . '/../css/scanner.css') ?>" rel="stylesheet">
     <link href="../css/course-filter.css?v=<?= @filemtime(__DIR__ . '/../css/course-filter.css') ?>" rel="stylesheet">
     <link href="../css/student-report.css?v=<?= @filemtime(__DIR__ . '/../css/student-report.css') ?>" rel="stylesheet">
+    <?php if (!can('students.list')): ?>
+    <link href="../css/intern-add.css?v=<?= @filemtime(__DIR__ . '/../css/intern-add.css') ?>" rel="stylesheet">
+    <?php endif; ?>
 </head>
 
 <body>
     <div class="main-container">
+    <?php if (can('students.list')): ?>
     <div class="textNButton-row">
 
+      <?php if (can('students.list')): ?>
       <form method="GET" action="" class="search-group" id="directoryFilterForm">
         <div class="search-input-wrapper">
             <input type="text" name="search" class="searchbar" placeholder="STUDENT NUMBER / NAME" value="<?= htmlspecialchars($search) ?>" required
@@ -1455,15 +1774,19 @@ include 'navbar.php';
             <i class="bi bi-search"></i>
         </button>
       </form>
+      <?php endif; ?>
 
       <div class="add-filter">
+        <?php if (can('reports')): ?>
         <button class="btn-add btn-report" type="button" id="classReportBtn">
             <i class="bi bi-file-earmark-pdf"></i>GENERATE REPORT
         </button>
+        <?php endif; ?>
         <button class="btn-add" type="button" data-bs-toggle="modal" data-bs-target="#addRecordsModal">
             <i class="bi bi-plus-circle"></i>ADD STUDENT
         </button>
       
+      <?php if (can('students.list')): ?>
       <form method="GET" action="" class="filter-row" id="directoryFilterOnlyForm">
         <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
 
@@ -1518,10 +1841,23 @@ include 'navbar.php';
         <?php endif; ?>
         </div>
       </form>
+      <?php endif; ?>
     </div>
 
     </div>
+    <?php endif; ?>
 
+    <?php if (!can('students.list')): ?>
+    <div class="intern-add">
+        <div class="intern-add-card">
+            <span class="intern-add-icon"><i class="bi bi-person-plus"></i></span>
+            <p class="intern-add-text">Click ADD STUDENT to scan or upload the documents of a new student.</p>
+            <button class="btn-add" type="button" id="internAddStudentBtn" data-bs-toggle="modal" data-bs-target="#addRecordsModal">
+                <i class="bi bi-plus-circle"></i>ADD STUDENT
+            </button>
+        </div>
+    </div>
+    <?php else: ?>
     <!-- table -->
     <div class="table-scroll-wrapper">
     <table class="student-table">
@@ -1560,6 +1896,7 @@ include 'navbar.php';
     <?php endif; ?>
     </table>
     </div>
+    <?php endif; ?>
 
 
 <!-- add new records modal -->

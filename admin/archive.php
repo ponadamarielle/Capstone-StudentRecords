@@ -9,6 +9,12 @@ if (!defined('DOCUMENTS_DIR')) {
 if (!defined('PHOTOS_DIR')) {
     define('PHOTOS_DIR', '../uploads/photos/');
 }
+if (!defined('PHOTO_STAGING_DIR')) {
+    define('PHOTO_STAGING_DIR', '../uploads/staging/');
+}
+if (!defined('DOCUMENT_STAGING_DIR')) {
+    define('DOCUMENT_STAGING_DIR', '../uploads/staging/documents/');
+}
 if (!defined('ARCHIVE_DIR')) {
     define('ARCHIVE_DIR', '../uploads/archive/');
 }
@@ -456,6 +462,88 @@ function removeUnusedDocumentFiles($conn, $olderThan = 86400)
     return $removed;
 }
 
+function stagedPhotoBase()
+{
+    if (!is_dir(PHOTO_STAGING_DIR)) {
+        @mkdir(PHOTO_STAGING_DIR, 0755, true);
+    }
+    return PHOTO_STAGING_DIR . uniqid('photo_', true);
+}
+
+function isStagedPhoto($path)
+{
+    $stage = realpath(PHOTO_STAGING_DIR);
+    $real = $path !== '' ? realpath($path) : false;
+    return $stage !== false && $real !== false && is_file($real) && strpos($real, $stage . DIRECTORY_SEPARATOR) === 0;
+}
+
+function claimStagedPhoto($path)
+{
+    $path = (string) $path;
+    if (isStagedPhoto($path)) {
+        if (!is_dir(PHOTOS_DIR)) {
+            @mkdir(PHOTOS_DIR, 0755, true);
+        }
+        $target = PHOTOS_DIR . basename(realpath($path));
+        return @rename(realpath($path), $target) ? $target : null;
+    }
+    $photos = realpath(PHOTOS_DIR);
+    $real = $path !== '' ? realpath($path) : false;
+    if ($photos !== false && $real !== false && is_file($real) && strpos($real, $photos . DIRECTORY_SEPARATOR) === 0) {
+        return $path;
+    }
+    return null;
+}
+
+function stagedDocumentDir()
+{
+    if (!is_dir(DOCUMENT_STAGING_DIR)) {
+        @mkdir(DOCUMENT_STAGING_DIR, 0755, true);
+    }
+    return DOCUMENT_STAGING_DIR;
+}
+
+function isStagedDocument($path)
+{
+    $stage = realpath(DOCUMENT_STAGING_DIR);
+    $real = $path !== '' ? realpath((string) $path) : false;
+    return $stage !== false && $real !== false && is_file($real) && strpos($real, $stage . DIRECTORY_SEPARATOR) === 0;
+}
+
+function claimStagedDocument($path)
+{
+    $path = (string) $path;
+    if (isStagedDocument($path)) {
+        if (!is_dir(DOCUMENTS_DIR)) {
+            @mkdir(DOCUMENTS_DIR, 0755, true);
+        }
+        $target = DOCUMENTS_DIR . basename(realpath($path));
+        return @rename(realpath($path), $target) ? $target : null;
+    }
+    $documents = realpath(DOCUMENTS_DIR);
+    $real = $path !== '' ? realpath($path) : false;
+    if ($documents !== false && $real !== false && is_file($real) && strpos($real, $documents . DIRECTORY_SEPARATOR) === 0) {
+        return $path;
+    }
+    return null;
+}
+
+function removeOldStagedPhotos($olderThan = 7200)
+{
+    $stage = realpath(PHOTO_STAGING_DIR);
+    if ($stage === false) {
+        return 0;
+    }
+    $removed = 0;
+    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($stage, FilesystemIterator::SKIP_DOTS));
+    foreach ($files as $file) {
+        if ($file->isFile() && $file->getMTime() < time() - $olderThan && @unlink($file->getPathname())) {
+            $removed++;
+        }
+    }
+    return $removed;
+}
+
 function organizeStudentPhotos($conn, $studentId = null)
 {
     $where = "s.photo_path IS NOT NULL AND s.photo_path <> '' AND " . directoryStudentCondition($conn, 's');
@@ -594,6 +682,7 @@ function organizeStudentDocuments($conn, $studentId = null)
     }
     if ($studentId === null) {
         removeUnusedDocumentFiles($conn);
+        removeOldStagedPhotos();
         foreach (['ENROLLEE', 'GRADUATE'] as $group) {
             $root = DOCUMENTS_DIR . $group;
             if (!is_dir($root)) {
@@ -790,15 +879,128 @@ function expectedGraduationYear(array $student)
     return $entryYear !== null ? $entryYear + PROGRAM_LENGTH_YEARS : null;
 }
 
+function dateSchoolYearEndYear()
+{
+    $year = (int) date('Y');
+    return date('Y-m-d') > schoolYearEndDate($year) ? $year + 1 : $year;
+}
+
+function endedSchoolYearThroughToday()
+{
+    $year = dateSchoolYearEndYear();
+    return date('Y-m-d') >= schoolYearEndDate($year) ? $year : $year - 1;
+}
+
+function ensureYearEndTable($conn)
+{
+    static $ready = false;
+    if (!$ready) {
+        $ready = (bool) mysqli_query($conn, "CREATE TABLE IF NOT EXISTS year_end_updates (
+            end_year INT NOT NULL PRIMARY KEY,
+            confirmed_by VARCHAR(150) NOT NULL DEFAULT '',
+            confirmed_at DATETIME NOT NULL,
+            graduated INT NOT NULL DEFAULT 0,
+            moved_up INT NOT NULL DEFAULT 0
+        )");
+    }
+    return $ready;
+}
+
+function yearEndConfirmedThrough($conn = null, $refresh = false)
+{
+    static $cached = false;
+    if ($refresh) {
+        $cached = false;
+    }
+    if ($cached !== false) {
+        return $cached;
+    }
+    $conn = $conn ?: ($GLOBALS['conn'] ?? null);
+    if (!($conn instanceof mysqli) || !ensureYearEndTable($conn)) {
+        return null;
+    }
+    $result = mysqli_query($conn, "SELECT MAX(end_year) AS end_year FROM year_end_updates");
+    $row = $result ? mysqli_fetch_assoc($result) : null;
+    if ($row && $row['end_year'] !== null) {
+        $cached = (int) $row['end_year'];
+        return $cached;
+    }
+    $baseline = endedSchoolYearThroughToday();
+    $stmt = mysqli_prepare($conn, "INSERT IGNORE INTO year_end_updates (end_year, confirmed_by, confirmed_at) VALUES (?, 'System', NOW())");
+    mysqli_stmt_bind_param($stmt, "i", $baseline);
+    mysqli_stmt_execute($stmt);
+    $cached = $baseline;
+    return $cached;
+}
+
+function pendingYearEnd($conn = null)
+{
+    $confirmed = yearEndConfirmedThrough($conn);
+    $endedThrough = endedSchoolYearThroughToday();
+    return $confirmed !== null && $confirmed < $endedThrough ? $endedThrough : null;
+}
+
 function schoolYearHasEnded($endYear)
 {
-    return date('Y-m-d') > schoolYearEndDate($endYear);
+    $confirmed = yearEndConfirmedThrough();
+    if ($confirmed === null) {
+        return date('Y-m-d') > schoolYearEndDate($endYear);
+    }
+    return (int) $endYear <= $confirmed;
 }
 
 function currentSchoolYearEndYear()
 {
-    $year = (int) date('Y');
-    return date('Y-m-d') > schoolYearEndDate($year) ? $year + 1 : $year;
+    $confirmed = yearEndConfirmedThrough();
+    return $confirmed === null ? dateSchoolYearEndYear() : $confirmed + 1;
+}
+
+function yearEndPreview($conn, $endedThrough)
+{
+    $hasColumn = in_array('graduation_year', studentColumns($conn), true);
+    $result = mysqli_query($conn, "SELECT student_number, year_section" . ($hasColumn ? ", graduation_year" : "")
+        . " FROM students WHERE (status IN ('enrollee', 'active') OR status IS NULL OR status = '')"
+        . (studentHasArchivedAt($conn) ? " AND archived_at IS NULL" : ""));
+    $graduate = 0;
+    $moveUp = 0;
+    while ($result && ($row = mysqli_fetch_assoc($result))) {
+        $endYear = expectedGraduationYear($row);
+        if ($endYear === null) {
+            continue;
+        }
+        if ($endYear <= $endedThrough) {
+            $graduate++;
+            continue;
+        }
+        $level = yearLevelOf($row['year_section'] ?? '');
+        $newLevel = max(1, min(PROGRAM_LENGTH_YEARS, PROGRAM_LENGTH_YEARS - ($endYear - ($endedThrough + 1))));
+        if ($level !== null && $level !== $newLevel) {
+            $moveUp++;
+        }
+    }
+    return ['graduate' => $graduate, 'move_up' => $moveUp];
+}
+
+function applyYearEnd($conn, $confirmedBy)
+{
+    $endedThrough = pendingYearEnd($conn);
+    if ($endedThrough === null) {
+        return ['success' => true, 'graduated' => 0, 'moved_up' => 0, 'already' => true];
+    }
+    $preview = yearEndPreview($conn, $endedThrough);
+    $stmt = mysqli_prepare($conn, "INSERT INTO year_end_updates (end_year, confirmed_by, confirmed_at, graduated, moved_up)
+        VALUES (?, ?, NOW(), ?, ?) ON DUPLICATE KEY UPDATE confirmed_by = VALUES(confirmed_by), confirmed_at = VALUES(confirmed_at)");
+    mysqli_stmt_bind_param($stmt, "isii", $endedThrough, $confirmedBy, $preview['graduate'], $preview['move_up']);
+    if (!mysqli_stmt_execute($stmt)) {
+        return ['success' => false, 'message' => 'The year-end update could not be saved.'];
+    }
+    yearEndConfirmedThrough($conn, true);
+    $graduated = markGraduatedStudents($conn, PHP_INT_MAX);
+    $movedUp = updateYearLevels($conn);
+    $update = mysqli_prepare($conn, "UPDATE year_end_updates SET graduated = ?, moved_up = ? WHERE end_year = ?");
+    mysqli_stmt_bind_param($update, "iii", $graduated, $movedUp, $endedThrough);
+    mysqli_stmt_execute($update);
+    return ['success' => true, 'graduated' => $graduated, 'moved_up' => $movedUp, 'end_year' => $endedThrough];
 }
 
 function schoolYearLabel($endYear)
@@ -1023,6 +1225,35 @@ function yearLevelForGraduation($endYear)
 {
     $level = PROGRAM_LENGTH_YEARS - ((int) $endYear - currentSchoolYearEndYear());
     return max(1, min(PROGRAM_LENGTH_YEARS, $level));
+}
+
+function fillGraduationYears($conn, $studentId = null)
+{
+    if (!in_array('graduation_year', studentColumns($conn), true)) {
+        return 0;
+    }
+    $sql = "SELECT student_id, student_number FROM students WHERE (graduation_year IS NULL OR graduation_year = 0)";
+    if ($studentId !== null) {
+        $sql .= " AND student_id = " . (int) $studentId;
+    }
+    $result = mysqli_query($conn, $sql);
+    if (!$result) {
+        return 0;
+    }
+    $filled = 0;
+    $update = mysqli_prepare($conn, "UPDATE students SET graduation_year = ? WHERE student_id = ?");
+    while ($row = mysqli_fetch_assoc($result)) {
+        $endYear = expectedGraduationYear(['student_number' => $row['student_number']]);
+        if ($endYear === null) {
+            continue;
+        }
+        $id = (int) $row['student_id'];
+        mysqli_stmt_bind_param($update, "ii", $endYear, $id);
+        if (mysqli_stmt_execute($update)) {
+            $filled++;
+        }
+    }
+    return $filled;
 }
 
 function graduationYearForLevel($level)
@@ -1269,8 +1500,9 @@ if (!$conn) {
 }
 
 session_start();
+require_once __DIR__ . '/../access_control.php';
 
-if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] !== 'Admin') {
+if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || !isOfficeRole()) {
     if ($isAjax) {
         header('Content-Type: application/json');
         http_response_code(403);
@@ -1283,6 +1515,7 @@ if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] 
 
 require_once __DIR__ . '/../account_guard.php';
 requireActiveAccount($isAjax);
+requirePermission('archive.view', $isAjax);
 
 if (!$isAjax && isset($_SESSION['is_first_login']) && $_SESSION['is_first_login'] == 1) {
     header("Location: ../change_password.php");
@@ -1290,6 +1523,7 @@ if (!$isAjax && isset($_SESSION['is_first_login']) && $_SESSION['is_first_login'
 }
 
 if ($action === 'archive_student') {
+    requirePermission('students.status', true);
     header('Content-Type: application/json');
     ini_set('display_errors', '0');
     session_write_close();
@@ -1299,6 +1533,7 @@ if ($action === 'archive_student') {
 }
 
 if ($action === 'restore_student') {
+    requirePermission('archive.restore', true);
     header('Content-Type: application/json');
     ini_set('display_errors', '0');
     session_write_close();
@@ -1477,7 +1712,9 @@ include 'navbar.php';
         <th>Status</th>
         <th>Date Archived</th>
         <th>Records</th>
+        <?php if (can('archive.restore')): ?>
         <th>Actions</th>
+        <?php endif; ?>
     </tr>
 
     <?php if (!empty($students)): ?>
@@ -1510,6 +1747,7 @@ include 'navbar.php';
                     <a class="view-btn" href="view_student.php?id=<?= (int) $row['student_id'] ?>"><i class="bi bi-eye-fill"></i>View</a>
                 </div>
             </td>
+            <?php if (can('archive.restore')): ?>
             <td>
                 <div class="archive-records">
                     <?php if (in_array($row['status'], RESTORABLE_STATUSES, true)): ?>
@@ -1519,11 +1757,12 @@ include 'navbar.php';
                     <?php endif; ?>
                 </div>
             </td>
+            <?php endif; ?>
         </tr>
         <?php endforeach; ?>
     <?php else: ?>
         <tr>
-            <td colspan="8" class="no-students-message">No archived records found.</td>
+            <td colspan="<?= can('archive.restore') ? 8 : 7 ?>" class="no-students-message">No archived records found.</td>
         </tr>
     <?php endif; ?>
     </table>

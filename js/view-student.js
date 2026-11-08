@@ -1,4 +1,20 @@
 document.addEventListener('DOMContentLoaded', function () {
+    const RECORD_FORM_DATA = (document.getElementById('updateRecordForm') || { dataset: {} }).dataset;
+    const CAN_EDIT_INFO = RECORD_FORM_DATA.canEditInfo !== '0';
+    const CAN_SET_PHOTO = CAN_EDIT_INFO || RECORD_FORM_DATA.hasPhoto !== '1';
+    const lockedInfoControls = [];
+    if (!CAN_EDIT_INFO) {
+        document.querySelectorAll('#edit-info input, #edit-info select, #edit-info textarea').forEach((control) => {
+            if (control.type === 'hidden') return;
+            if (control.tagName === 'SELECT' || control.type === 'radio' || control.type === 'checkbox') {
+                control.disabled = true;
+                lockedInfoControls.push(control);
+            } else {
+                control.readOnly = true;
+            }
+            control.classList.add('bg-light');
+        });
+    }
 
     const PLACE_NOT_ALLOWED = /[^\p{L}\p{M} .,'\-]/gu;
     const ADDRESS_NOT_ALLOWED = /[^\p{L}\p{M}0-9\s.,'\-#\/()]/gu;
@@ -38,6 +54,7 @@ document.addEventListener('DOMContentLoaded', function () {
     loadFaceModels();
 
     function setStudentPhoto(dataUrl) {
+        if (!CAN_SET_PHOTO) return;
         const img = document.getElementById('modalStudentPhoto');
         if (img) img.src = dataUrl;
 
@@ -827,6 +844,10 @@ document.addEventListener('DOMContentLoaded', function () {
     let photoOwnerSource = null;   // source_hash of the upload whose photo is staged
 
     function setServerPhoto(photoPath) {
+        if (!CAN_SET_PHOTO) {
+            cleanupStagedFile('', '', photoPath);
+            return;
+        }
         const img = document.getElementById('modalStudentPhoto');
         if (img) img.src = photoPath;
         if (stagedPhotoPath) stagedPhotoPath.value = photoPath;
@@ -1845,7 +1866,9 @@ document.addEventListener('DOMContentLoaded', function () {
         const hadDocumentDeletes = pendingDeletedDocs.length > 0;
         const hadDocumentSubmissions = stagedDocs.length > 0 || Object.keys(pendingReplacements).length > 0;
 
+        lockedInfoControls.forEach((control) => { control.disabled = false; });
         const formData = new FormData(form);
+        lockedInfoControls.forEach((control) => { control.disabled = true; });
 
         try {
             const infoRes = await fetch(ACTIONS_URL + '?action=update_student_info', {
