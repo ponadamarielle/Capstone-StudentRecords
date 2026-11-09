@@ -590,6 +590,7 @@ document.addEventListener('DOMContentLoaded', function () {
     function sendOcrRequest(file) {
         const formData = new FormData();
         formData.append('document', file);
+        if (studentPhotoSet) formData.append('has_photo', '1');
         if (uploadInput && uploadInput.dataset.scannedFile === file.name) {
             formData.append('scanned', '1');
             delete uploadInput.dataset.scannedFile;
@@ -644,6 +645,7 @@ document.addEventListener('DOMContentLoaded', function () {
             doc.source_hash = data.source_hash;
             doc.manual = false;
             doc.needs_manual_type = !doc.requirement_code;
+            doc.offline = !!data.offline;
             const reason = duplicateReason(doc, -1);
             if (reason) {
                 deleteFileSet(doc);
@@ -691,7 +693,7 @@ document.addEventListener('DOMContentLoaded', function () {
             parts.push((detected.length === 1 ? 'Document detected: ' : 'Documents detected: ')
                 + detected.map(function (i) { return requirementLabel(uploadedDocuments[i].requirement_code); }).join(', ') + '.');
         }
-        if (unknown) {
+        if (unknown && !data.offline) {
             parts.push(unknown === 1
                 ? 'The document type could not be identified; please choose it in the Documents tab.'
                 : unknown + ' documents could not be identified; please choose their types in the Documents tab.');
@@ -766,7 +768,12 @@ document.addEventListener('DOMContentLoaded', function () {
         newDoc.source_hash = data.source_hash;
         newDoc.classified_by = data.classified_by || '';
         newDoc.manual = false;
+        if (data.offline && !newDoc.requirement_code && oldDoc.requirement_code) {
+            newDoc.requirement_code = oldDoc.requirement_code;
+            newDoc.requirement_label = requirementLabel(oldDoc.requirement_code);
+        }
         newDoc.needs_manual_type = !newDoc.requirement_code;
+        newDoc.offline = !!data.offline;
 
         if (oldDoc.requirement_code && newDoc.requirement_code !== oldDoc.requirement_code) {
             deleteFileSet(newDoc);
@@ -876,6 +883,9 @@ document.addEventListener('DOMContentLoaded', function () {
         return uploadedDocuments.length - 1;
     }
 
+    const HEALTH_FORM_OPTION = '__health_information_form';
+    const HIDDEN_TYPE_OPTIONS = ['sf10_form137'];
+
     function buildTypeSelect(select, doc, index) {
         select.innerHTML = '';
 
@@ -884,8 +894,18 @@ document.addEventListener('DOMContentLoaded', function () {
         other.textContent = '- Other / unclassified -';
         select.appendChild(other);
 
+        if (doc.offline) {
+            const health = document.createElement('option');
+            health.value = HEALTH_FORM_OPTION;
+            health.textContent = 'Health Information Form – upload again when online';
+            select.appendChild(health);
+        }
+
         Object.keys(REQUIREMENT_GROUPS).forEach(function (groupKey) {
-            const reqs = REQUIREMENTS.filter(function (r) { return r.group === groupKey; });
+            const reqs = REQUIREMENTS.filter(function (r) {
+                return r.group === groupKey && (r.code === doc.requirement_code
+                    || isRequiredForTrack(r) || (!(r.required_for || []).length && !r.clinic_only && HIDDEN_TYPE_OPTIONS.indexOf(r.code) === -1));
+            });
             if (!reqs.length) return;
             const optgroup = document.createElement('optgroup');
             optgroup.label = REQUIREMENT_GROUPS[groupKey];
@@ -903,6 +923,11 @@ document.addEventListener('DOMContentLoaded', function () {
         select.value = doc.requirement_code || '';
 
         select.addEventListener('change', function () {
+            if (select.value === HEALTH_FORM_OPTION) {
+                deleteDocument(index);
+                setStatus('The Health Information Form was removed. It is only used to read the student information, so upload it again once the internet is back.', 'warning', 5000);
+                return;
+            }
             const code = select.value || null;
             if (code && findDocByRequirement(code, index) !== -1) {
                 setStatus(requirementLabel(code) + ' is already attached. Delete or change that file first.', 'error');
@@ -1152,10 +1177,17 @@ document.addEventListener('DOMContentLoaded', function () {
         if (saveBtn) saveBtn.disabled = pendingUploads > 0;
     }
 
-    function setStatus(message, type) {
+    var statusTimer = null;
+
+    function setStatus(message, type, hideAfter) {
         if (!ocrStatus) return;
+        clearTimeout(statusTimer);
+        statusTimer = null;
         ocrStatus.textContent = message;
         ocrStatus.className = 'ocr-status ocr-status-' + type;
+        if (hideAfter) {
+            statusTimer = setTimeout(function () { setStatus('', ''); }, hideAfter);
+        }
     }
 
     const REQUIRED_FIELDS = [

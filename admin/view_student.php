@@ -326,16 +326,19 @@ function detectSarPhotoFrame($pdfPath, $page = 1)
     $sw = 896;
     $sh = 1650;
 
-    $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('sarframe_', true);
-    $cmd = escapeshellarg(PDFTOPPM_BIN)
-        . ' -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
-        . ' -x ' . $sx . ' -y ' . $sy . ' -W ' . $sw . ' -H ' . $sh
-        . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($tmpBase) . ' 2>&1';
-    exec($cmd, $cmdOut, $cmdCode);
+    $ppmFile = takeSarPhotoRender($pdfPath, $page);
+    if ($ppmFile === null) {
+        $tmpBase = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('sarframe_', true);
+        $cmd = escapeshellarg(PDFTOPPM_BIN)
+            . ' -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+            . ' -x ' . $sx . ' -y ' . $sy . ' -W ' . $sw . ' -H ' . $sh
+            . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($tmpBase) . ' 2>&1';
+        exec($cmd, $cmdOut, $cmdCode);
 
-    $ppmFile = $tmpBase . '-1.ppm';
-    if (!file_exists($ppmFile)) {
-        $ppmFile = $tmpBase . '.ppm';
+        $ppmFile = $tmpBase . '-1.ppm';
+        if (!file_exists($ppmFile)) {
+            $ppmFile = $tmpBase . '.ppm';
+        }
     }
     if (!file_exists($ppmFile)) {
         return null;
@@ -677,8 +680,68 @@ function takeHealthPhotoRender($pdfPath, $page)
     return null;
 }
 
+function startSarPhotoRender($pdfPath, $page)
+{
+    $base = rtrim(sys_get_temp_dir(), '/\\') . '/' . uniqid('sarpre_', true);
+    $cmd = escapeshellarg(PDFTOPPM_BIN) . ' -r 300 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+        . ' -x 1650 -y 150 -W 896 -H 1650 ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($base);
+    $pipes = [];
+    $proc = @proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    if (!is_resource($proc)) {
+        return;
+    }
+    fclose($pipes[0]);
+    $GLOBALS['sarPhotoRenders'][$pdfPath][(int) $page] = ['proc' => $proc, 'pipes' => $pipes, 'base' => $base];
+}
+
+function takeSarPhotoRender($pdfPath, $page)
+{
+    $job = $GLOBALS['sarPhotoRenders'][$pdfPath][(int) $page] ?? null;
+    if ($job === null) {
+        return null;
+    }
+    unset($GLOBALS['sarPhotoRenders'][$pdfPath][(int) $page]);
+    stream_get_contents($job['pipes'][1]);
+    stream_get_contents($job['pipes'][2]);
+    fclose($job['pipes'][1]);
+    fclose($job['pipes'][2]);
+    proc_close($job['proc']);
+    foreach (['-1.ppm', '.ppm'] as $suffix) {
+        if (file_exists($job['base'] . $suffix)) {
+            return $job['base'] . $suffix;
+        }
+    }
+    return null;
+}
+
+function prepareSarPhotoEarly($pdfPath, $page)
+{
+    $GLOBALS['sarPhotoEarly'][$pdfPath][(int) $page] = extractIdPhoto($pdfPath, 'sar_form', $page);
+}
+
+function prepareHealthPhotoEarly($pdfPath, $page)
+{
+    $GLOBALS['healthPhotoEarly'][$pdfPath][(int) $page] = extractHealthPhoto(
+        $pdfPath, $page, ['x' => 1848, 'y' => 73, 'width' => 592, 'height' => 571], stagedPhotoBase()
+    );
+}
+
 function finishHealthPhotoRenders($pdfPath)
 {
+    foreach (['healthPhotoEarly', 'sarPhotoEarly'] as $earlyKey) {
+        foreach ($GLOBALS[$earlyKey][$pdfPath] ?? [] as $earlyPath) {
+            if ($earlyPath !== null) {
+                @unlink($earlyPath);
+            }
+        }
+        unset($GLOBALS[$earlyKey][$pdfPath]);
+    }
+    foreach (array_keys($GLOBALS['sarPhotoRenders'][$pdfPath] ?? []) as $sarPage) {
+        $sarFile = takeSarPhotoRender($pdfPath, $sarPage);
+        if ($sarFile !== null) {
+            @unlink($sarFile);
+        }
+    }
     foreach (array_keys($GLOBALS['healthPhotoRenders'][$pdfPath] ?? []) as $page) {
         $file = takeHealthPhotoRender($pdfPath, $page);
         if ($file !== null) {
@@ -689,6 +752,11 @@ function finishHealthPhotoRenders($pdfPath)
 
 function extractHealthPhoto($pdfPath, $page, array $fallback, $photoBase)
 {
+    if (isset($GLOBALS['healthPhotoEarly'][$pdfPath]) && array_key_exists((int) $page, $GLOBALS['healthPhotoEarly'][$pdfPath])) {
+        $earlyPath = $GLOBALS['healthPhotoEarly'][$pdfPath][(int) $page];
+        unset($GLOBALS['healthPhotoEarly'][$pdfPath][(int) $page]);
+        return $earlyPath;
+    }
     $sx = 1450;
     $sy = 0;
     $sw = 1100;
@@ -805,6 +873,12 @@ function extractIdPhoto($pdfPath, $docType, $page = 1)
 
     if (!isset($idPhotoBoxes[$docType])) {
         return null;
+    }
+    if ($docType === 'sar_form' && isset($GLOBALS['sarPhotoEarly'][$pdfPath])
+        && array_key_exists((int) $page, $GLOBALS['sarPhotoEarly'][$pdfPath])) {
+        $earlyPath = $GLOBALS['sarPhotoEarly'][$pdfPath][(int) $page];
+        unset($GLOBALS['sarPhotoEarly'][$pdfPath][(int) $page]);
+        return $earlyPath;
     }
     $box = $idPhotoBoxes[$docType];
     $isSar = $docType === 'sar_form';
@@ -1037,7 +1111,7 @@ function handleOcrExtract($conn)
     }
     [$destPath, $originalName] = $saved;
 
-    $result = processDocumentUpload($destPath, $originalName, $uploadDir, ['single_file' => ($_POST['scanned'] ?? '') === '1' || preg_match('/^scanned_\d{4}-\d{2}-\d{2}_\d{6}(-\d+)?\.pdf$/i', $originalName)]);
+    $result = processDocumentUpload($destPath, $originalName, $uploadDir, ['single_file' => ($_POST['scanned'] ?? '') === '1' || preg_match('/^scanned_\d{4}-\d{2}-\d{2}_\d{6}(-\d+)?\.pdf$/i', $originalName), 'skip_sar_photo' => ($_POST['has_photo'] ?? '') === '1']);
 
     if (!empty($result['documents'])) {
         foreach ($result['documents'] as &$doc) {
@@ -1667,6 +1741,10 @@ function handleReplaceDocument($conn)
 
     $new = $result['documents'][0];
     $studentId = (int) $row['student_id'];
+    if (!empty($result['offline']) && $new['requirement_code'] === null && $row['requirement_code'] !== null) {
+        $new['requirement_code'] = $row['requirement_code'];
+        $new['requirement_label'] = requirementLabel($row['requirement_code']);
+    }
 
     if ($row['requirement_code'] !== null && $new['requirement_code'] !== $row['requirement_code']) {
         @unlink($new['file_path']);
@@ -1690,6 +1768,10 @@ function handleReplaceDocument($conn)
         } else {
             $warning = 'The new file looks like ' . requirementLabel($new['requirement_code']) . ', which is already on file, so it was kept as "Other".';
         }
+    }
+
+    if (!empty($result['offline']) && $warning === '') {
+        $warning = 'There is no internet or it is too slow, so the new file was not checked by AI; it was kept as ' . requirementLabel($code) . '.';
     }
 
     if (($_POST['stage'] ?? '') === '1') {

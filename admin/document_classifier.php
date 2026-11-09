@@ -470,6 +470,9 @@ function redactTextForAi($text)
 
 function aiHttpPostJson($url, array $headers, array $body, $timeout = 90)
 {
+    if (function_exists('aiTimeLeft') && is_finite(aiTimeLeft())) {
+        $timeout = max(3, min($timeout, (int) ceil(aiTimeLeft())));
+    }
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_POST           => true,
@@ -816,9 +819,27 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     $sourceHash = hash_file('sha256', $destPath);
     $pageCount  = pdfPageCount($destPath);
     $warnings   = [];
-    if ($pageCount <= 3 && function_exists('startHealthPhotoRender')) {
+    aiDeadline($startedAt + max(10, (float) (getenv('AI_UPLOAD_LIMIT') ?: 30)));
+    if (!aiInternetReachable()) {
+        aiSkipReason('offline');
+    }
+    if (aiSkipReason() === null && $pageCount <= 3 && function_exists('startHealthPhotoRender')) {
         for ($p = 1; $p <= $pageCount; $p++) {
             startHealthPhotoRender($destPath, $p);
+        }
+        $earlySar = $pageCount === 1 && empty($options['skip_sar_photo']) && function_exists('startSarPhotoRender');
+        if ($earlySar) {
+            startSarPhotoRender($destPath, 1);
+        }
+        if ($pageCount === 1 && function_exists('prepareHealthPhotoEarly') && function_exists('aiAddIdleTask')) {
+            aiAddIdleTask(function () use ($destPath) {
+                prepareHealthPhotoEarly($destPath, 1);
+            });
+            if ($earlySar && function_exists('prepareSarPhotoEarly')) {
+                aiAddIdleTask(function () use ($destPath) {
+                    prepareSarPhotoEarly($destPath, 1);
+                });
+            }
         }
     }
 
@@ -827,7 +848,7 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     $renderFailed = false;
     $readPages = function (array $pages) use (&$aiCache, &$aiFailed, &$renderFailed, $destPath, $uploadDir) {
         $pages = array_values(array_unique(array_diff($pages, array_keys($aiCache))));
-        if (!$pages) {
+        if (!$pages || aiSkipReason() !== null) {
             return;
         }
         foreach (aiReadPdfPages($destPath, $pages, $uploadDir) as $page => $read) {
@@ -895,9 +916,12 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
 
     $ai = $visionPages
         ? ['pages' => $visionPages, 'error' => null, 'source' => aiUsedSource()]
-        : aiClassifyPages($pageTexts);
+        : (aiSkipReason() !== null ? ['pages' => [], 'error' => null, 'source' => null] : aiClassifyPages($pageTexts));
     $timings['classify'] = microtime(true) - $mark;
-    if ($ai['error'] !== null) {
+    if ($ai['error'] !== null && !$visionPages && aiSkipReason() === null && aiTimeLeft() <= 0) {
+        aiSkipReason('slow');
+    }
+    if ($ai['error'] !== null && aiSkipReason() === null) {
         $warnings[] = $ai['error'] . ' The file was kept as one unclassified document; choose its type manually.';
     }
 
@@ -937,7 +961,29 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     }
     $extractOnlyPages = array_column($extractOnly, 'page');
 
+    $healthNotUploaded = false;
+    if (aiSkipReason() !== null && $extractOnly) {
+        $healthNotUploaded = true;
+        $extractOnly = [];
+        $extractGroups = [];
+        if (empty($groups)) {
+            $GLOBALS['aiIdleTasks'] = [];
+            if (function_exists('finishHealthPhotoRenders')) {
+                finishHealthPhotoRenders($destPath);
+            }
+            @unlink($destPath);
+            return [
+                'success' => false,
+                'offline' => true,
+                'message' => 'The Health Information Form was not uploaded because '
+                    . (aiSkipReason() === 'slow' ? 'the internet is too slow' : 'there is no internet connection')
+                    . '. It is only used to read the student information, so upload it again once the internet is back.',
+            ];
+        }
+    }
+
     if (empty($groups) && empty($extractGroups)) {
+        $GLOBALS['aiIdleTasks'] = [];
         if (function_exists('finishHealthPhotoRenders')) {
             finishHealthPhotoRenders($destPath);
         }
@@ -986,7 +1032,8 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
             $fieldSets[] = ['priority' => $req['field_priority'] ?? 50, 'fields' => $fields];
         }
 
-        if ($photoPath === null && $req && !empty($req['photo_box'])) {
+        if ($photoPath === null && $req && !empty($req['photo_box'])
+            && !($req['photo_box'] === 'sar_form' && !empty($options['skip_sar_photo']))) {
             $photoStart = microtime(true);
             $photoPath = extractIdPhoto($destPath, $req['photo_box'], $firstPage);
             $photoTime += microtime(true) - $photoStart;
@@ -997,6 +1044,7 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     }
 
     $timings['fields'] = microtime(true) - $mark - $photoTime;
+    $GLOBALS['aiIdleTasks'] = [];
     if (function_exists('finishHealthPhotoRenders')) {
         finishHealthPhotoRenders($destPath);
     }
@@ -1098,7 +1146,14 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     if ($renderFailed) {
         $warnings[] = 'Some pages could not be converted to images for AI reading. Make sure poppler (pdftoppm) is installed.';
     }
-    if ($aiFailed && aiExtractionError() === null) {
+    if (aiSkipReason() !== null) {
+        $warnings = array_values(array_filter($warnings, fn($w) => strpos($w, 'AI classification failed') !== 0));
+        array_unshift($warnings, (aiSkipReason() === 'slow' ? 'The internet is too slow' : 'There is no internet connection')
+            . ', so the file was uploaded without AI. Choose the document manually and type the student information.');
+        if ($healthNotUploaded) {
+            $warnings[] = 'The Health Information Form page was not uploaded; upload it again once the internet is back.';
+        }
+    } elseif ($aiFailed && aiExtractionError() === null) {
         $warnings[] = 'The AI could not read some pages. Check your internet connection and the GROQ_API_KEY value in .env. Fields may not be auto-filled.';
     }
 
@@ -1125,6 +1180,7 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
         'warnings'      => $warnings,
         'classified_by' => $ai['source'],
         'image_path'    => $imagePath,
+        'offline'       => aiSkipReason() !== null,
     ];
 }
 

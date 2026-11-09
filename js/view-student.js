@@ -696,8 +696,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     if (trackSelect) {
         trackSelect.addEventListener('change', () => {
-            renderRequirementChecklist();
-            updateSaveButtonState();
+            refreshDocumentsUi();
             updateTrackChangeNote();
         });
     }
@@ -804,7 +803,7 @@ document.addEventListener('DOMContentLoaded', function () {
         el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => {
             if (id === 'edit_student_type') {
                 applyStudentType();
-                renderRequirementChecklist();
+                refreshDocumentsUi();
                 updateTrackChangeNote();
             }
             el.classList.remove('is-invalid');
@@ -834,10 +833,17 @@ document.addEventListener('DOMContentLoaded', function () {
 
     updateSaveButtonState();
 
-    function setStatus(message, type) {
+    var statusTimer = null;
+
+    function setStatus(message, type, hideAfter) {
         if (!ocrStatus) return;
+        clearTimeout(statusTimer);
+        statusTimer = null;
         ocrStatus.textContent = message;
         ocrStatus.className = 'ocr-status ocr-status-' + type;
+        if (hideAfter) {
+            statusTimer = setTimeout(function () { setStatus('', ''); }, hideAfter);
+        }
     }
 
     const originalPhotoSrc = (document.getElementById('modalStudentPhoto') || {}).src || '';
@@ -1154,15 +1160,26 @@ document.addEventListener('DOMContentLoaded', function () {
         return REQUIREMENTS.filter((r) => isRequiredForTrack(r) && !requirementWillBeOnFile(r.code)).map((r) => r.label);
     }
 
+    const HEALTH_FORM_OPTION = '__health_information_form';
+    const HIDDEN_TYPE_OPTIONS = ['sf10_form137'];
+
     function fillTypeSelect(select, currentCode, kind, key) {
         select.innerHTML = '';
         const other = document.createElement('option');
         other.value = '';
         other.textContent = '- Other / unclassified -';
         select.appendChild(other);
+        if (kind === 'staged' && stagedDocs[key] && stagedDocs[key].offline) {
+            const health = document.createElement('option');
+            health.value = HEALTH_FORM_OPTION;
+            health.textContent = 'Health Information Form – upload again when online';
+            select.appendChild(health);
+        }
 
         Object.keys(REQUIREMENT_GROUPS).forEach((groupKey) => {
-            const reqs = REQUIREMENTS.filter((r) => r.group === groupKey);
+            const reqs = REQUIREMENTS.filter((r) => r.group === groupKey
+                && (r.code === currentCode || isRequiredForTrack(r)
+                    || (!(r.required_for || []).length && !r.clinic_only && HIDDEN_TYPE_OPTIONS.indexOf(r.code) === -1)));
             if (!reqs.length) return;
             const optgroup = document.createElement('optgroup');
             optgroup.label = REQUIREMENT_GROUPS[groupKey];
@@ -1331,6 +1348,12 @@ document.addEventListener('DOMContentLoaded', function () {
             if (!select) return;
             const index = Number(select.closest('.staged-row').dataset.index);
             const doc = stagedDocs[index];
+            if (select.value === HEALTH_FORM_OPTION) {
+                removeStagedDocument(index, false);
+                setStatus('The Health Information Form was removed. It is only used to read the student information, so upload it again once the internet is back.', 'warning', 5000);
+                refreshDocumentsUi();
+                return;
+            }
             const code = select.value || null;
             if (code && (stagedIndexByCode(code, index) !== -1 || storedByCode(code))) {
                 setStatus(requirementLabel(code) + ' is already attached. Use the Replace button on that document to change it.', 'error');
@@ -1467,6 +1490,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const formData = new FormData();
         formData.append('document', file);
         formData.append('student_id', studentId);
+        if (stagedPhotoPath && stagedPhotoPath.value) formData.append('has_photo', '1');
         if (uploadInput && uploadInput.dataset.scannedFile === file.name) {
             formData.append('scanned', '1');
             delete uploadInput.dataset.scannedFile;
@@ -1500,6 +1524,7 @@ document.addEventListener('DOMContentLoaded', function () {
             doc.source_hash = data.source_hash;
             doc.manual = false;
             doc.needs_manual_type = !doc.requirement_code;
+            doc.offline = !!data.offline;
             const label = requirementLabel(doc.requirement_code);
 
             if (doc.duplicate_of) {
@@ -1565,7 +1590,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (detected.length) {
                 parts.push((detected.length === 1 ? 'Document detected: ' : 'Documents detected: ') + detected.map((d) => requirementLabel(d.requirement_code)).join(', ') + '.');
             }
-            if (unknown) {
+            if (unknown && !data.offline) {
                 parts.push(unknown === 1
                     ? 'The document type could not be identified; please choose it below.'
                     : unknown + ' documents could not be identified; please choose their types below.');

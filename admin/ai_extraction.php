@@ -143,6 +143,79 @@ function aiExtractionError($message = null)
     return $error;
 }
 
+function aiSkipReason($reason = null)
+{
+    static $current = null;
+    if ($reason !== null) {
+        $current = $current ?? $reason;
+    }
+    return $current;
+}
+
+function aiDeadline($at = null)
+{
+    static $deadline = null;
+    if ($at !== null) {
+        $deadline = $at;
+    }
+    return $deadline;
+}
+
+function aiTimeLeft()
+{
+    $deadline = aiDeadline();
+    return $deadline === null ? INF : $deadline - microtime(true);
+}
+
+function aiInternetReachable()
+{
+    $file = groqCooldownFile() . '.net.txt';
+    $cached = @file_get_contents($file);
+    if ($cached !== false && preg_match('/^(\d+) ([01])$/', trim($cached), $m)) {
+        $age = time() - (int) $m[1];
+        if ($age >= 0 && $age < ($m[2] === '1' ? 30 : 10)) {
+            return $m[2] === '1';
+        }
+    }
+
+    $limitMs = (int) round(max(1, (float) (getenv('AI_NET_CHECK_SECONDS') ?: 5)) * 1000);
+    $mh = curl_multi_init();
+    $handles = [];
+    foreach (['https://api.groq.com/', 'https://generativelanguage.googleapis.com/', 'https://api.cloudflare.com/'] as $url) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_CONNECT_ONLY      => true,
+            CURLOPT_CONNECTTIMEOUT_MS => $limitMs,
+            CURLOPT_TIMEOUT_MS        => $limitMs,
+        ]);
+        curl_multi_add_handle($mh, $ch);
+        $handles[] = $ch;
+    }
+    $reachable = false;
+    do {
+        $status = curl_multi_exec($mh, $running);
+        while ($info = curl_multi_info_read($mh)) {
+            if ($info['result'] === CURLE_OK) {
+                $reachable = true;
+            }
+        }
+        if ($running && !$reachable) {
+            curl_multi_select($mh, 0.2);
+        }
+    } while ($running && !$reachable && $status === CURLM_OK);
+    foreach ($handles as $ch) {
+        curl_multi_remove_handle($mh, $ch);
+        curl_close($ch);
+    }
+    curl_multi_close($mh);
+
+    if (!$reachable) {
+        error_log('No internet or the connection is too slow (no AI service answered within ' . ($limitMs / 1000) . 's). Upload continues without AI.');
+    }
+    @file_put_contents($file, time() . ' ' . ($reachable ? '1' : '0'), LOCK_EX);
+    return $reachable;
+}
+
 function aiUsedSource($source = null)
 {
     static $used = [];
@@ -245,6 +318,7 @@ function geminiSend(array $pending, $model, $effort)
             $curlCodes[is_object($info['handle']) ? spl_object_id($info['handle']) : (int) $info['handle']] = $info['result'];
         }
         if ($running) {
+            aiRunIdleTasks($handles);
             curl_multi_select($mh, 1.0);
         }
     } while ($running && $status === CURLM_OK);
@@ -404,6 +478,7 @@ function cloudflareSend(array $pending, $noThinkingFlag)
             $curlCodes[is_object($info['handle']) ? spl_object_id($info['handle']) : (int) $info['handle']] = $info['result'];
         }
         if ($running) {
+            aiRunIdleTasks($handles);
             curl_multi_select($mh, 1.0);
         }
     } while ($running && $status === CURLM_OK);
@@ -498,8 +573,187 @@ function aiFallbackAvailable()
     return cloudflareAvailable() || geminiAvailable();
 }
 
+function aiFallbackFailurePause($provider, $httpCode)
+{
+    if ($httpCode === 429) {
+        return $provider === 'cloudflare' ? 300 : 30;
+    }
+    if ($httpCode === 0) {
+        return 15;
+    }
+    return in_array($httpCode, [400, 401, 403, 404], true) ? 600 : 60;
+}
+
+function aiHedgedFallback(array $groqBodies, &$sawTimeout)
+{
+    $sawTimeout = false;
+    $model = geminiReadyModels()[0] ?? null;
+    if ($model === null || !$groqBodies) {
+        return [];
+    }
+    $effort = geminiEffort($model);
+    $hedgeAfter = max(1.0, (float) (getenv('AI_HEDGE_SECONDS') ?: 4));
+    $geminiUrl = rtrim(getenv('GEMINI_BASE_URL') ?: 'https://generativelanguage.googleapis.com/v1beta/openai', '/') . '/chat/completions';
+    $cloudflareUrl = 'https://api.cloudflare.com/client/v4/accounts/' . rawurlencode((string) getenv('CLOUDFLARE_ACCOUNT_ID')) . '/ai/v1/chat/completions';
+    $noThinkingFlag = !isset(groqCooldowns()['cloudflare-no-kwargs']);
+
+    $mh = curl_multi_init();
+    $jobs = [];
+    $addJob = function ($key, $provider) use ($mh, &$jobs, $groqBodies, $model, $effort, $geminiUrl, $cloudflareUrl, $noThinkingFlag) {
+        $isGemini = $provider === 'gemini';
+        $ch = curl_init($isGemini ? $geminiUrl : $cloudflareUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_POST           => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER     => [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . ($isGemini ? getenv('GEMINI_API_KEY') : getenv('CLOUDFLARE_API_TOKEN')),
+            ],
+            CURLOPT_POSTFIELDS     => $isGemini
+                ? geminiBodyFromGroq($groqBodies[$key], $model, $effort)
+                : cloudflareBodyFromGroq($groqBodies[$key], $noThinkingFlag),
+            CURLOPT_ENCODING       => '',
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT        => $isGemini
+                ? max(4, (int) (getenv('GEMINI_TIMEOUT') ?: 12))
+                : max(4, (int) (getenv('CLOUDFLARE_TIMEOUT') ?: 10)),
+        ]);
+        curl_multi_add_handle($mh, $ch);
+        $jobs[spl_object_id($ch)] = ['key' => $key, 'provider' => $provider, 'ch' => $ch];
+    };
+
+    foreach (array_keys($groqBodies) as $key) {
+        $addJob($key, 'gemini');
+    }
+    $started = microtime(true);
+    $cloudflareSent = [];
+    $results = [];
+    $sources = [];
+    $pause = ['gemini' => 0, 'cloudflare' => 0];
+
+    $finish = function ($ch) use ($mh, &$jobs) {
+        curl_multi_remove_handle($mh, $ch);
+        curl_close($ch);
+        unset($jobs[spl_object_id($ch)]);
+    };
+
+    do {
+        $status = curl_multi_exec($mh, $running);
+        while ($info = curl_multi_info_read($mh)) {
+            $ch = $info['handle'];
+            $job = $jobs[spl_object_id($ch)] ?? null;
+            if ($job === null) {
+                continue;
+            }
+            $key = $job['key'];
+            $provider = $job['provider'];
+            $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $response = (string) curl_multi_getcontent($ch);
+            $curlErr = curl_error($ch);
+            if ($curlErr === '' && $info['result'] !== 0) {
+                $curlErr = 'curl error ' . $info['result'] . ': ' . curl_strerror($info['result']);
+            }
+            $took = (float) curl_getinfo($ch, CURLINFO_TOTAL_TIME);
+            $finish($ch);
+
+            $content = null;
+            if ($httpCode === 200) {
+                $data = json_decode($response, true);
+                $content = $data['choices'][0]['message']['content'] ?? null;
+                if (is_string($content) && trim($content) !== '') {
+                    $content = trim(preg_replace('/<think>.*?<\/think>/s', '', $content));
+                    $content = trim(preg_replace('/^```(?:json)?\s*|\s*```$/i', '', $content));
+                } else {
+                    $content = null;
+                }
+            }
+            if ($content !== null) {
+                if (!isset($results[$key])) {
+                    $results[$key] = $content;
+                    $sources[$provider] = true;
+                    error_log(sprintf('AI fallback: %s answered in %.2fs.', $provider === 'gemini' ? 'Gemini (' . $model . ')' : 'Cloudflare', $took));
+                    foreach ($jobs as $other) {
+                        if ($other['key'] === $key) {
+                            $finish($other['ch']);
+                        }
+                    }
+                }
+                continue;
+            }
+
+            $label = $provider === 'gemini' ? 'Gemini fallback failed (HTTP ' . $httpCode . ', model ' . $model . ')' : 'Cloudflare fallback failed (HTTP ' . $httpCode . ', model ' . cloudflareModel() . ')';
+            $error = $label . ($curlErr !== '' ? ' ' . $curlErr : '') . ': ' . substr($response, 0, 300);
+            error_log($error);
+            @file_put_contents(groqCooldownFile() . '.' . $provider . '.txt', date('Y-m-d H:i:s') . ' ' . $error);
+            if ($httpCode === 0) {
+                $sawTimeout = true;
+            }
+            if ($provider === 'gemini' && $httpCode === 400 && preg_match('/reasoning|thinking/i', $response)) {
+                groqCooldowns(['gemini-low-only:' . $model => time() + 86400]);
+            } elseif ($provider === 'cloudflare' && $httpCode === 400 && preg_match('/chat_template_kwargs|enable_thinking/i', $response)) {
+                groqCooldowns(['cloudflare-no-kwargs' => time() + 86400]);
+            } else {
+                $pause[$provider] = max($pause[$provider], aiFallbackFailurePause($provider, $httpCode));
+            }
+            if ($provider === 'gemini' && !isset($results[$key]) && !isset($cloudflareSent[$key]) && cloudflareAvailable()) {
+                $cloudflareSent[$key] = true;
+                $addJob($key, 'cloudflare');
+            }
+        }
+
+        if (microtime(true) - $started >= $hedgeAfter && cloudflareAvailable()) {
+            foreach (array_keys($groqBodies) as $key) {
+                if (!isset($results[$key]) && !isset($cloudflareSent[$key])) {
+                    $cloudflareSent[$key] = true;
+                    $addJob($key, 'cloudflare');
+                    error_log('AI fallback: Gemini is slow, also asking Cloudflare.');
+                }
+            }
+        }
+
+        if (!$jobs) {
+            break;
+        }
+        aiRunIdleTasks(array_column($jobs, 'ch'));
+        curl_multi_select($mh, 0.25);
+    } while ($status === CURLM_OK);
+
+    foreach ($jobs as $job) {
+        $finish($job['ch']);
+    }
+    curl_multi_close($mh);
+
+    if ($pause['gemini'] > 0) {
+        groqCooldowns(['gemini:' . $model => time() + $pause['gemini']]);
+    }
+    if ($pause['cloudflare'] > 0) {
+        groqCooldowns(['cloudflare' => time() + $pause['cloudflare']]);
+    }
+    if ($results) {
+        $used = [];
+        if (!empty($sources['gemini'])) {
+            $used[] = 'Gemini (' . $model . ')';
+        }
+        if (!empty($sources['cloudflare'])) {
+            $used[] = 'Cloudflare (' . cloudflareModel() . ')';
+        }
+        aiUsedSource(implode(' + ', $used));
+        error_log('Groq is rate-limited, read ' . count($results) . ' request(s) with ' . implode(' + ', $used) . '.');
+    }
+    return $results;
+}
+
 function aiFallbackChatMany(array $groqBodies)
 {
+    if (geminiAvailable() && cloudflareAvailable()) {
+        $sawTimeout = false;
+        $results = aiHedgedFallback($groqBodies, $sawTimeout);
+        $pending = array_diff_key($groqBodies, $results);
+        if ($pending && !$sawTimeout && geminiAvailable()) {
+            $results += geminiChatMany($pending);
+        }
+        return $results;
+    }
     $results = geminiAvailable() ? geminiChatMany($groqBodies) : [];
     $pending = array_diff_key($groqBodies, $results);
     if ($pending) {
@@ -522,10 +776,39 @@ function groqRequestBody(array $messages, $jsonMode, $maxTokens)
     return json_encode(groqApplyModel($payload, groqPickModel()));
 }
 
+function aiAddIdleTask(callable $task)
+{
+    $GLOBALS['aiIdleTasks'][] = $task;
+}
+
+function aiRunIdleTasks(array $handles)
+{
+    if (empty($GLOBALS['aiIdleTasks'])) {
+        return;
+    }
+    foreach ($handles as $ch) {
+        $total = (float) curl_getinfo($ch, CURLINFO_CONTENT_LENGTH_UPLOAD_T);
+        $sent = (float) curl_getinfo($ch, CURLINFO_SIZE_UPLOAD_T);
+        if ($total <= 0 || $sent < $total) {
+            return;
+        }
+    }
+    $task = array_shift($GLOBALS['aiIdleTasks']);
+    try {
+        $task();
+    } catch (Throwable $e) {
+        error_log('AI idle task failed: ' . $e->getMessage());
+    }
+}
+
 function groqChatMany(array $bodies)
 {
     $results = array_fill_keys(array_keys($bodies), null);
-    if (!$bodies) {
+    if (!$bodies || aiSkipReason() !== null) {
+        return $results;
+    }
+    if (aiTimeLeft() <= 0) {
+        aiSkipReason('slow');
         return $results;
     }
 
@@ -547,10 +830,16 @@ function groqChatMany(array $bodies)
         }
     }
     for ($attempt = 1; $attempt <= 4 && $queue; $attempt++) {
+        if (aiTimeLeft() <= 0) {
+            aiSkipReason('slow');
+            break;
+        }
         $retry = [];
         $retryAfter = 1;
         $hardFail = false;
         $mustWait = false;
+        $noConnection = 0;
+        $sentCount = 0;
         foreach (array_chunk($queue, AI_MAX_PARALLEL, true) as $chunk) {
             $mh = curl_multi_init();
             $handles = [];
@@ -581,6 +870,7 @@ function groqChatMany(array $bodies)
             do {
                 $status = curl_multi_exec($mh, $running);
                 if ($running) {
+                    aiRunIdleTasks($handles);
                     curl_multi_select($mh, 1.0);
                 }
             } while ($running && $status === CURLM_OK);
@@ -590,6 +880,10 @@ function groqChatMany(array $bodies)
                 $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
                 $curlErr  = curl_error($ch);
                 $seconds  = (float) curl_getinfo($ch, CURLINFO_TOTAL_TIME);
+                $sentCount++;
+                if ($httpCode === 0 && (float) curl_getinfo($ch, CURLINFO_CONNECT_TIME) <= 0) {
+                    $noConnection++;
+                }
                 if ($seconds >= 6) {
                     error_log(sprintf('Groq was slow: %.2fs (HTTP %d).', $seconds, $httpCode));
                 }
@@ -654,6 +948,12 @@ function groqChatMany(array $bodies)
             curl_multi_close($mh);
         }
         $queue = $retry;
+        if ($queue && $sentCount > 0 && $noConnection === $sentCount) {
+            error_log('Groq could not be reached at all (no connection). Upload continues without AI.');
+            @file_put_contents(groqCooldownFile() . '.net.txt', time() . ' 0', LOCK_EX);
+            aiSkipReason('offline');
+            break;
+        }
         if ($queue && $mustWait && !aiFallbackAvailable()) {
             error_log('AI fallback skipped. Cloudflare: '
                 . ((string) getenv('CLOUDFLARE_API_TOKEN') === '' ? 'CLOUDFLARE_API_TOKEN is not set in .env' : 'paused, last error ' . trim((string) @file_get_contents(groqCooldownFile() . '.cloudflare.txt')))
@@ -674,7 +974,7 @@ function groqChatMany(array $bodies)
             }
         }
         if ($queue && $attempt < 4 && $mustWait) {
-            $wait = min($retryAfter, 20, AI_MAX_WAIT - $waited);
+            $wait = (int) min($retryAfter, 20, AI_MAX_WAIT - $waited, floor(aiTimeLeft()));
             if ($wait <= 0) {
                 break;
             }
@@ -683,7 +983,10 @@ function groqChatMany(array $bodies)
         }
     }
 
-    if ($queue) {
+    if ($queue && aiSkipReason() === null && aiTimeLeft() <= 0) {
+        aiSkipReason('slow');
+    }
+    if ($queue && aiSkipReason() === null) {
         aiExtractionError($lastCode === 429
             ? 'The AI service is busy (rate limit reached). Please wait a minute and upload again, or fill in the fields manually.'
             : 'The AI service could not be reached. Please fill in the fields manually or try again.');
@@ -1099,7 +1402,9 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir)
     foreach ($results as $page => $read) {
         $isCard = in_array((string) $read['doc_type'], $cardCodes, true)
             || preg_match('/\bSF\s*-?\s*9\b|F\s*-?\s*138|report\s*card|progress\s*report|attendance\s*record/i', (string) $read['text']);
-        if ($isCard && isset($sideways[$page])) {
+        $gradeKnown = in_array((string) ($read['grade_level'] ?? ''), ['10', '11', '12'], true)
+            && (string) $read['doc_type'] === 'grade_' . $read['grade_level'] . '_card';
+        if ($isCard && isset($sideways[$page]) && !$gradeKnown) {
             $base = rtrim($workDir, '/\\') . '/' . uniqid('aicard_', true);
             $cardCommands[$page] = escapeshellarg(PDFTOPPM_BIN) . ' -jpeg -jpegopt quality=85 -scale-to 2000'
                 . ' -singlefile -f ' . (int) $page . ' -l ' . (int) $page
@@ -1513,7 +1818,7 @@ function attachAiStatus(array $result)
 {
     $result['extracted_by'] = 'ai';
     $error = aiExtractionError();
-    if ($error !== null) {
+    if ($error !== null && aiSkipReason() === null) {
         $result['warnings'] = array_values(array_unique(array_merge($result['warnings'] ?? [], [$error])));
     }
     return $result;
