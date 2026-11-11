@@ -17,7 +17,7 @@
 <?php
     $pageTitles = [
         'dashboard.php'       => ['Dashboard', 'Overview of student records and document requirements.'],
-        'admin_management.php' => ['Admin Management', 'Manage admin accounts and control who can access records.'],
+        'admin_management.php' => ['User Management', 'Manage Admin and OJT Intern accounts and who can access records.'],
         'course_management.php' => ['Course Management', 'Manage the programs offered and how they are recognized in documents.'],
         'requirements.php'    => ['Requirements', 'Manage the documents required for regular, shiftee and transferee students.'],
         'backup_logs.php'     => ['Backup & Logs', 'Keep records safe and see who did what, and when.'],
@@ -49,8 +49,8 @@
             <a class="admin-menu-item <?php echo ($currentPage == 'dashboard.php') ? 'active' : ''; ?>" href="dashboard.php" title="Dashboard">
                 <i class="bi bi-grid-1x2"></i><span>Dashboard</span>
             </a>
-            <a class="admin-menu-item <?php echo ($currentPage == 'admin_management.php') ? 'active' : ''; ?>" href="admin_management.php" title="Admin Management">
-                <i class="bi bi-people"></i><span>Admin Management</span>
+            <a class="admin-menu-item <?php echo ($currentPage == 'admin_management.php') ? 'active' : ''; ?>" href="admin_management.php" title="User Management">
+                <i class="bi bi-people"></i><span>User Management</span>
             </a>
             <a class="admin-menu-item <?php echo ($currentPage == 'course_management.php') ? 'active' : ''; ?>" href="course_management.php" title="Programs Offered">
                 <i class="bi bi-mortarboard"></i><span>Programs Offered</span>

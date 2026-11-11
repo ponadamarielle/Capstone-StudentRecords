@@ -1467,13 +1467,13 @@ function handleChangeStatus($conn)
 {
     $studentId = $_POST['student_id'] ?? '';
     $status    = $_POST['status'] ?? '';
-    $labels    = ['withdrawn' => 'WITHDRAWN', 'onleave' => 'ON-LEAVE', 'transferred' => 'TRANSFERRED'];
+    $labels    = ['withdrawn' => 'WITHDRAWN', 'onleave' => 'LEAVE OF ABSENCE', 'transferred' => 'TRANSFERRED'];
     if ($studentId === '' || !ctype_digit((string) $studentId)) {
         echo json_encode(['success' => false, 'message' => 'Invalid student.']);
         return;
     }
     if (!isset($labels[$status])) {
-        echo json_encode(['success' => false, 'message' => 'Choose WITHDRAWN, ON-LEAVE or TRANSFERRED.']);
+        echo json_encode(['success' => false, 'message' => 'Choose WITHDRAWN, LEAVE OF ABSENCE or TRANSFERRED.']);
         return;
     }
     $studentId = (int) $studentId;
@@ -2158,7 +2158,7 @@ if ($issuedBy !== '') {
     }
 }
 
-$statusLabels = ['enrollee' => 'Enrollee', 'active' => 'Enrollee', 'graduated' => 'Graduate', 'withdrawn' => 'Withdrawn', 'inactive' => 'Withdrawn', 'onleave' => 'On-leave', 'transferred' => 'Transferred'];
+$statusLabels = ['enrollee' => 'Enrollee', 'active' => 'Enrollee', 'graduated' => 'Graduate', 'withdrawn' => 'Withdrawn', 'inactive' => 'Withdrawn', 'onleave' => 'Leave of Absence', 'transferred' => 'Transferred'];
 $savedGradYear    = !empty($student['graduation_year']) ? (int) $student['graduation_year'] : null;
 $expectedGradYear = expectedGraduationYear($student);
 $gradYearOptions  = range(currentSchoolYearEndYear() - 1, currentSchoolYearEndYear() + 6);
@@ -2231,7 +2231,7 @@ include 'navbar.php';
                         <div class="course-filter-menu status-dropdown-menu" role="listbox" hidden>
                             <div class="course-filter-option is-selected" role="option" aria-selected="true" tabindex="-1"><?= htmlspecialchars($statusLabel) ?></div>
                             <div class="course-filter-option status-option" role="option" tabindex="-1" data-status="withdrawn">Withdrawn</div>
-                            <div class="course-filter-option status-option" role="option" tabindex="-1" data-status="onleave">On-leave</div>
+                            <div class="course-filter-option status-option" role="option" tabindex="-1" data-status="onleave">Leave of Absence</div>
                             <div class="course-filter-option status-option" role="option" tabindex="-1" data-status="transferred">Transferred</div>
                         </div>
                     </div>

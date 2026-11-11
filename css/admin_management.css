@@ -510,3 +510,12 @@
     color: var(--text-tertiary, #9C948D);
     white-space: nowrap;
 }
+.um-tab-groups {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+#addStudentModal .um-input select.form-control {
+    padding-right: 36px;
+    background-position: right 14px center;
+}

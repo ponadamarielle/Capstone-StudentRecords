@@ -26,13 +26,17 @@
         'access.php'            => ['User Management', 'Manage Staff and OJT Intern accounts and what they can access.'],
     ];
     [$pageTitle, $pageSubtitle] = $pageTitles[$currentPage] ?? ['PUP eRecords', ''];
-    if ($currentPage === 'student_directory.php' && !can('students.list')) {
+    $directoryLabel = can('students.list') ? 'Student Directory' : (can('students.search') ? 'Search & Add Student' : 'Add Student');
+    if ($currentPage === 'student_directory.php' && can('students.search') && !can('students.list')) {
+        $pageTitle = 'Search & Add Student';
+        $pageSubtitle = 'Search for a student to view or update the record, or add a new student.';
+    } elseif ($currentPage === 'student_directory.php' && !can('students.list')) {
         $pageTitle = 'Add Student';
         $pageSubtitle = 'Scan or upload the documents of a new student.';
     }
     $viewingArchived = $currentPage === 'view_student.php' && !empty($isArchivedView);
     if ($currentPage === 'view_student.php' && !empty($student['name'])) {
-        $pageSubtitle = ($viewingArchived ? 'Archived Records / ' : 'Student Directory / ') . $student['name'];
+        $pageSubtitle = ($viewingArchived ? 'Archived Records / ' : $directoryLabel . ' / ') . $student['name'];
     }
     $nameParts = preg_split('/[\s,]+/', trim((string) $userName), -1, PREG_SPLIT_NO_EMPTY);
     $userInitials = strtoupper(substr($nameParts[0] ?? '', 0, 1) . substr($nameParts[count($nameParts) - 1] ?? '', 0, 1));
@@ -56,8 +60,8 @@
 
         <p class="admin-menu-label">Main menu</p>
         <nav class="admin-menu">
-            <a class="admin-menu-item <?php echo ($currentPage == 'student_directory.php' || ($currentPage == 'view_student.php' && !$viewingArchived)) ? 'active' : ''; ?>" href="student_directory.php" title="<?php echo can('students.list') ? 'Student Directory' : 'Add Student'; ?>">
-                <i class="bi <?php echo can('students.list') ? 'bi-mortarboard' : 'bi-person-plus'; ?>"></i><span><?php echo can('students.list') ? 'Student Directory' : 'Add Student'; ?></span>
+            <a class="admin-menu-item <?php echo ($currentPage == 'student_directory.php' || ($currentPage == 'view_student.php' && !$viewingArchived)) ? 'active' : ''; ?>" href="student_directory.php" title="<?php echo htmlspecialchars($directoryLabel); ?>">
+                <i class="bi <?php echo can('students.list') ? 'bi-mortarboard' : (can('students.search') ? 'bi-search' : 'bi-person-plus'); ?>"></i><span><?php echo htmlspecialchars($directoryLabel); ?></span>
             </a>
             <?php if (can('access.manage')): ?>
             <a class="admin-menu-item <?php echo ($currentPage == 'access.php') ? 'active' : ''; ?>" href="access.php" title="User Management">

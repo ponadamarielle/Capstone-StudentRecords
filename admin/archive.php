@@ -752,7 +752,7 @@ function relocateArchivedFiles($conn)
 function archiveStudentRecord($conn, $studentId, $status, $force = false)
 {
     if (!in_array($status, ARCHIVED_STATUSES, true)) {
-        return ['success' => false, 'message' => 'Only GRADUATE, WITHDRAWN, ON-LEAVE or TRANSFERRED students can be archived.'];
+        return ['success' => false, 'message' => 'Only GRADUATE, WITHDRAWN, LEAVE OF ABSENCE or TRANSFERRED students can be archived.'];
     }
     $studentId = (int) $studentId;
     ensureStudentArchivedAt($conn);
@@ -1544,6 +1544,7 @@ if ($action === 'restore_student') {
 
 $search            = isset($_GET['search']) ? trim(preg_replace('/\s+/u', ' ', preg_replace("/[^\\p{L}\\p{M}0-9\\s.,'\\-]/u", '', $_GET['search']))) : '';
 $courseFilter      = isset($_GET['course']) ? trim($_GET['course']) : '';
+$statusFilter      = in_array($_GET['status'] ?? '', ['graduated', 'withdrawn', 'onleave', 'transferred'], true) ? $_GET['status'] : '';
 $hasGradColumn     = in_array('graduation_year', studentColumns($conn), true);
 
 archiveGraduatedStudents($conn);
@@ -1582,6 +1583,14 @@ if ($courseFilter !== '') {
         $params[] = $courseFilter;
         $types   .= 's';
     }
+}
+
+if ($statusFilter === 'withdrawn') {
+    $conditions[] = "s.status IN ('withdrawn', 'inactive')";
+} elseif ($statusFilter !== '') {
+    $conditions[] = 's.status = ?';
+    $params[] = $statusFilter;
+    $types   .= 's';
 }
 
 $sql = "SELECT s.student_id, s.student_number, s.name, s.course, s.year_section, s.status," . ($hasGradColumn ? ' s.graduation_year,' : '') . "
@@ -1640,7 +1649,7 @@ if ($extraCourseResult) {
 }
 
 
-$statusLabels = ['enrollee' => 'ENROLLEE', 'active' => 'ENROLLEE', 'graduated' => 'GRADUATE', 'withdrawn' => 'WITHDRAWN', 'inactive' => 'WITHDRAWN', 'onleave' => 'ON-LEAVE', 'transferred' => 'TRANSFERRED'];
+$statusLabels = ['enrollee' => 'ENROLLEE', 'active' => 'ENROLLEE', 'graduated' => 'GRADUATE', 'withdrawn' => 'WITHDRAWN', 'inactive' => 'WITHDRAWN', 'onleave' => 'LEAVE OF ABSENCE', 'transferred' => 'TRANSFERRED'];
 
 include 'navbar.php';
 ?>
@@ -1692,7 +1701,20 @@ include 'navbar.php';
               <?php endforeach; ?>
           </select>
           <?php if ($courseFilter !== ''): ?>
-              <a href="archive.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear course"><i class="bi bi-x-circle"></i></a>
+              <a href="archive.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'status' => $statusFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear course"><i class="bi bi-x-circle"></i></a>
+          <?php endif; ?>
+          </div>
+
+          <div class="filter-wrap filter-wrap-status">
+          <select class="filter filter-status<?= $statusFilter !== '' ? ' has-value' : '' ?>" id="archiveStatusFilter" name="status">
+              <option value="">All Status</option>
+              <option value="graduated" <?= $statusFilter === 'graduated' ? 'selected' : '' ?>>Graduate</option>
+              <option value="withdrawn" <?= $statusFilter === 'withdrawn' ? 'selected' : '' ?>>Withdrawn</option>
+              <option value="onleave" <?= $statusFilter === 'onleave' ? 'selected' : '' ?>>Leave of Absence</option>
+              <option value="transferred" <?= $statusFilter === 'transferred' ? 'selected' : '' ?>>Transferred</option>
+          </select>
+          <?php if ($statusFilter !== ''): ?>
+              <a href="archive.php?<?= htmlspecialchars(http_build_query(array_filter(['search' => $search, 'course' => $courseFilter], 'strlen'))) ?>" class="clear-icon filter-clear-icon" title="Clear status"><i class="bi bi-x-circle"></i></a>
           <?php endif; ?>
           </div>
 

@@ -35,7 +35,7 @@
     }
 
     const filterForm = document.getElementById('archiveFilterForm');
-    ['archiveCourseFilter', 'archiveYearSectionFilter'].forEach((id) => {
+    ['archiveCourseFilter', 'archiveYearSectionFilter', 'archiveStatusFilter'].forEach((id) => {
         const select = document.getElementById(id);
         if (select && filterForm) {
             select.addEventListener('change', () => filterForm.submit());

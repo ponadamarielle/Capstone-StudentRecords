@@ -1702,6 +1702,8 @@ $courseFilter      = isset($_GET['course']) ? trim($_GET['course']) : '';
 $yearSectionFilter = isset($_GET['year_section']) ? trim($_GET['year_section']) : '';
 $statusFilter      = in_array($_GET['status'] ?? '', ['enrollee', 'graduated'], true) ? $_GET['status'] : '';
 $typeFilter        = isset(STUDENT_TYPES[$_GET['type'] ?? '']) ? $_GET['type'] : '';
+$canSearchStudents = can('students.list') || can('students.search');
+$showStudentTable  = can('students.list') || (can('students.search') && $search !== '');
 
 $conditions = [directoryStudentCondition($conn)];
 $params     = [];
@@ -1772,7 +1774,24 @@ if (!empty($params)) {
     $result = mysqli_query($conn, $sql);
 }
 
-$studentRows        = $result ? mysqli_fetch_all($result, MYSQLI_ASSOC) : [];
+$studentRows        = ($result && $showStudentTable) ? mysqli_fetch_all($result, MYSQLI_ASSOC) : [];
+$perPage            = 20;
+$totalStudents      = count($studentRows);
+$totalPages         = max(1, (int) ceil($totalStudents / $perPage));
+$listPage        = isset($_GET['page']) && ctype_digit((string) $_GET['page']) ? min(max(1, (int) $_GET['page']), $totalPages) : 1;
+$studentRows        = array_slice($studentRows, ($listPage - 1) * $perPage, $perPage);
+$pageQueryBase      = array_filter(['search' => $search, 'course' => $courseFilter, 'year_section' => $yearSectionFilter, 'status' => $statusFilter, 'type' => $typeFilter], 'strlen');
+$pageUrl            = function ($page) use ($pageQueryBase) {
+    return 'student_directory.php?' . http_build_query($pageQueryBase + ($page > 1 ? ['page' => $page] : []));
+};
+$pageNumbers        = [];
+foreach ([1, $listPage - 1, $listPage, $listPage + 1, $totalPages] as $pageNumber) {
+    if ($pageNumber >= 1 && $pageNumber <= $totalPages) {
+        $pageNumbers[$pageNumber] = true;
+    }
+}
+$pageNumbers        = array_keys($pageNumbers);
+sort($pageNumbers);
 $clientRequirements = requirementsForClient();
 $codesByStudent     = requirementCodesByStudent($conn, array_column($studentRows, 'student_id'));
 foreach ($studentRows as &$studentRow) {
@@ -1816,7 +1835,7 @@ include 'navbar.php';
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title><?= can('students.list') ? 'Student Directory' : 'Add Student' ?></title>
+    <title><?= can('students.list') ? 'Student Directory' : ($canSearchStudents ? 'Search &amp; Add Student' : 'Add Student') ?></title>
     <link href="../css/bootstrap.min.css" rel="stylesheet">
     <link href="../css/bootstrap-icons.css" rel="stylesheet">
     <link href="../css/font.css" rel="stylesheet">
@@ -1825,17 +1844,17 @@ include 'navbar.php';
     <link href="../css/scanner.css?v=<?= @filemtime(__DIR__ . '/../css/scanner.css') ?>" rel="stylesheet">
     <link href="../css/course-filter.css?v=<?= @filemtime(__DIR__ . '/../css/course-filter.css') ?>" rel="stylesheet">
     <link href="../css/student-report.css?v=<?= @filemtime(__DIR__ . '/../css/student-report.css') ?>" rel="stylesheet">
-    <?php if (!can('students.list')): ?>
+    <?php if (!$showStudentTable): ?>
     <link href="../css/intern-add.css?v=<?= @filemtime(__DIR__ . '/../css/intern-add.css') ?>" rel="stylesheet">
     <?php endif; ?>
 </head>
 
 <body>
     <div class="main-container">
-    <?php if (can('students.list')): ?>
+    <?php if ($canSearchStudents): ?>
     <div class="textNButton-row">
 
-      <?php if (can('students.list')): ?>
+      <?php if ($canSearchStudents): ?>
       <form method="GET" action="" class="search-group" id="directoryFilterForm">
         <div class="search-input-wrapper">
             <input type="text" name="search" class="searchbar" placeholder="STUDENT NUMBER / NAME" value="<?= htmlspecialchars($search) ?>" required
@@ -1921,7 +1940,14 @@ include 'navbar.php';
     </div>
     <?php endif; ?>
 
-    <?php if (!can('students.list')): ?>
+    <?php if (!$showStudentTable && $canSearchStudents): ?>
+    <div class="intern-add">
+        <div class="intern-add-card">
+            <span class="intern-add-icon"><i class="bi bi-search"></i></span>
+            <p class="intern-add-text">Search a student number or name to view or update a record, or click ADD STUDENT to add a new student.</p>
+        </div>
+    </div>
+    <?php elseif (!$showStudentTable): ?>
     <div class="intern-add">
         <div class="intern-add-card">
             <span class="intern-add-icon"><i class="bi bi-person-plus"></i></span>
@@ -1970,6 +1996,34 @@ include 'navbar.php';
     <?php endif; ?>
     </table>
     </div>
+    <?php if ($totalPages > 1): ?>
+    <nav class="directory-pager" aria-label="Student list pages">
+        <div class="directory-pager-links">
+            <?php if ($listPage > 1): ?>
+                <a class="directory-pager-btn" href="<?= htmlspecialchars($pageUrl($listPage - 1)) ?>"><i class="bi bi-chevron-left"></i>Previous</a>
+            <?php else: ?>
+                <span class="directory-pager-btn is-disabled"><i class="bi bi-chevron-left"></i>Previous</span>
+            <?php endif; ?>
+            <?php $previousNumber = 0; ?>
+            <?php foreach ($pageNumbers as $pageNumber): ?>
+                <?php if ($pageNumber - $previousNumber > 1): ?>
+                    <span class="directory-pager-gap">…</span>
+                <?php endif; ?>
+                <?php if ($pageNumber === $listPage): ?>
+                    <span class="directory-pager-num is-current" aria-current="page"><?= $pageNumber ?></span>
+                <?php else: ?>
+                    <a class="directory-pager-num" href="<?= htmlspecialchars($pageUrl($pageNumber)) ?>"><?= $pageNumber ?></a>
+                <?php endif; ?>
+                <?php $previousNumber = $pageNumber; ?>
+            <?php endforeach; ?>
+            <?php if ($listPage < $totalPages): ?>
+                <a class="directory-pager-btn" href="<?= htmlspecialchars($pageUrl($listPage + 1)) ?>">Next<i class="bi bi-chevron-right"></i></a>
+            <?php else: ?>
+                <span class="directory-pager-btn is-disabled">Next<i class="bi bi-chevron-right"></i></span>
+            <?php endif; ?>
+        </div>
+    </nav>
+    <?php endif; ?>
     <?php endif; ?>
 
 

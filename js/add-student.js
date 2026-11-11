@@ -640,6 +640,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const accepted = [];
         const rejected = [];
+        const retyped = [];
         (data.documents || []).forEach(function (doc) {
             doc.classified_by = data.classified_by || '';
             doc.source_hash = data.source_hash;
@@ -647,10 +648,16 @@ document.addEventListener('DOMContentLoaded', function () {
             doc.needs_manual_type = !doc.requirement_code;
             doc.offline = !!data.offline;
             const reason = duplicateReason(doc, -1);
-            if (reason) {
+            if (reason && findDocByHash(doc.file_hash, -1) !== -1) {
                 deleteFileSet(doc);
                 rejected.push(reason);
                 return;
+            }
+            if (reason) {
+                retyped.push(requirementLabel(doc.requirement_code));
+                doc.requirement_code = null;
+                doc.requirement_label = requirementLabel(null);
+                doc.needs_manual_type = true;
             }
             accepted.push(addDocument(doc));
         });
@@ -688,12 +695,15 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const parts = [];
         const detected = accepted.filter(function (i) { return uploadedDocuments[i].requirement_code; });
-        const unknown = accepted.length - detected.length;
+        const unknown = accepted.length - detected.length - retyped.length;
         if (detected.length) {
             parts.push((detected.length === 1 ? 'Document detected: ' : 'Documents detected: ')
                 + detected.map(function (i) { return requirementLabel(uploadedDocuments[i].requirement_code); }).join(', ') + '.');
         }
-        if (unknown && !data.offline) {
+        if (retyped.length) {
+            parts.push('Read as ' + retyped.join(', ') + ', but that is already attached, so it was added as unclassified. Choose the correct document in the Documents tab.');
+        }
+        if (unknown > 0 && !data.offline) {
             parts.push(unknown === 1
                 ? 'The document type could not be identified; please choose it in the Documents tab.'
                 : unknown + ' documents could not be identified; please choose their types in the Documents tab.');
@@ -715,7 +725,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         const type = !accepted.length && !extractOnly.length ? 'error'
-            : (rejected.length || (data.warnings && data.warnings.length) || accepted.some(function (i) {
+            : (rejected.length || retyped.length || (data.warnings && data.warnings.length) || accepted.some(function (i) {
                 const c = uploadedDocuments[i].confidence;
                 return c === 'low' || c === 'none';
             })) ? 'warning' : 'success';
@@ -903,8 +913,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
         Object.keys(REQUIREMENT_GROUPS).forEach(function (groupKey) {
             const reqs = REQUIREMENTS.filter(function (r) {
-                return r.group === groupKey && (r.code === doc.requirement_code
-                    || isRequiredForTrack(r) || (!(r.required_for || []).length && !r.clinic_only && HIDDEN_TYPE_OPTIONS.indexOf(r.code) === -1));
+                if (r.group !== groupKey) return false;
+                if (r.code === doc.requirement_code) return true;
+                if (r.clinic_only || HIDDEN_TYPE_OPTIONS.indexOf(r.code) !== -1) return false;
+                return doc.offline || isRequiredForTrack(r) || !(r.required_for || []).length;
             });
             if (!reqs.length) return;
             const optgroup = document.createElement('optgroup');
@@ -937,6 +949,7 @@ document.addEventListener('DOMContentLoaded', function () {
             doc.requirement_code = code;
             doc.requirement_label = requirementLabel(code);
             doc.manual = true;
+            suggestTrackFromDocuments();
             syncDocumentsHiddenField();
             rerenderDocumentList();
         });
@@ -1070,6 +1083,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         uploadedDocuments.splice(index, 1);
         forgetSourceIfUnused(doc.source_hash);
+        suggestTrackFromDocuments();
         syncDocumentsHiddenField();
         rerenderDocumentList();
     }

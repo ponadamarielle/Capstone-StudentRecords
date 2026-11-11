@@ -1127,6 +1127,38 @@ function aiDocTypeList()
     return $list;
 }
 
+function aiNormalizeDocType($type)
+{
+    $type = strtolower(trim((string) $type));
+    if ($type === '' || $type === 'none' || !function_exists('getDocumentRequirements')) {
+        return $type;
+    }
+    $catalog = getDocumentRequirements();
+    if (isset($catalog[$type])) {
+        return $type;
+    }
+    $type = trim(preg_replace('/[^a-z0-9]+/', '_', $type), '_');
+    if (isset($catalog[$type])) {
+        return $type;
+    }
+    $matches = [];
+    foreach (array_keys($catalog) as $code) {
+        if (strpos($code, $type . '_') === 0 || strpos($type, $code . '_') === 0) {
+            $matches[] = $code;
+        }
+    }
+    if (count($matches) === 1) {
+        return $matches[0];
+    }
+    foreach ($catalog as $code => $req) {
+        $label = trim(preg_replace('/[^a-z0-9]+/', '_', strtolower((string) ($req['label'] ?? ''))), '_');
+        if ($label !== '' && $label === $type) {
+            return $code;
+        }
+    }
+    return $type;
+}
+
 function aiPageReadMessages(array $dataUrls)
 {
     $types = aiDocTypeList();
@@ -1140,8 +1172,11 @@ function aiPageReadMessages(array $dataUrls)
               . "a card with 1st/2nd semester and Core, Applied or Specialized subjects is grade_11_card or grade_12_card. "
               . "The Grade or Grade Level written on the card decides: Grade 10 is grade_10_card, Grade 11 is grade_11_card, Grade 12 is grade_12_card, "
               . "even when the form code says SF9-JHS or the page only shows attendance and signatures. "
+              . "SF9 / Form 138 is a report card for one grade level; SF10 / Form 137 is the permanent record that lists several grade levels. "
               . "Pages may be scanned sideways or upside down; read the rotated text.\n"
-              . "\"doc_confidence\": high, medium or low.\n\"grade_level\": for a report card, only the number written in its Grade or Grade Level field (for example 11), otherwise empty.\nDocument types (code: name. description):\n" . $types
+              . "Use only a code from the list below, written exactly as listed.\n"
+              . "\"doc_confidence\": high, medium or low.\n\"grade_level\": for a report card, only the number written in its Grade or Grade Level field (for example 11), otherwise empty. "
+              . "Leave it empty if the Grade field is not on this page (for example the attendance side); never guess it from the form code.\nDocument types (code: name. description):\n" . $types
             : '')
         . "\"turn\": how the image must be turned so its main text reads upright: \"none\" if it is already upright, "
         . "\"clockwise\" if it must be turned 90 degrees clockwise (the text now runs from bottom to top), "
@@ -1204,7 +1239,7 @@ function aiReadImages(array $imagePaths)
         }
         $read = [
             'text'           => $text,
-            'doc_type'       => is_string($json['doc_type'] ?? null) ? trim($json['doc_type']) : null,
+            'doc_type'       => is_string($json['doc_type'] ?? null) ? aiNormalizeDocType($json['doc_type']) : null,
             'doc_confidence' => in_array($json['doc_confidence'] ?? '', ['high', 'medium', 'low'], true) ? $json['doc_confidence'] : 'low',
         ];
         $gradeLevel = preg_replace('/\D/', '', (string) ($json['grade_level'] ?? ''));
@@ -1370,47 +1405,36 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir)
     }
 
     $cardCodes = ['grade_10_card', 'grade_11_card', 'grade_12_card'];
-    $fullCommands = [];
-    foreach ($results as $page => $read) {
-        $gradeKnown = in_array($read['grade_level'] ?? '', ['10', '11', '12'], true);
-        $looksLikeCard = in_array((string) $read['doc_type'], $cardCodes, true)
-            || ((string) $read['doc_type'] === 'none' && preg_match('/\bSF\s*-?\s*9\b|F\s*-?\s*138|report\s*card|progress\s*report|attendance\s*record/i', (string) $read['text']));
-        if (!$gradeKnown && $looksLikeCard && !isset($sideways[$page])) {
-            [$fullCommands[$page], $fullFile] = aiPageFullRenderCommand($pdfPath, $page, $workDir);
-            $files[$page][] = $fullFile;
-        }
-    }
-    if ($fullCommands) {
-        aiRunCommandsParallel($fullCommands);
-        $fullImages = [];
-        foreach (array_keys($fullCommands) as $page) {
-            $file = end($files[$page]);
-            if (file_exists($file)) {
-                $fullImages[$page] = [$file];
-            }
-        }
-        error_log('AI report card re-check (full page) for page(s): ' . implode(', ', array_keys($fullImages)));
-        foreach (aiReadImages($fullImages) as $page => $read) {
-            if ($read !== null && in_array((string) $read['doc_type'], $cardCodes, true)) {
-                $results[$page]['doc_type'] = $read['doc_type'];
-                $results[$page]['doc_confidence'] = $read['doc_confidence'];
-            }
-        }
-    }
+    $cardPattern = '/\bSF\s*-?\s*9\b|F\s*-?\s*138|report\s*card|progress\s*report|attendance\s*record|learning\s*progress/i';
+    $pageTotal = null;
     $cardPages = [];
     $cardCommands = [];
     foreach ($results as $page => $read) {
         $isCard = in_array((string) $read['doc_type'], $cardCodes, true)
-            || preg_match('/\bSF\s*-?\s*9\b|F\s*-?\s*138|report\s*card|progress\s*report|attendance\s*record/i', (string) $read['text']);
+            || ($page === 1 && in_array((string) $read['doc_type'], ['', 'none'], true) && preg_match($cardPattern, (string) $read['text']))
+            || ((string) $read['doc_type'] === 'sf10_form137' && preg_match('/\bSF\s*-?\s*9\b|F\s*-?\s*138/i', (string) $read['text']));
         $gradeKnown = in_array((string) ($read['grade_level'] ?? ''), ['10', '11', '12'], true)
             && (string) $read['doc_type'] === 'grade_' . $read['grade_level'] . '_card';
-        if ($isCard && isset($sideways[$page]) && !$gradeKnown) {
+        if (!$isCard || $gradeKnown) {
+            continue;
+        }
+        $cardPages[$page] = ['files' => [], 'turn' => $read['turn'] ?? 'none'];
+        if ($pageTotal === null) {
+            $pageTotal = function_exists('pdfPageCount') ? (int) pdfPageCount($pdfPath) : 0;
+        }
+        $others = [];
+        if ($pageTotal > $page && !in_array($page + 1, $pages, true)) {
+            $others[] = $page + 1;
+        } elseif ($page > 1 && !in_array($page - 1, $pages, true)) {
+            $others[] = $page - 1;
+        }
+        foreach (array_merge([$page], $others) as $p) {
             $base = rtrim($workDir, '/\\') . '/' . uniqid('aicard_', true);
-            $cardCommands[$page] = escapeshellarg(PDFTOPPM_BIN) . ' -jpeg -jpegopt quality=85 -scale-to 2000'
-                . ' -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+            $cardCommands[$page . '_' . $p] = escapeshellarg(PDFTOPPM_BIN) . ' -jpeg -jpegopt quality=85 -scale-to 2000'
+                . ' -singlefile -f ' . (int) $p . ' -l ' . (int) $p
                 . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($base);
             $files[$page][] = $base . '.jpg';
-            $cardPages[$page] = ['file' => $base . '.jpg', 'turn' => $read['turn'] ?? 'none'];
+            $cardPages[$page]['files'][] = $base . '.jpg';
         }
     }
     if ($cardPages) {
@@ -1418,10 +1442,11 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir)
         foreach (aiReadCardGrade($cardPages) as $page => $grade) {
             $code = 'grade_' . $grade . '_card';
             if ($results[$page]['doc_type'] !== $code) {
-                error_log('AI report card grade re-check: page ' . $page . ' changed from ' . $results[$page]['doc_type'] . ' to ' . $code . '.');
+                error_log('AI report card grade re-check: page ' . $page . ' changed from ' . ($results[$page]['doc_type'] ?: 'none') . ' to ' . $code . '.');
             }
             $results[$page]['doc_type'] = $code;
             $results[$page]['grade_level'] = $grade;
+            $results[$page]['doc_confidence'] = 'high';
         }
     }
 
@@ -1450,7 +1475,7 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir)
         if ((string) $read['doc_type'] === 'health_information_form' && !isset($sideways[$page]) && trim((string) $read['text']) !== '') {
             $base = rtrim($workDir, '/\\') . '/' . uniqid('aihealth_', true);
             $healthCommands[$page] = escapeshellarg(PDFTOPPM_BIN) . ' -jpeg -jpegopt quality=92 -scale-to-x 4000 -scale-to-y -1'
-                . ' -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+                . ' -x 2400 -y 840 -W 1600 -H 480 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
                 . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($base);
             $files[$page][] = $base . '.jpg';
             $healthPages[$page] = $base . '.jpg';
@@ -1471,48 +1496,37 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir)
 function aiReadCardGrade(array $cardPages)
 {
     $bodies = [];
-    $upright = [];
     foreach ($cardPages as $page => $card) {
-        $file = $card['file'];
-        if (!is_file($file)) {
-            continue;
-        }
-        $angles = ['clockwise' => 270, 'counterclockwise' => 90, 'upside_down' => 180];
-        $upright[$page] = false;
-        if (isset($angles[$card['turn']]) && function_exists('imagerotate') && function_exists('imagecreatefromjpeg')) {
-            $img = @imagecreatefromjpeg($file);
-            if ($img) {
-                $rotated = imagerotate($img, $angles[$card['turn']], imagecolorallocate($img, 255, 255, 255));
-                imagedestroy($img);
-                if ($rotated) {
-                    imagejpeg($rotated, $file, 85);
-                    imagedestroy($rotated);
-                    $upright[$page] = true;
-                    error_log('AI report card grade re-check: page ' . $page . ' turned ' . $card['turn'] . ' to read it upright.');
-                }
+        $content = [['type' => 'text', 'text' => count($card['files']) > 1
+            ? 'These images are the pages of one scanned report card (front and back). What grade is written on it?'
+            : 'What grade is written on this report card?']];
+        foreach ($card['files'] as $file) {
+            $url = is_file($file) ? imageToDataUrlForAi($file, 2000, 1800000) : null;
+            if ($url !== null) {
+                $content[] = ['type' => 'image_url', 'image_url' => ['url' => $url]];
             }
         }
-        $url = imageToDataUrlForAi($file, 2000, 1800000);
-        if ($url === null) {
+        if (count($content) < 2) {
             continue;
         }
         $bodies[$page] = groqRequestBody([
-            ['role' => 'system', 'content' => "You read a scanned Philippine DepEd report card (SF9 / Form 138) and reply with ONLY a JSON object: {\"grade\": \"\"}.\n"
-                . ($upright[$page] ? "The page has been turned so the text is upright. " : "The page is rotated sideways; turn it in your mind so the text is upright. ")
-                . "On the cover side, find the learner details (LRN, Name, Age, Sex, Grade, Section, School Year, Track/Strand). "
-                . "\"grade\": only the number written in the Grade field, usually handwritten, for example 10, 11 or 12. Read both digits carefully: 12 and 10 look alike. "
-                . "A Track/Strand such as STEM, ABM, HUMSS or GAS means Senior High School, so the grade is 11 or 12, never 10. Use \"\" if it is not written."],
-            ['role' => 'user', 'content' => [
-                ['type' => 'text', 'text' => 'What grade is written on this report card?'],
-                ['type' => 'image_url', 'image_url' => ['url' => $url]],
-            ]],
-        ], true, 60);
+            ['role' => 'system', 'content' => "You read a scanned Philippine DepEd report card (SF9 / Form 138) and reply with ONLY a JSON object: {\"grade\": \"\", \"evidence\": \"\"}.\n"
+                . "The pages may be scanned sideways or upside down; turn them in your mind so the text is upright. "
+                . "If an image belongs to a different document, ignore it. "
+                . "Find the learner details (LRN, Name, Age, Sex, Grade, Section, School Year, Track/Strand), usually on the cover side. "
+                . "\"grade\": only the number written in the Grade or Grade Level field, usually handwritten, for example 10, 11 or 12. Read both digits carefully: 12 and 10 look alike. "
+                . "Do not use the form code: many schools print SF9-JHS even on Grade 11 and 12 cards. "
+                . "A Track/Strand such as STEM, ABM, HUMSS, GAS or TVL, semesters, or Core/Applied/Specialized subjects mean Senior High School, so the grade is 11 or 12, never 10. "
+                . "Four quarters with subjects such as Araling Panlipunan, EsP, TLE and MAPEH mean Junior High School (Grade 10). "
+                . "\"evidence\": a few words on what you saw, for example \"Grade: 11, Strand: STEM\". Use \"\" for grade if it cannot be found."],
+            ['role' => 'user', 'content' => $content],
+        ], true, 120);
     }
     $grades = [];
     foreach ($bodies ? groqChatMany($bodies) : [] as $page => $reply) {
         $json = aiDecodeJson($reply);
         $grade = preg_replace('/\D/', '', (string) ($json['grade'] ?? ''));
-        error_log('AI report card grade re-check: page ' . $page . ' grade=' . $grade);
+        error_log('AI report card grade re-check: page ' . $page . ' grade=' . $grade . ' (' . (string) ($json['evidence'] ?? '') . ')');
         if (in_array($grade, ['10', '11', '12'], true)) {
             $grades[$page] = $grade;
         }
@@ -1595,28 +1609,11 @@ function aiReadRouteSlipProgram(array $slipPages, array $results, $workDir, arra
 
 function aiReadHealthStudentNumber(array $healthPages, array $results, $workDir, array &$files)
 {
-    if (!function_exists('imagecreatefromjpeg')) {
-        return;
-    }
     $bodies = [];
-    foreach ($healthPages as $page => $file) {
-        $img = is_file($file) ? @imagecreatefromjpeg($file) : false;
-        if (!$img) {
+    foreach ($healthPages as $page => $cropFile) {
+        if (!is_file($cropFile) || filesize($cropFile) < 1000) {
             continue;
         }
-        $w = imagesx($img);
-        $h = imagesy($img);
-        $x = (int) round($w * 0.60);
-        $y = (int) round($w * 0.21);
-        $crop = imagecrop($img, ['x' => $x, 'y' => $y, 'width' => $w - $x, 'height' => min((int) round($w * 0.12), $h - $y)]);
-        imagedestroy($img);
-        if (!$crop) {
-            continue;
-        }
-        $cropFile = rtrim($workDir, '/\\') . '/' . uniqid('aisn_', true) . '.jpg';
-        imagejpeg($crop, $cropFile, 92);
-        imagedestroy($crop);
-        $files[$page][] = $cropFile;
         $url = imageToDataUrlForAi($cropFile, 1600, 1200000);
         if ($url === null) {
             continue;

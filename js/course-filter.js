@@ -8,7 +8,8 @@ document.addEventListener('DOMContentLoaded', function () {
         yearSectionFilterSelect: 'All year & sections',
         statusFilterSelect: 'All status',
         typeFilterSelect: 'All types',
-        archiveYearSectionFilter: 'All years'
+        archiveYearSectionFilter: 'All years',
+        archiveStatusFilter: 'All status'
     };
     Object.keys(simpleMenus).forEach(function (id) {
         var select = document.getElementById(id);

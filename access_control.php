@@ -1,19 +1,16 @@
 <?php
-const OFFICE_ROLES = ['Admin', 'Staff', 'OJT Intern'];
-const SHAREABLE_ROLES = ['Staff', 'OJT Intern'];
+const OFFICE_ROLES = ['Admin', 'OJT Intern'];
+const SHAREABLE_ROLES = ['OJT Intern'];
 
 const ROLE_PERMISSIONS = [
     'Admin' => [
         'students.list', 'students.add', 'students.view', 'students.edit', 'students.fill_blank',
         'documents.view', 'documents.upload', 'documents.set_type', 'documents.replace', 'documents.delete',
-        'students.status', 'archive.view', 'archive.restore', 'reports', 'access.manage',
-    ],
-    'Staff' => [
-        'students.list', 'students.add', 'students.view', 'students.fill_blank',
-        'documents.view', 'documents.upload', 'documents.set_type', 'documents.replace',
+        'students.status', 'archive.view', 'archive.restore', 'reports',
     ],
     'OJT Intern' => [
-        'students.add', 'documents.upload',
+        'students.search', 'students.add', 'students.view', 'students.edit',
+        'documents.view', 'documents.upload', 'documents.set_type', 'documents.replace',
     ],
 ];
 
@@ -82,7 +79,7 @@ function ensureAccountRoles($conn)
             && (stripos($column['Type'], "'Staff'") === false || stripos($column['Type'], "'OJT Intern'") === false)) {
             mysqli_query($conn, "ALTER TABLE accounts MODIFY role VARCHAR(20) NOT NULL");
         }
-        mysqli_query($conn, "UPDATE accounts SET role = 'OJT Intern' WHERE role IN ('OJT', 'Intern')");
+        mysqli_query($conn, "UPDATE accounts SET role = 'OJT Intern' WHERE role IN ('OJT', 'Intern', 'Staff')");
     } catch (Throwable $e) {
         error_log('Updating accounts.role failed: ' . $e->getMessage());
     }

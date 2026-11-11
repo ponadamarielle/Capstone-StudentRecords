@@ -4,6 +4,7 @@ include '../security_headers.php';
 session_start();
 require_once __DIR__ . '/../activity_log.php';
 require_once __DIR__ . '/../account_email.php';
+require_once __DIR__ . '/../access_control.php';
 
 $envFile = __DIR__ . '/../.env';
 
@@ -28,6 +29,18 @@ if (!isset($_SESSION['csrf_token'])) {
 if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] !== 'Super Admin') {
     header("Location: ../signin.php");
     exit();
+}
+
+$statusParam = in_array($_GET['status'] ?? '', ['all', 'active', 'inactive'], true) ? $_GET['status'] : 'all';
+$roleParam = in_array($_GET['role'] ?? '', OFFICE_ROLES, true) ? $_GET['role'] : '';
+$listQuery = http_build_query(array_filter(['status' => $statusParam === 'all' ? '' : $statusParam, 'role' => $roleParam], 'strlen'));
+$listUrl = 'admin_management.php' . ($listQuery !== '' ? '?' . $listQuery : '');
+
+function accountRoleTerms($role)
+{
+    return $role === 'Admin'
+        ? ['off' => 'Deactivate', 'on' => 'Activate', 'offLog' => 'Deactivated', 'onLog' => 'Activated', 'note' => 'Deactivated']
+        : ['off' => 'Remove access', 'on' => 'Restore access', 'offLog' => 'Removed the access of', 'onLog' => 'Restored the access of', 'note' => 'Access removed'];
 }
 
 //php mailer
@@ -68,8 +81,12 @@ if (isset($_POST['add_admin'])) {
     $pass = substr(str_shuffle('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'), 0, 8);
     $hashedPass = password_hash($pass, PASSWORD_DEFAULT);
 
-    $role = "Admin";
+    $role = in_array($_POST['role'] ?? '', OFFICE_ROLES, true) ? $_POST['role'] : '';
     $status = "Active";
+
+    if ($role === '') {
+        $roleError = "Please choose a role.";
+    }
 
     if ($name === '' || !preg_match("/^[\p{L}][\p{L} .'\-]*$/u", $name) || mb_strlen($name) > 100) {
         $nameError = "Name can only contain letters (including ñ), spaces, hyphens (-), periods (.) and apostrophes (').";
@@ -83,8 +100,8 @@ if (isset($_POST['add_admin'])) {
     $checkStmt->execute();
     $checkStmt->store_result();
 
-    if (isset($nameError) || isset($emailError)) {
-        $error = $nameError ?? $emailError;
+    if (isset($nameError) || isset($emailError) || isset($roleError)) {
+        $error = $nameError ?? $emailError ?? $roleError;
     } elseif ($checkStmt->num_rows > 0) {
         $error = "This email is already associated with an existing account.";
     } else {
@@ -94,7 +111,7 @@ if (isset($_POST['add_admin'])) {
         if ($insertStmt->execute()) {
             $success = true;
             $newAccountId = $insertStmt->insert_id;
-            logActivity('account_created', 'Created Admin account of ' . $name . ' (' . $email . ')', [
+            logActivity('account_created', 'Created ' . $role . ' account of ' . $name . ' (' . $email . ')', [
                 'target_type' => 'account',
                 'target_id'   => $newAccountId,
                 'details'     => ['name' => $name, 'email' => $email, 'role' => $role, 'status' => $status],
@@ -118,7 +135,7 @@ if (isset($_POST['add_admin'])) {
 
                 $mail->CharSet = 'UTF-8';
                 $mail->isHTML(true);
-                $mail->Subject = "Your PUP eRecords Admin account [Ref: {$refNumber}]";
+                $mail->Subject = "Your PUP eRecords {$role} account [Ref: {$refNumber}]";
                 [$mail->Body, $mail->AltBody] = buildTemporaryPasswordEmail($name, $email, $pass, $refNumber);
 
                 $mail->send();
@@ -126,7 +143,7 @@ if (isset($_POST['add_admin'])) {
                     'category'    => 'audit',
                     'target_type' => 'account',
                     'target_id'   => $newAccountId,
-                    'details'     => ['notification' => 'Admin account temporary password', 'recipient' => $email, 'reference' => $refNumber],
+                    'details'     => ['notification' => $role . ' account temporary password', 'recipient' => $email, 'reference' => $refNumber],
                 ]);
             } catch (Exception $e) {
                 $error = "Email could not be sent: {$mail->ErrorInfo}";
@@ -134,7 +151,7 @@ if (isset($_POST['add_admin'])) {
                     'category'    => 'audit',
                     'target_type' => 'account',
                     'target_id'   => $newAccountId,
-                    'details'     => ['notification' => 'Admin account temporary password', 'recipient' => $email, 'error' => $mail->ErrorInfo],
+                    'details'     => ['notification' => $role . ' account temporary password', 'recipient' => $email, 'error' => $mail->ErrorInfo],
                 ]);
             }
         } else {
@@ -158,42 +175,50 @@ if (isset($_POST['toggle_status']) && $_POST['toggle_status'] === '1') {
     $currentStatus = $_POST['current_status'];
     $newStatus = ($currentStatus === 'Active') ? 'Inactive' : 'Active';
 
-    if ($currentStatus === 'Active') {
-        $countSql = "SELECT COUNT(*) as cnt FROM accounts WHERE role='Admin' AND status='Active'";
-        $countResult = mysqli_query($conn, $countSql);
-        $countRow = mysqli_fetch_assoc($countResult);
+    $targetStmt = $conn->prepare("SELECT name, role FROM accounts WHERE email=? LIMIT 1");
+    $targetStmt->bind_param("s", $email);
+    $targetStmt->execute();
+    $target = $targetStmt->get_result()->fetch_assoc();
+    $targetStmt->close();
+    $targetRole = ($target && in_array($target['role'], OFFICE_ROLES, true)) ? $target['role'] : '';
 
-        if ($countRow['cnt'] <= 1) {
-            $toggleError = "Cannot deactivate the last active Admin account.";
-        } else {
-            $stmt = $conn->prepare("UPDATE accounts SET status=? WHERE email=? AND role='Admin'");
-            $stmt->bind_param("ss", $newStatus, $email);
+    if ($targetRole === '') {
+        $toggleError = "The account was not found.";
+    } else {
+        if ($currentStatus === 'Active' && $targetRole === 'Admin') {
+            $countSql = "SELECT COUNT(*) as cnt FROM accounts WHERE role='Admin' AND status='Active'";
+            $countResult = mysqli_query($conn, $countSql);
+            $countRow = mysqli_fetch_assoc($countResult);
+            if ($countRow['cnt'] <= 1) {
+                $toggleError = "Cannot deactivate the last active Admin account.";
+            }
+        }
+        if (!isset($toggleError)) {
+            $stmt = $conn->prepare("UPDATE accounts SET status=? WHERE email=? AND role=?");
+            $stmt->bind_param("sss", $newStatus, $email, $targetRole);
             $stmt->execute();
             $changed = $stmt->affected_rows > 0;
             $stmt->close();
         }
-    } else {
-        $stmt = $conn->prepare("UPDATE accounts SET status=? WHERE email=? AND role='Admin'");
-        $stmt->bind_param("ss", $newStatus, $email);
-        $stmt->execute();
-        $changed = $stmt->affected_rows > 0;
-        $stmt->close();
     }
 
     if (!empty($changed)) {
-        $nameStmt = $conn->prepare("SELECT name FROM accounts WHERE email=? LIMIT 1");
-        $nameStmt->bind_param("s", $email);
-        $nameStmt->execute();
-        $accountName = $nameStmt->get_result()->fetch_assoc()['name'] ?? $email;
-        $nameStmt->close();
+        $terms = accountRoleTerms($targetRole);
+        $accountName = $target['name'] ?? $email;
         logActivity('account_status_changed',
-            ($newStatus === 'Active' ? 'Activated' : 'Deactivated') . ' Admin account of ' . $accountName . ' (' . $email . ')',
+            ($targetRole === 'Admin'
+                ? ($newStatus === 'Active' ? 'Activated' : 'Deactivated') . ' Admin account of '
+                : ($newStatus === 'Active' ? $terms['onLog'] : $terms['offLog']) . ' ' . $targetRole . ' account ')
+            . $accountName . ' (' . $email . ')',
             [
                 'target_type' => 'account',
                 'details'     => [
                     'email'   => $email,
+                    'role'    => $targetRole,
                     'changes' => ['Status' => ['from' => $currentStatus, 'to' => $newStatus]],
-                    'effect'  => $newStatus === 'Active' ? 'The Admin can sign in again.' : 'The Admin is signed out on their next page load and can no longer sign in.',
+                    'effect'  => $newStatus === 'Active'
+                        ? 'The ' . $targetRole . ' can sign in again.'
+                        : 'The ' . $targetRole . ' is signed out automatically and can no longer sign in.',
                 ],
             ]);
     }
@@ -209,7 +234,7 @@ if (isset($_POST['reset_password']) && $_POST['reset_password'] === '1') {
     }
 
     $resetEmail = trim($_POST['email'] ?? '');
-    $accountStmt = $conn->prepare("SELECT id, name, pass, is_first_login FROM accounts WHERE email=? AND role='Admin' AND status='Active' LIMIT 1");
+    $accountStmt = $conn->prepare("SELECT id, name, role, pass, is_first_login FROM accounts WHERE email=? AND role IN ('Admin', 'OJT Intern') AND status='Active' LIMIT 1");
     $accountStmt->bind_param("s", $resetEmail);
     $accountStmt->execute();
     $account = $accountStmt->get_result()->fetch_assoc();
@@ -252,16 +277,16 @@ if (isset($_POST['reset_password']) && $_POST['reset_password'] === '1') {
             } catch (Throwable $unlockError) {
             }
 
-            logActivity('password_reset', 'Reset the password of Admin account ' . $account['name'] . ' (' . $resetEmail . ')', [
+            logActivity('password_reset', 'Reset the password of ' . $account['role'] . ' account ' . $account['name'] . ' (' . $resetEmail . ')', [
                 'target_type' => 'account',
                 'target_id'   => $account['id'],
-                'details'     => ['email' => $resetEmail, 'effect' => 'A temporary password was emailed. The Admin must set a new password on the next sign-in.'],
+                'details'     => ['email' => $resetEmail, 'effect' => 'A temporary password was emailed. The ' . $account['role'] . ' must set a new password on the next sign-in.'],
             ]);
             logActivity('email_sent', 'Sent the password reset email to ' . $account['name'] . ' (' . $resetEmail . ')', [
                 'category'    => 'audit',
                 'target_type' => 'account',
                 'target_id'   => $account['id'],
-                'details'     => ['notification' => 'Admin password reset', 'recipient' => $resetEmail, 'reference' => $refNumber],
+                'details'     => ['notification' => $account['role'] . ' password reset', 'recipient' => $resetEmail, 'reference' => $refNumber],
             ]);
             $resetFlash = ['type' => 'success', 'message' => 'Password reset. A temporary password was emailed to ' . $resetEmail . '.'];
         } catch (Exception $e) {
@@ -273,14 +298,14 @@ if (isset($_POST['reset_password']) && $_POST['reset_password'] === '1') {
                 'category'    => 'audit',
                 'target_type' => 'account',
                 'target_id'   => $account['id'],
-                'details'     => ['notification' => 'Admin password reset', 'recipient' => $resetEmail, 'error' => $mail->ErrorInfo, 'effect' => 'The password was not changed.'],
+                'details'     => ['notification' => $account['role'] . ' password reset', 'recipient' => $resetEmail, 'error' => $mail->ErrorInfo, 'effect' => 'The password was not changed.'],
             ]);
             $resetFlash = ['type' => 'error', 'message' => 'The password was not reset because the email could not be sent. Check the internet connection and try again.'];
         }
     }
 
     $_SESSION['um_reset_flash'] = $resetFlash;
-    header('Location: admin_management.php' . (isset($_GET['status']) ? '?status=' . urlencode($_GET['status']) : ''));
+    header('Location: ' . $listUrl);
     exit();
 }
 
@@ -290,7 +315,7 @@ unset($_SESSION['um_reset_flash']);
 
 <html>
 <head>
-    <title>Admin Management</title>
+    <title>User Management</title>
     <link href="../css/bootstrap.min.css" rel="stylesheet">
     <link href="../css/bootstrap-icons.css" rel="stylesheet">
     <link href="../css/font.css" rel="stylesheet">
@@ -313,18 +338,26 @@ unset($_SESSION['um_reset_flash']);
 
 <div class="filter-add">
     <!-- Filter Tabs -->
+    <div class="um-tab-groups">
     <div class="filter-tabs">
-        <button class="filter-tab <?= (!isset($_GET['status']) || $_GET['status'] == 'all') ? 'active' : '' ?>"
+        <button class="filter-tab <?= $statusParam === 'all' ? 'active' : '' ?>"
             data-filter="all">All</button>
-        <button class="filter-tab <?= (isset($_GET['status']) && $_GET['status'] == 'active') ? 'active' : '' ?>"
+        <button class="filter-tab <?= $statusParam === 'active' ? 'active' : '' ?>"
             data-filter="active">Active</button>
-        <button class="filter-tab <?= (isset($_GET['status']) && $_GET['status'] == 'inactive') ? 'active' : '' ?>"
+        <button class="filter-tab <?= $statusParam === 'inactive' ? 'active' : '' ?>"
             data-filter="inactive">Inactive</button>
+    </div>
+    <div class="filter-tabs" aria-label="Filter by role">
+        <button class="filter-tab role-tab <?= $roleParam === '' ? 'active' : '' ?>" data-role="">All roles</button>
+        <?php foreach (OFFICE_ROLES as $tabRole): ?>
+        <button class="filter-tab role-tab <?= $roleParam === $tabRole ? 'active' : '' ?>" data-role="<?= htmlspecialchars($tabRole) ?>"><?= htmlspecialchars($tabRole) ?></button>
+        <?php endforeach; ?>
+    </div>
     </div>
 
     <!-- ADD Button -->
     <button class="btn-add" data-bs-toggle="modal" data-bs-target="#addStudentModal">
-        <i class="bi bi-person-plus"></i>ADD ADMIN
+        <i class="bi bi-person-plus"></i>ADD USER
     </button>
 </div>
 
@@ -340,10 +373,10 @@ unset($_SESSION['um_reset_flash']);
     </tr>
 
     <?php
-    $filter = $_GET['status'] ?? 'all';
-    $where = ($filter === 'active') ? "AND status='Active'" : (($filter === 'inactive') ? "AND status='Inactive'" : "");
+    $where = ($statusParam === 'active') ? "AND status='Active'" : (($statusParam === 'inactive') ? "AND status='Inactive'" : "");
+    $roleWhere = $roleParam !== '' ? "role='" . mysqli_real_escape_string($conn, $roleParam) . "'" : "role IN ('Admin', 'OJT Intern')";
 
-    $result = mysqli_query($conn, "SELECT name, email, status FROM accounts WHERE role='Admin' $where");
+    $result = mysqli_query($conn, "SELECT name, email, role, status FROM accounts WHERE $roleWhere $where ORDER BY FIELD(role, 'Admin', 'OJT Intern'), name ASC");
     $deactivatedAt = [];
     try {
         $logResult = mysqli_query($conn, "SELECT created_at, details FROM activity_logs WHERE action = 'account_status_changed' ORDER BY created_at DESC, log_id DESC");
@@ -362,7 +395,9 @@ unset($_SESSION['um_reset_flash']);
         $shownAccounts++;
         $isActive = $row['status'] === 'Active';
         $btnClass = $isActive ? 'deactivate-btn' : 'activate-btn';
-        $btnLabel = $isActive ? 'Deactivate' : 'Activate';
+        $terms = accountRoleTerms($row['role']);
+        $btnLabel = $isActive ? $terms['off'] : $terms['on'];
+        $safeRole = htmlspecialchars($row['role'], ENT_QUOTES);
         $safeEmail = htmlspecialchars($row['email'], ENT_QUOTES);
         $safeName = htmlspecialchars($row['name'], ENT_QUOTES);
         $safeStatus = htmlspecialchars($row['status'], ENT_QUOTES);
@@ -374,7 +409,7 @@ unset($_SESSION['um_reset_flash']);
         $rowEmailKey = strtolower($row['email']);
         if (!$isActive && !empty($deactivatedAt[$rowEmailKey])) {
             $deactivatedTs = (new DateTime($deactivatedAt[$rowEmailKey], new DateTimeZone('Asia/Manila')))->getTimestamp();
-            $deactivatedNote = "<span class='um-status-note' data-deactivated-at='" . ($deactivatedTs * 1000) . "'>Deactivated on " . htmlspecialchars(date('M j, Y', $deactivatedTs), ENT_QUOTES) . "</span>";
+            $deactivatedNote = "<span class='um-status-note' data-note-label='" . htmlspecialchars($terms['note'], ENT_QUOTES) . "' data-deactivated-at='" . ($deactivatedTs * 1000) . "'>" . htmlspecialchars($terms['note'], ENT_QUOTES) . " on " . htmlspecialchars(date('M j, Y', $deactivatedTs), ENT_QUOTES) . "</span>";
         }
 
         echo "<tr>
@@ -385,7 +420,7 @@ unset($_SESSION['um_reset_flash']);
             </div>
         </td>
         <td class='um-email'>{$safeEmail}</td>
-        <td class='um-role'>Admin</td>
+        <td class='um-role'>{$safeRole}</td>
         <td><span class='um-status {$statusClass}'>{$safeStatus}</span></td>
         <td>
             <div class='um-actions'>{$deactivatedNote}
@@ -410,7 +445,7 @@ unset($_SESSION['um_reset_flash']);
       </tr>";
     }
     if ($shownAccounts === 0) {
-        echo "<tr><td colspan='5' class='um-empty'>No admin accounts found.</td></tr>";
+        echo "<tr><td colspan='5' class='um-empty'>No accounts found.</td></tr>";
     }
     ?>
 </table>
@@ -425,7 +460,7 @@ unset($_SESSION['um_reset_flash']);
 <div class="modal fade" id="addStudentModal" tabindex="-1" aria-labelledby="addStudentModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
-      <form name="signin" id="addAdminForm" method="POST" action="<?php echo htmlspecialchars($_SERVER['PHP_SELF']); ?>" novalidate>
+      <form name="signin" id="addAdminForm" method="POST" action="<?php echo htmlspecialchars($listUrl); ?>" novalidate>
       <input
           type="hidden"
           name="csrf_token"
@@ -434,7 +469,7 @@ unset($_SESSION['um_reset_flash']);
       <div class="modal-header um-modal-header">
         <span class="um-modal-icon"><i class="bi bi-person-plus"></i></span>
         <div>
-          <h5 class="modal-title" id="addStudentModalLabel">Add new admin</h5>
+          <h5 class="modal-title" id="addStudentModalLabel">Add new user</h5>
           <p class="um-modal-subtitle">They'll receive an email with a temporary password to sign in.</p>
         </div>
       </div>
@@ -462,7 +497,21 @@ unset($_SESSION['um_reset_flash']);
                 </div>
             </div>
 
-            <?php if (isset($error) && isset($_POST['add_admin']) && !isset($nameError) && !isset($emailError)): ?>
+            <div class="um-field">
+                <label for="role" class="um-label">Role <span class="req-mark">*</span></label>
+                <div class="um-input">
+                    <i class="bi bi-person-badge um-input-icon"></i>
+                    <select class="form-control form-select<?= isset($roleError) ? ' is-invalid' : '' ?>" id="role" name="role" required>
+                        <option value="">Choose a role</option>
+                        <?php foreach (OFFICE_ROLES as $optionRole): ?>
+                        <option value="<?= htmlspecialchars($optionRole) ?>" <?= (isset($error) && isset($_POST['add_admin']) && ($_POST['role'] ?? '') === $optionRole) ? 'selected' : '' ?>><?= htmlspecialchars($optionRole) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="invalid-feedback" id="roleFeedback"><?= isset($roleError) ? htmlspecialchars($roleError) : '' ?></div>
+                </div>
+            </div>
+
+            <?php if (isset($error) && isset($_POST['add_admin']) && !isset($nameError) && !isset($emailError) && !isset($roleError)): ?>
                 <div class="alert alert-danger um-alert"><?= htmlspecialchars($error) ?></div>
             <?php endif; ?>
             </div>
@@ -486,7 +535,7 @@ unset($_SESSION['um_reset_flash']);
         Are you sure you want to change this account's status?
       </div>
 
-      <form method="POST" action="<?php echo htmlspecialchars($_SERVER['PHP_SELF']) . (isset($_GET['status']) ? '?status=' . htmlspecialchars($_GET['status']) : ''); ?>">
+      <form method="POST" action="<?php echo htmlspecialchars($listUrl); ?>">
         <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
         <input type="hidden" name="email" id="modalEmail">
         <input type="hidden" name="current_status" id="modalStatus">
@@ -516,7 +565,7 @@ unset($_SESSION['um_reset_flash']);
         </p>
       </div>
 
-      <form method="POST" action="<?php echo htmlspecialchars($_SERVER['PHP_SELF']) . (isset($_GET['status']) ? '?status=' . htmlspecialchars($_GET['status']) : ''); ?>" id="resetPasswordForm">
+      <form method="POST" action="<?php echo htmlspecialchars($listUrl); ?>" id="resetPasswordForm">
         <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
         <input type="hidden" name="email" id="resetPasswordInput">
         <input type="hidden" name="reset_password" value="1">

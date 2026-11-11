@@ -1450,3 +1450,59 @@ body.has-document-preview #addRecordsModal.modal {
         white-space: normal;
     }
 }
+.directory-pager {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 16px;
+    font-family: var(--font-sans, "Inter");
+    font-size: 13px;
+    color: var(--text-secondary, #625B55);
+}
+.directory-pager-links {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.directory-pager-btn,
+.directory-pager-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 34px;
+    min-width: 34px;
+    padding: 0 12px;
+    border: 1px solid var(--neutral-border-strong, #D6D0C9);
+    border-radius: 8px;
+    background: var(--neutral-surface, #ffffff);
+    color: var(--text-primary, #1C1917);
+    font-weight: 600;
+    text-decoration: none;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.directory-pager-num {
+    padding: 0 10px;
+}
+a.directory-pager-btn:hover,
+a.directory-pager-num:hover {
+    border-color: var(--brand-maroon, #7B1113);
+    background: var(--brand-maroon-50, #FBF1F1);
+    color: var(--brand-maroon, #7B1113);
+}
+.directory-pager-num.is-current {
+    border-color: var(--brand-maroon, #7B1113);
+    background: var(--brand-maroon, #7B1113);
+    color: #ffffff;
+}
+.directory-pager-btn.is-disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+.directory-pager-gap {
+    padding: 0 4px;
+    color: var(--text-tertiary, #9C948D);
+}

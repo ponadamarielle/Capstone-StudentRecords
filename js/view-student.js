@@ -1519,6 +1519,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const accepted = [];
         const rejected = [];
+        const retyped = [];
         (data.documents || []).forEach((doc) => {
             doc.classified_by = data.classified_by || '';
             doc.source_hash = data.source_hash;
@@ -1538,15 +1539,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 rejected.push(label + ' was already uploaded');
                 return;
             }
-            if (doc.on_file) {
-                cleanupStagedFile(doc.file_path, '', '');
-                rejected.push(label + ' is already on file; use its Replace button to change it');
-                return;
-            }
-            if (stagedIndexByCode(doc.requirement_code, -1) !== -1) {
-                cleanupStagedFile(doc.file_path, '', '');
-                rejected.push(label + ' is already in the new uploads');
-                return;
+            if (doc.on_file || stagedIndexByCode(doc.requirement_code, -1) !== -1) {
+                retyped.push(label);
+                doc.requirement_code = null;
+                doc.requirement_label = requirementLabel(null);
+                doc.needs_manual_type = true;
+                doc.on_file = null;
             }
             stagedDocs.push(doc);
             accepted.push(doc);
@@ -1586,11 +1584,14 @@ document.addEventListener('DOMContentLoaded', function () {
         const parts = [];
         if (accepted.length) {
             const detected = accepted.filter((d) => d.requirement_code);
-            const unknown = accepted.length - detected.length;
+            const unknown = accepted.length - detected.length - retyped.length;
             if (detected.length) {
                 parts.push((detected.length === 1 ? 'Document detected: ' : 'Documents detected: ') + detected.map((d) => requirementLabel(d.requirement_code)).join(', ') + '.');
             }
-            if (unknown && !data.offline) {
+            if (retyped.length) {
+                parts.push('Read as ' + retyped.join(', ') + ', but that is already attached, so it was added as unclassified. Choose the correct document below.');
+            }
+            if (unknown > 0 && !data.offline) {
                 parts.push(unknown === 1
                     ? 'The document type could not be identified; please choose it below.'
                     : unknown + ' documents could not be identified; please choose their types below.');
@@ -1608,7 +1609,7 @@ document.addEventListener('DOMContentLoaded', function () {
         if (accepted.length) parts.push('Review the Documents tab, then click UPDATE.');
         else if (extractOnly.length) parts.push('Please review the fields before saving.');
 
-        const warn = rejected.length || (data.warnings && data.warnings.length)
+        const warn = rejected.length || retyped.length || (data.warnings && data.warnings.length)
             || accepted.some((d) => d.confidence === 'low' || d.confidence === 'none');
         setStatus(parts.join(' '), !accepted.length && !extractOnly.length ? 'error' : warn ? 'warning' : 'success');
 
@@ -2393,7 +2394,7 @@ document.querySelectorAll('.profile-status-graduate').forEach((badge) => {
             note: 'The record will be moved to Archive. It can be restored if the student enrolls again.',
         },
         onleave: {
-            label: 'On-leave',
+            label: 'Leave of Absence',
             note: 'The record will be moved to Archive. It can be restored when the student returns.',
         },
         transferred: {

@@ -35,7 +35,7 @@ function requireActiveAccount($isAjax = false)
         return;
     }
 
-    $removedAccess = in_array($_SESSION['role'], ['Staff', 'OJT Intern'], true);
+    $removedAccess = in_array($_SESSION['role'], ['OJT Intern'], true);
     $redirect = '../signin.php?deactivated=' . ($removedAccess ? 'access' : '1');
     logActivity('logout', 'Signed out automatically: ' . ($removedAccess ? 'the access was removed' : 'the account was deactivated'), [
         'details' => ['email' => $_SESSION['email'] ?? '', 'reason' => $row ? 'Account status is ' . $row['status'] : 'Account no longer exists'],
@@ -54,7 +54,7 @@ function requireActiveAccount($isAjax = false)
         echo json_encode([
             'success'  => false,
             'message'  => $removedAccess
-                ? 'Your access has been removed. Please contact the Admin.'
+                ? 'Your access has been removed. Please contact the Super Admin.'
                 : 'Your account has been deactivated. Please contact the Super Admin.',
             'redirect' => $redirect,
         ]);
