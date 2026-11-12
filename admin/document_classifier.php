@@ -239,6 +239,12 @@ function getDocumentRequirements()
         ],
     ];
 
+    foreach (requirementKeywordSeeds() as $seedCode => $seedKeywords) {
+        if (isset($catalog[$seedCode])) {
+            $catalog[$seedCode]['keywords'] = $seedKeywords;
+        }
+    }
+
     $catalog = applyRequirementSettings($catalog);
     return $catalog;
 }
@@ -294,6 +300,8 @@ function ensureRequirementTables($conn, array $builtin)
         code VARCHAR(64) NOT NULL PRIMARY KEY,
         label VARCHAR(150) NOT NULL,
         ai_hint TEXT NOT NULL,
+        keywords TEXT NULL,
+        keywords_auto CHAR(32) NULL,
         doc_group VARCHAR(30) NOT NULL DEFAULT 'other',
         is_custom TINYINT(1) NOT NULL DEFAULT 0,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -309,6 +317,18 @@ function ensureRequirementTables($conn, array $builtin)
     $result = mysqli_query($conn, "SHOW COLUMNS FROM requirement_documents");
     while ($result && ($row = mysqli_fetch_assoc($result))) {
         $columns[$row['Field']] = true;
+    }
+    if ($columns && !isset($columns['keywords_auto'])) {
+        mysqli_query($conn, "ALTER TABLE requirement_documents ADD COLUMN keywords_auto CHAR(32) NULL AFTER " . (isset($columns['keywords']) ? 'keywords' : 'ai_hint'));
+    }
+    if ($columns && !isset($columns['keywords'])) {
+        mysqli_query($conn, "ALTER TABLE requirement_documents ADD COLUMN keywords TEXT NULL AFTER ai_hint");
+        foreach (requirementKeywordSeeds() as $seedCode => $seedKeywords) {
+            $stmt = mysqli_prepare($conn, "UPDATE requirement_documents SET keywords = ? WHERE code = ? AND (keywords IS NULL OR keywords = '')");
+            mysqli_stmt_bind_param($stmt, 'ss', $seedKeywords, $seedCode);
+            mysqli_stmt_execute($stmt);
+            mysqli_stmt_close($stmt);
+        }
     }
     foreach (requirementTrackColumns() as $track) {
         if (!isset($columns[$track])) {
@@ -329,9 +349,10 @@ function ensureRequirementTables($conn, array $builtin)
         }
         $label = $req['label'];
         $hint = $req['ai_hint'] ?? '';
+        $keywords = $req['keywords'] ?? '';
         $group = $req['group'];
-        $stmt = mysqli_prepare($conn, "INSERT INTO requirement_documents (code, label, ai_hint, doc_group, is_custom) VALUES (?, ?, ?, ?, 0)");
-        mysqli_stmt_bind_param($stmt, 'ssss', $code, $label, $hint, $group);
+        $stmt = mysqli_prepare($conn, "INSERT INTO requirement_documents (code, label, ai_hint, keywords, doc_group, is_custom) VALUES (?, ?, ?, ?, ?, 0)");
+        mysqli_stmt_bind_param($stmt, 'sssss', $code, $label, $hint, $keywords, $group);
         mysqli_stmt_execute($stmt);
         mysqli_stmt_close($stmt);
         setRequirementTracks($conn, $code, $req['required_for'] ?? [], true);
@@ -351,9 +372,14 @@ function applyRequirementSettings(array $catalog)
         while ($result && ($row = mysqli_fetch_assoc($result))) {
             $tracks[$row['code']][] = $row['track'];
         }
-        $result = mysqli_query($conn, "SELECT code, label, ai_hint, doc_group, is_custom FROM requirement_documents ORDER BY created_at, code");
+        $result = mysqli_query($conn, "SELECT code, label, ai_hint, keywords, keywords_auto, doc_group, is_custom FROM requirement_documents ORDER BY created_at, code");
+        $seeds = requirementKeywordSeeds();
         while ($result && ($row = mysqli_fetch_assoc($result))) {
             $code = $row['code'];
+            $row['keywords'] = fillRequirementKeywords($conn, $row, $seeds[$code] ?? '');
+            if (isset($catalog[$code]) && trim((string) ($row['keywords'] ?? '')) !== '') {
+                $catalog[$code]['keywords'] = $row['keywords'];
+            }
             if (isset($catalog[$code])) {
                 if (!empty($catalog[$code]['store'])) {
                     $catalog[$code]['required_for'] = $tracks[$code] ?? [];
@@ -369,6 +395,7 @@ function applyRequirementSettings(array $catalog)
                 'ref' => '', 'note' => '',
                 'extract_fields' => false, 'field_priority' => 9,
                 'ai_hint' => $row['ai_hint'],
+                'keywords' => (string) ($row['keywords'] ?? ''),
                 'custom' => true,
             ];
         }
@@ -695,6 +722,238 @@ function aiClassifyPages(array $pageTexts)
     return ['pages' => $result, 'error' => null, 'source' => $source];
 }
 
+function requirementKeywordSeeds()
+{
+    return [
+        'sar_form'                     => 'SAR FORM, SAR-FORM 1, CONFIRMATION SLIP, CONFIRMATION DOCUMENTS',
+        'route_approval_slip'          => 'ROUTE AND APPROVAL SLIP, ROUTE AND APPROVAL, APPROVAL SLIP',
+        'certification_undertaking'    => 'CERTIFICATION/UNDERTAKING, UNDERTAKING, FORM 2',
+        'grade_12_card'                => 'SF9, SF 9, FORM 138, F138, REPORT CARD, PROGRESS REPORT, LEARNER\'S PROGRESS',
+        'grade_11_card'                => 'SF9, SF 9, FORM 138, F138, REPORT CARD, PROGRESS REPORT, LEARNER\'S PROGRESS',
+        'grade_10_card'                => 'SF9, SF 9, FORM 138, F138, REPORT CARD, PROGRESS REPORT, LEARNER\'S PROGRESS',
+        'psa_birth_certificate'        => 'CERTIFICATE OF LIVE BIRTH, FORM NO. 102, BIRTH CERTIFICATE, PHILIPPINE STATISTICS AUTHORITY',
+        'good_moral_certificate'       => 'GOOD MORAL, GOOD MORAL CHARACTER',
+        'chest_xray'                   => 'X-RAY, XRAY, CHEST PA, RADIOLOGY, RADIOLOGIC',
+        'pwd_id'                       => 'PWD, PERSON WITH DISABILITY, PERSONS WITH DISABILITY',
+        'sf10_form137'                 => 'SF10, SF 10, FORM 137, PERMANENT ACADEMIC RECORD, PERMANENT RECORD',
+        'f137_not_sent_certification'  => 'NOT SENT, NOT BEEN SENT, F137-A, FORM 137',
+        'non_enrollment_certification' => 'NON-ENROLLMENT, NON ENROLLMENT, NOT ENROLLED',
+        'notarized_waiver'             => 'NOTARIZED WAIVER, WAIVER, CONCEALMENT, NULL AND VOID',
+        'als_certificate_completion'   => 'CERTIFICATE OF COMPLETION, ALTERNATIVE LEARNING SYSTEM, ALS',
+        'als_certificate_rating'       => 'CERTIFICATE OF RATING, ACCREDITATION AND EQUIVALENCY, ALS',
+        'als_passers_list'             => 'LIST OF PASSERS, NATIONAL LIST, ALS',
+        'honorable_dismissal'          => 'HONORABLE DISMISSAL, TRANSFER CREDENTIAL, CERTIFICATE OF TRANSFER',
+        'transcript_of_records'        => 'TRANSCRIPT OF RECORDS, TRANSCRIPT, CERTIFIED TRUE COPY OF GRADES',
+        'shifting_form'                => 'SHIFTING, APPLICATION FOR SHIFTING, SHIFTING FORM',
+        'copy_of_grades'               => 'COPY OF GRADES, GRADE SLIP, PUPSIS',
+        'health_information_form'      => 'HEALTH INFORMATION FORM, PUP-HIFS',
+        'info_enrollment_procedure'    => 'ADMISSION AND ENROLLMENT PROCEDURE, ENROLLMENT PROCEDURE',
+        'info_welcome'                 => 'WELCOME TO THE PUP COMMUNITY',
+        'info_admission_criteria'      => 'ADMISSION CRITERIA',
+    ];
+}
+
+function fillRequirementKeywords($conn, array $row, $seed)
+{
+    $current = trim((string) ($row['keywords'] ?? ''));
+    $stamp = md5((string) $row['label'] . '|' . (string) $row['ai_hint']);
+    $auto = (string) ($row['keywords_auto'] ?? '');
+    if ($current !== '' && ($auto === '' || $auto === $stamp)) {
+        return $current;
+    }
+    if ($current === '' && $seed !== '') {
+        $keywords = $seed;
+        $stamp = null;
+    } else {
+        $keywords = generateRequirementKeywords($row['label'], $row['ai_hint']);
+    }
+    if ($keywords === '' || $keywords === $current) {
+        return $current;
+    }
+    $stmt = mysqli_prepare($conn, "UPDATE requirement_documents SET keywords = ?, keywords_auto = ? WHERE code = ?");
+    if ($stmt) {
+        mysqli_stmt_bind_param($stmt, 'sss', $keywords, $stamp, $row['code']);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        error_log('Requirement keywords generated for ' . $row['code'] . ': ' . $keywords);
+    }
+    return $keywords;
+}
+
+function generateRequirementKeywords($label, $hint)
+{
+    $generic = ['PUP', 'FORM', 'PAGE', 'COPY', 'COPIES', 'ORIGINAL', 'PHOTOCOPY', 'DOCUMENT', 'DOCUMENTS', 'CERTIFICATE',
+        'CERTIFICATION', 'STUDENT', 'STUDENTS', 'INFO', 'INFO PAGE', 'REQUIRED', 'OPTIONAL', 'IF APPLICABLE', 'APPLICABLE',
+        'SIGNED', 'NOTARIZED', 'SCHOOL', 'NAME', 'DATE', 'THE', 'AND', 'OF'];
+    $clean = function ($text) {
+        $text = preg_replace('/\b(PHOTOCOPY OF|PHOTO COPY OF|ORIGINAL COPY OF|ORIGINAL|DULY SIGNED|SIGNED|IF APPLICABLE|\d+\s*COPIES|\d+\s*COPY)\b/i', ' ', (string) $text);
+        $text = preg_replace('/\s+/', ' ', $text);
+        return trim($text, " \t-–—:.,'\"");
+    };
+    $found = [];
+    $add = function ($text) use (&$found, $clean, $generic) {
+        $text = $clean($text);
+        $normalized = trim(normalizeKeywordText($text));
+        if (strlen($normalized) < 3 || strlen($normalized) > 60 || in_array($normalized, $generic, true) || isset($found[$normalized])) {
+            return;
+        }
+        $found[$normalized] = strtoupper($text);
+    };
+
+    $label = (string) $label;
+    if (strpos($label, '/') === false) {
+        $add(preg_replace('/\(.*?\)/', '', $label));
+    }
+    foreach (preg_split('/\s*(?:\/|\(|\)|\bOR\b|;)\s*/i', $label) as $part) {
+        $add($part);
+    }
+    $hint = (string) $hint;
+    if (preg_match_all('/["“”]([^"“”]{3,60})["“”]/u', $hint, $quoted)) {
+        foreach ($quoted[1] as $phrase) {
+            $add($phrase);
+        }
+    }
+    if (preg_match_all('/\b[A-Z0-9][A-Z0-9\-\.\/&\']*(?:\s+[A-Z0-9][A-Z0-9\-\.\/&\']*)+\b/', $hint, $caps)) {
+        foreach ($caps[0] as $phrase) {
+            if (preg_match('/[A-Z]{2,}/', $phrase)) {
+                $add($phrase);
+            }
+        }
+    }
+    if (preg_match_all('/\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*\b/', $hint . ' ' . $label, $codes)) {
+        foreach ($codes[0] as $code) {
+            if (strlen($code) >= 3 && preg_match('/[0-9]/', $code)) {
+                $add($code);
+            }
+        }
+    }
+    return implode(', ', array_slice(array_values($found), 0, 8));
+}
+
+function normalizeKeywordText($text)
+{
+    return ' ' . trim(preg_replace('/[^A-Z0-9]+/', ' ', strtoupper((string) $text))) . ' ';
+}
+
+function requirementKeywordList(array $req)
+{
+    $raw = trim((string) ($req['keywords'] ?? ''));
+    if ($raw === '') {
+        $label = (string) ($req['label'] ?? '');
+        $parts = preg_split('/[\/()]+/', $label);
+        $parts[] = preg_replace('/\(.*?\)/', '', $label);
+        $raw = implode(',', $parts);
+    }
+    $list = [];
+    foreach (preg_split('/[,;\n]+/', $raw) as $keyword) {
+        $normalized = trim(normalizeKeywordText($keyword));
+        if (strlen($normalized) >= 2) {
+            $list[$normalized] = trim($keyword);
+        }
+    }
+    return $list;
+}
+
+function systemClassifyPage($text, $gradeLevel = '', $aiCode = null)
+{
+    $plain = normalizeKeywordText($text);
+    if (trim($plain) === '') {
+        return null;
+    }
+    $cardCodes = ['grade_10_card', 'grade_11_card', 'grade_12_card'];
+    $candidates = [];
+    foreach (getDocumentRequirements() as $code => $req) {
+        $score = 0;
+        $longest = '';
+        foreach (requirementKeywordList($req) as $normalized => $keyword) {
+            if (strpos($plain, ' ' . $normalized . ' ') !== false) {
+                $score++;
+                if (strlen($normalized) > strlen(normalizeKeywordText($longest))) {
+                    $longest = $keyword;
+                }
+            }
+        }
+        if ($score > 0) {
+            $candidates[$code] = ['score' => $score, 'length' => strlen($longest), 'keyword' => $longest];
+        }
+    }
+    if (!$candidates) {
+        return null;
+    }
+    uasort($candidates, fn($a, $b) => [$b['score'], $b['length']] <=> [$a['score'], $a['length']]);
+    $top = reset($candidates);
+    $tied = array_keys(array_filter($candidates, fn($c) => $c['score'] === $top['score'] && $c['length'] === $top['length']));
+
+    if (array_diff($tied, $cardCodes) === []) {
+        $grade = in_array((string) $gradeLevel, ['10', '11', '12'], true) ? (string) $gradeLevel : '';
+        if ($grade === '' && preg_match('/GRADE\s*(?:LEVEL)?\s*[:\-]?\s*(1[0-2])\b/i', (string) $text, $g)) {
+            $grade = $g[1];
+        }
+        $code = 'grade_' . $grade . '_card';
+        if ($grade === '' || !in_array($code, $tied, true)) {
+            return null;
+        }
+        return ['code' => $code, 'rule' => $top['keyword'] . ' + Grade ' . $grade];
+    }
+    if (count($tied) > 1) {
+        return null;
+    }
+    return ['code' => $tied[0], 'rule' => $top['keyword']];
+}
+
+function localOcrBinary()
+{
+    static $bin = null;
+    if ($bin !== null) {
+        return $bin === '' ? null : $bin;
+    }
+    $candidates = [
+        getenv('TESSERACT_PATH') ?: '',
+        'C:\\Program Files\\Tesseract-OCR\\tesseract.exe',
+        'C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe',
+        '/usr/bin/tesseract',
+        '/usr/local/bin/tesseract',
+        '/opt/homebrew/bin/tesseract',
+    ];
+    foreach ($candidates as $candidate) {
+        if ($candidate !== '' && is_file($candidate)) {
+            $bin = $candidate;
+            return $bin;
+        }
+    }
+    $bin = '';
+    return null;
+}
+
+function localOcrPages($pdfPath, array $pages, $workDir, $fullPage = false)
+{
+    $bin = localOcrBinary();
+    if ($bin === null || !$pages || !defined('PDFTOPPM_BIN')) {
+        return [];
+    }
+    $commands = [];
+    $bases = [];
+    foreach ($pages as $page) {
+        $base = rtrim($workDir, '/\\') . '/' . uniqid('ocr_', true);
+        $render = escapeshellarg(PDFTOPPM_BIN) . ' -gray '
+            . ($fullPage ? '-scale-to 1700' : '-scale-to-x 1700 -scale-to-y -1 -x 0 -y 0 -W 1700 -H 700')
+            . ' -singlefile -f ' . (int) $page . ' -l ' . (int) $page . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($base);
+        $ocr = escapeshellarg($bin) . ' ' . escapeshellarg($base . '.pgm') . ' ' . escapeshellarg($base)
+            . ' --psm ' . ($fullPage ? '1' : '3') . ' -l eng';
+        $commands[$page] = $render . ' && ' . $ocr;
+        $bases[$page] = $base;
+    }
+    aiRunCommandsParallel($commands, 4);
+    $texts = [];
+    foreach ($bases as $page => $base) {
+        $text = @file_get_contents($base . '.txt');
+        $texts[$page] = $text === false ? '' : trim($text);
+        @unlink($base . '.pgm');
+        @unlink($base . '.txt');
+    }
+    return $texts;
+}
+
 function groupClassifiedPages(array $pages)
 {
     $groups  = [];
@@ -823,35 +1082,22 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     if (!aiInternetReachable()) {
         aiSkipReason('offline');
     }
-    if (aiSkipReason() === null && $pageCount <= 3 && function_exists('startHealthPhotoRender')) {
-        for ($p = 1; $p <= $pageCount; $p++) {
-            startHealthPhotoRender($destPath, $p);
-        }
-        $earlySar = $pageCount === 1 && empty($options['skip_sar_photo']) && function_exists('startSarPhotoRender');
-        if ($earlySar) {
-            startSarPhotoRender($destPath, 1);
-        }
-        if ($pageCount === 1 && function_exists('prepareHealthPhotoEarly') && function_exists('aiAddIdleTask')) {
-            aiAddIdleTask(function () use ($destPath) {
-                prepareHealthPhotoEarly($destPath, 1);
-            });
-            if ($earlySar && function_exists('prepareSarPhotoEarly')) {
-                aiAddIdleTask(function () use ($destPath) {
-                    prepareSarPhotoEarly($destPath, 1);
-                });
-            }
-        }
-    }
-
     $aiCache      = [];
     $aiFailed     = false;
     $renderFailed = false;
-    $readPages = function (array $pages) use (&$aiCache, &$aiFailed, &$renderFailed, $destPath, $uploadDir) {
+    $systemMatch = [];
+    $readPages = function (array $pages) use (&$aiCache, &$aiFailed, &$renderFailed, &$systemMatch, $destPath, $uploadDir) {
         $pages = array_values(array_unique(array_diff($pages, array_keys($aiCache))));
         if (!$pages || aiSkipReason() !== null) {
             return;
         }
-        foreach (aiReadPdfPages($destPath, $pages, $uploadDir) as $page => $read) {
+        $knownTypes = [];
+        foreach ($pages as $page) {
+            if (!empty($systemMatch[$page]['code'])) {
+                $knownTypes[$page] = $systemMatch[$page]['code'];
+            }
+        }
+        foreach (aiReadPdfPages($destPath, $pages, $uploadDir, $knownTypes) as $page => $read) {
             $hasText = $read['text'] !== null && trim($read['text']) !== '';
             if ($read['render_failed']) {
                 $renderFailed = true;
@@ -870,19 +1116,90 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
         $pageTexts[$p] = pdfPageText($destPath, $p);
         if (preg_match_all('/[A-Za-z]/', $pageTexts[$p]) < 40) {
             $scannedPages[] = $p;
-            if ($singleFile) {
-                $readPages([$p]);
-                $found = $aiCache[$p]['doc_type'] ?? null;
-                if ($found !== null && $found !== 'none' && getDocumentRequirement($found) !== null) {
-                    break;
-                }
-            }
         } elseif ($singleFile) {
             break;
         }
     }
     $timings['pdf_text'] = microtime(true) - $startedAt;
     $mark = microtime(true);
+
+    $ocrTexts = $scannedPages ? localOcrPages($destPath, $scannedPages, $uploadDir) : [];
+    foreach ($pageTexts as $p => $text) {
+        $source = in_array($p, $scannedPages, true) ? ($ocrTexts[$p] ?? '') : $text;
+        $systemMatch[$p] = systemClassifyPage(substr($source, 0, 3000));
+    }
+    $matchedPages = array_keys(array_filter($systemMatch));
+    if ($ocrTexts && !in_array($scannedPages[0], $matchedPages, true) && ($scannedPages[0] === 1 || !$matchedPages)) {
+        $retryPages = [$scannedPages[0]];
+        if (!$singleFile && function_exists('aiSidewaysPages')) {
+            $retryPages = array_values(array_unique(array_merge($retryPages, array_diff(array_keys(aiSidewaysPages($destPath, $scannedPages, $uploadDir)), $matchedPages))));
+        }
+        foreach (localOcrPages($destPath, $retryPages, $uploadDir, true) as $p => $text) {
+            $match = systemClassifyPage(substr($text, 0, 3000));
+            if ($match !== null) {
+                $ocrTexts[$p] = $text;
+                $systemMatch[$p] = $match;
+            }
+        }
+        $matchedPages = array_keys(array_filter($systemMatch));
+    }
+    foreach ($systemMatch as $p => $match) {
+        if ($match !== null) {
+            error_log('System classification (local OCR): page ' . $p . ' = ' . $match['code'] . ' (matched "' . $match['rule'] . '").');
+        }
+    }
+    if ($ocrTexts && !$matchedPages) {
+        error_log('System classification (local OCR): no requirement could be identified from the keywords, using AI as fallback.');
+    }
+    $timings['ocr'] = microtime(true) - $mark;
+    $mark = microtime(true);
+
+    $photoTypes = array_column(array_filter($systemMatch), 'code');
+    $wantHealthPhoto = in_array('health_information_form', $photoTypes, true) || (!$photoTypes && aiSkipReason() === null);
+    $wantSarPhoto = in_array('sar_form', $photoTypes, true) || (!$photoTypes && aiSkipReason() === null);
+    if ($pageCount <= 3 && function_exists('startHealthPhotoRender') && ($wantHealthPhoto || $wantSarPhoto)) {
+        if ($wantHealthPhoto) {
+            for ($p = 1; $p <= $pageCount; $p++) {
+                startHealthPhotoRender($destPath, $p);
+            }
+        }
+        $earlySar = $wantSarPhoto && $pageCount === 1 && empty($options['skip_sar_photo']) && function_exists('startSarPhotoRender');
+        if ($earlySar) {
+            startSarPhotoRender($destPath, 1);
+        }
+        if ($pageCount === 1 && function_exists('aiAddIdleTask')) {
+            if ($wantHealthPhoto && function_exists('prepareHealthPhotoEarly')) {
+                aiAddIdleTask(function () use ($destPath) {
+                    prepareHealthPhotoEarly($destPath, 1);
+                });
+            }
+            if ($earlySar && function_exists('prepareSarPhotoEarly')) {
+                aiAddIdleTask(function () use ($destPath) {
+                    prepareSarPhotoEarly($destPath, 1);
+                });
+            }
+        }
+    }
+
+    $continuationPages = [];
+    if ($singleFile && $matchedPages) {
+        foreach ($scannedPages as $p) {
+            if ($p > $matchedPages[0] && $systemMatch[$p] === null) {
+                $continuationPages[] = $p;
+            }
+        }
+    }
+    $aiClassifyPages = array_values(array_filter($scannedPages, fn($p) => $systemMatch[$p] === null && !in_array($p, $continuationPages, true)));
+    if ($singleFile && !$matchedPages) {
+        foreach ($aiClassifyPages as $p) {
+            $readPages([$p]);
+            $found = $aiCache[$p]['doc_type'] ?? null;
+            if ($found !== null && $found !== 'none' && getDocumentRequirement($found) !== null) {
+                break;
+            }
+        }
+        $aiClassifyPages = array_keys($aiCache);
+    }
     $visionFirst = [];
     if (count($pageTexts) <= 3) {
         foreach ($pageTexts as $p => $text) {
@@ -892,9 +1209,9 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
             }
         }
     }
-    $readPages(array_merge($scannedPages, $visionFirst));
+    $readPages(array_merge($aiClassifyPages, $visionFirst));
     foreach ($scannedPages as $p) {
-        $pageTexts[$p] = $aiCache[$p]['text'] ?? '';
+        $pageTexts[$p] = $aiCache[$p]['text'] ?? ($ocrTexts[$p] ?? '');
     }
     $timings['ai_read'] = microtime(true) - $mark;
     $mark = microtime(true);
@@ -902,20 +1219,24 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     $codes = array_keys(getDocumentRequirements());
     $visionPages = [];
     foreach ($pageTexts as $p => $text) {
-        $type = $aiCache[$p]['doc_type'] ?? null;
+        if ($systemMatch[$p] !== null) {
+            $visionPages[$p] = ['code' => $systemMatch[$p]['code'], 'confidence' => 'high', 'reason' => 'Matched "' . $systemMatch[$p]['rule'] . '" on the page.'];
+            continue;
+        }
+        $type = in_array($p, $continuationPages, true) ? 'none' : ($aiCache[$p]['doc_type'] ?? null);
         if ($type === null || ($type !== 'none' && !in_array($type, $codes, true))) {
             $visionPages = null;
             break;
         }
         $visionPages[$p] = [
             'code'       => $type === 'none' ? null : $type,
-            'confidence' => $type === 'none' ? 'none' : $aiCache[$p]['doc_confidence'],
+            'confidence' => $type === 'none' ? 'none' : ($aiCache[$p]['doc_confidence'] ?? 'low'),
             'reason'     => '',
         ];
     }
 
     $ai = $visionPages
-        ? ['pages' => $visionPages, 'error' => null, 'source' => aiUsedSource()]
+        ? ['pages' => $visionPages, 'error' => null, 'source' => $matchedPages ? 'system' : aiUsedSource()]
         : (aiSkipReason() !== null ? ['pages' => [], 'error' => null, 'source' => null] : aiClassifyPages($pageTexts));
     $timings['classify'] = microtime(true) - $mark;
     if ($ai['error'] !== null && !$visionPages && aiSkipReason() === null && aiTimeLeft() <= 0) {
@@ -930,16 +1251,35 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
         $c = $ai['pages'][$p] ?? ['code' => null, 'confidence' => 'none', 'reason' => ''];
         $pages[] = ['page' => $p, 'code' => $c['code'], 'confidence' => $c['confidence'], 'reason' => $c['reason']];
     }
+    $systemClassified = 0;
     foreach ($pages as &$pageInfo) {
-        $pageText = (string) ($aiCache[$pageInfo['page']]['text'] ?? ($pageTexts[$pageInfo['page']] ?? ''));
-        if ($pageInfo['code'] !== 'health_information_form'
-            && preg_match('/HEALTH\s+INFORMATION\s+FORM/i', substr($pageText, 0, 1200))) {
-            $pageInfo['code'] = 'health_information_form';
-            $pageInfo['confidence'] = 'high';
-            $pageInfo['reason'] = 'The page title is Health Information Form.';
+        $pageNo = $pageInfo['page'];
+        if (!empty($systemMatch[$pageNo])) {
+            $systemClassified++;
+            continue;
         }
+        $pageText = (string) ($aiCache[$pageNo]['text'] ?? ($pageTexts[$pageNo] ?? ''));
+        $match = systemClassifyPage(substr($pageText, 0, 1500), (string) ($aiCache[$pageNo]['grade_level'] ?? ''), $pageInfo['code']);
+        if ($match === null) {
+            if ($pageInfo['code'] !== null) {
+                error_log('System classification: page ' . $pageNo . ' not matched, using the AI result ' . $pageInfo['code'] . '.');
+            }
+            continue;
+        }
+        $systemClassified++;
+        if ($match['code'] !== $pageInfo['code']) {
+            error_log('System classification: page ' . $pageNo . ' = ' . $match['code'] . ' (matched "' . $match['rule'] . '"; AI said ' . ($pageInfo['code'] ?? 'none') . ').');
+        } else {
+            error_log('System classification: page ' . $pageNo . ' = ' . $match['code'] . ' (matched "' . $match['rule'] . '").');
+        }
+        $pageInfo['code'] = $match['code'];
+        $pageInfo['confidence'] = 'high';
+        $pageInfo['reason'] = 'Matched "' . $match['rule'] . '" on the page.';
     }
     unset($pageInfo);
+    if ($systemClassified > 0) {
+        $ai['source'] = 'system';
+    }
 
     $grouped = groupClassifiedPages($pages);
     $groups  = $grouped['groups'];
@@ -1148,8 +1488,11 @@ function processDocumentUpload($destPath, $originalName, $uploadDir, array $opti
     }
     if (aiSkipReason() !== null) {
         $warnings = array_values(array_filter($warnings, fn($w) => strpos($w, 'AI classification failed') !== 0));
+        $allIdentified = $groups && !in_array(null, array_column($groups, 'code'), true);
         array_unshift($warnings, (aiSkipReason() === 'slow' ? 'The internet is too slow' : 'There is no internet connection')
-            . ', so the file was uploaded without AI. Choose the document manually and type the student information.');
+            . ($allIdentified
+                ? ', so the student information was not read. Type the student information.'
+                : ', so the file was uploaded without AI. Choose the document manually and type the student information.'));
         if ($healthNotUploaded) {
             $warnings[] = 'The Health Information Form page was not uploaded; upload it again once the internet is back.';
         }

@@ -4,6 +4,7 @@ include 'security_headers.php';
 session_start();
 require_once __DIR__ . '/activity_log.php';
 require_once __DIR__ . '/access_control.php';
+require_once __DIR__ . '/two_factor.php';
 
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 header('Pragma: no-cache');
@@ -34,6 +35,10 @@ if (!isset($_SESSION['csrf_token'])) {
 }
 
 $error = "";
+if (!empty($_SESSION['signin_notice'])) {
+    $error = $_SESSION['signin_notice'];
+    unset($_SESSION['signin_notice']);
+}
 if (isset($_GET['deactivated'])) {
     $error = $_GET['deactivated'] === 'access'
         ? "Your access has been removed. Please contact the Super Admin."
@@ -147,39 +152,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
                 ? "Your account is inactive. Please contact the Super Admin."
                 : "Your account is inactive. Please contact super admin.";
         } else {
-            session_regenerate_id(true);
-            $_SESSION['email'] = $row['email'];
-            $_SESSION['role'] = $row['role'];
-            $_SESSION['name'] = $row['name'];
-            $_SESSION['is_first_login'] = $row['is_first_login']; 
-
-            logActivity('login', 'Signed in as ' . $row['role'], [
-                'user_id'   => $row['id'] ?? null,
-                'user_name' => $row['name'],
-                'user_role' => $row['role'],
-                'details'   => ['email' => $row['email']],
-            ]);
-
-            if($row['is_first_login'] == 1 && in_array($row['role'], ['Admin', 'OJT Intern'], true)) {
-                header("Location: change_password.php");
-                exit();
-            }
-
-            if ($row['role'] == 'Super Admin') {
-                header("Location: superadmin/dashboard.php");
-                exit();
-            } elseif (in_array($row['role'], ['Admin', 'OJT Intern'], true)) {
-                header("Location: admin/student_directory.php");
-                exit();
-            }
+            tfBegin($conn, $row);
         }
-    } elseif (!$row) {
-        logActivity('login_failed', 'Failed sign-in attempt for ' . $email . ' (email not registered)', [
-            'user_name' => $email,
-            'user_role' => 'Unknown account',
-            'details'   => ['email' => $email, 'reason' => 'Email not registered'],
-        ]);
-        $error = "Invalid email or password.";
     } else {
         $attempts  = recordFailedLogin($conn, $attemptKey);
         $remaining = MAX_LOGIN_ATTEMPTS - $attempts;
@@ -200,7 +174,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
                 'details'   => ['email' => $email, 'locked_minutes' => LOGIN_LOCK_MINUTES],
             ]);
         } else {
-            $error = "Invalid email or password. You have " . $remaining . " attempt" . ($remaining === 1 ? '' : 's') . " left.";
+            $error = "Invalid email or password.";
         }
     }
     }

@@ -138,6 +138,8 @@ document.addEventListener('DOMContentLoaded', function () {
         if (replaceBtnLabel) {
             replaceBtnLabel.innerHTML = '<i class="bi bi-arrow-repeat"></i> Replace Photo';
         }
+        const removeBtn = document.getElementById('removePhotoBtn');
+        if (removeBtn) removeBtn.hidden = false;
     }
 
     function resetStudentPhoto() {
@@ -159,6 +161,15 @@ document.addEventListener('DOMContentLoaded', function () {
         if (replaceBtnLabel) {
             replaceBtnLabel.innerHTML = '<i class="bi bi-upload"></i> Upload Photo';
         }
+        const removeBtn = document.getElementById('removePhotoBtn');
+        if (removeBtn) removeBtn.hidden = true;
+    }
+
+    const removePhotoBtn = document.getElementById('removePhotoBtn');
+    if (removePhotoBtn) {
+        removePhotoBtn.addEventListener('click', function () {
+            resetStudentPhoto();
+        });
     }
 
     const form               = document.getElementById('addStudentForm');

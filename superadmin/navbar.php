@@ -11,19 +11,24 @@
 
 <link href="../css/bootstrap-icons.css" rel="stylesheet">
 <link href="../css/navbar-superadmin.css" rel="stylesheet">
+<link href="../css/update-password.css?v=<?= @filemtime(__DIR__ . '/../css/update-password.css') ?>" rel="stylesheet">
 <script src="../js/bootstrap.bundle.min.js"></script>
 <script src="../js/sidebar.js"></script>
+<script src="../js/update-password.js?v=<?= @filemtime(__DIR__ . '/../js/update-password.js') ?>" defer></script>
 
 <?php
     $pageTitles = [
         'dashboard.php'       => ['Dashboard', 'Overview of student records and document requirements.'],
-        'admin_management.php' => ['User Management', 'Manage Admin and OJT Intern accounts and who can access records.'],
+        'user_management.php' => ['User Management', 'Manage Admin and OJT Intern accounts and who can access records.'],
         'course_management.php' => ['Course Management', 'Manage the programs offered and how they are recognized in documents.'],
         'requirements.php'    => ['Requirements', 'Manage the documents required for regular, shiftee and transferee students.'],
         'backup_logs.php'     => ['Backup & Logs', 'Keep records safe and see who did what, and when.'],
         'report_template.php' => ['Report Template', 'Change the letterhead used on the student reports.'],
     ];
     [$pageTitle, $pageSubtitle] = $pageTitles[$currentPage] ?? ['PUP eRecords', ''];
+    if (empty($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
     $nameParts = preg_split('/[\s,]+/', trim((string) $userName), -1, PREG_SPLIT_NO_EMPTY);
     $userInitials = strtoupper(substr($nameParts[0] ?? '', 0, 1) . substr($nameParts[count($nameParts) - 1] ?? '', 0, 1));
 ?>
@@ -49,7 +54,7 @@
             <a class="admin-menu-item <?php echo ($currentPage == 'dashboard.php') ? 'active' : ''; ?>" href="dashboard.php" title="Dashboard">
                 <i class="bi bi-grid-1x2"></i><span>Dashboard</span>
             </a>
-            <a class="admin-menu-item <?php echo ($currentPage == 'admin_management.php') ? 'active' : ''; ?>" href="admin_management.php" title="User Management">
+            <a class="admin-menu-item <?php echo ($currentPage == 'user_management.php') ? 'active' : ''; ?>" href="user_management.php" title="User Management">
                 <i class="bi bi-people"></i><span>User Management</span>
             </a>
             <a class="admin-menu-item <?php echo ($currentPage == 'course_management.php') ? 'active' : ''; ?>" href="course_management.php" title="Programs Offered">
@@ -89,16 +94,64 @@
         <?php endif; ?>
     </div>
 
-    <div class="admin-user">
-        <span class="admin-user-trigger" id="userDropdown">
+    <div class="admin-user dropdown">
+        <button type="button" class="admin-user-trigger account-menu-trigger" id="userDropdown" data-bs-toggle="dropdown" aria-expanded="false">
             <span class="admin-avatar"><?php echo htmlspecialchars($userInitials); ?></span>
             <span class="admin-user-text">
                 <span class="navbar-username"><?php echo htmlspecialchars($userName); ?></span>
                 <small class="navbar-role"><?php echo htmlspecialchars($userRole); ?></small>
             </span>
-        </span>
+            <i class="bi bi-chevron-down account-menu-caret"></i>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end account-menu" aria-labelledby="userDropdown">
+            <li>
+                <button type="button" class="dropdown-item" data-bs-toggle="modal" data-bs-target="#changePasswordModal">
+                    <i class="bi bi-key"></i>Change password
+                </button>
+            </li>
+        </ul>
     </div>
 </header>
+
+<div class="modal fade" id="changePasswordModal" tabindex="-1" aria-labelledby="changePasswordTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <form id="changePasswordForm" action="update_password.php" method="POST" novalidate>
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token']); ?>">
+                <div class="modal-header cp-header">
+                    <span class="cp-icon"><i class="bi bi-key"></i></span>
+                    <div>
+                        <h5 class="modal-title" id="changePasswordTitle">Change password</h5>
+                        <p class="cp-subtitle">Use at least 8 characters with at least one letter and one number.</p>
+                    </div>
+                </div>
+                <div class="modal-body cp-body">
+                    <div class="cp-success d-none" id="cpSuccess" role="status">
+                        <i class="bi bi-check-circle-fill"></i><span>Your password was changed.</span>
+                    </div>
+                    <div class="cp-fields" id="cpFields">
+                        <?php foreach (['current_password' => 'Current password', 'new_password' => 'New password', 'confirm_password' => 'Confirm new password'] as $cpName => $cpLabel): ?>
+                        <div class="cp-field">
+                            <label class="cp-label" for="cp_<?php echo $cpName; ?>"><?php echo $cpLabel; ?> <span class="cp-req">*</span></label>
+                            <div class="cp-input">
+                                <input type="password" class="form-control" id="cp_<?php echo $cpName; ?>" name="<?php echo $cpName; ?>" maxlength="72"
+                                       autocomplete="<?php echo $cpName === 'current_password' ? 'current-password' : 'new-password'; ?>" required>
+                                <button type="button" class="cp-toggle" data-target="cp_<?php echo $cpName; ?>" aria-label="Show password"><i class="bi bi-eye"></i></button>
+                            </div>
+                            <div class="cp-error" data-error-for="<?php echo $cpName; ?>"></div>
+                        </div>
+                        <?php endforeach; ?>
+                        <div class="cp-error cp-error-general" data-error-for=""></div>
+                    </div>
+                </div>
+                <div class="modal-footer cp-footer">
+                    <button type="button" class="btn cp-cancel" data-bs-dismiss="modal" id="cpCancelBtn">Cancel</button>
+                    <button type="submit" class="btn cp-save" id="cpSaveBtn">Save password</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
 
 <!-- Logout Modal -->
 <div class="modal fade" id="logoutModal" tabindex="-1" aria-hidden="true">

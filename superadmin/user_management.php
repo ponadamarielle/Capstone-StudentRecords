@@ -34,13 +34,11 @@ if (!isset($_SESSION['name']) || !isset($_SESSION['role']) || $_SESSION['role'] 
 $statusParam = in_array($_GET['status'] ?? '', ['all', 'active', 'inactive'], true) ? $_GET['status'] : 'all';
 $roleParam = in_array($_GET['role'] ?? '', OFFICE_ROLES, true) ? $_GET['role'] : '';
 $listQuery = http_build_query(array_filter(['status' => $statusParam === 'all' ? '' : $statusParam, 'role' => $roleParam], 'strlen'));
-$listUrl = 'admin_management.php' . ($listQuery !== '' ? '?' . $listQuery : '');
+$listUrl = 'user_management.php' . ($listQuery !== '' ? '?' . $listQuery : '');
 
 function accountRoleTerms($role)
 {
-    return $role === 'Admin'
-        ? ['off' => 'Deactivate', 'on' => 'Activate', 'offLog' => 'Deactivated', 'onLog' => 'Activated', 'note' => 'Deactivated']
-        : ['off' => 'Remove access', 'on' => 'Restore access', 'offLog' => 'Removed the access of', 'onLog' => 'Restored the access of', 'note' => 'Access removed'];
+    return ['off' => 'Deactivate', 'on' => 'Activate', 'offLog' => 'Deactivated', 'onLog' => 'Activated', 'note' => 'Deactivated'];
 }
 
 //php mailer
@@ -320,7 +318,7 @@ unset($_SESSION['um_reset_flash']);
     <link href="../css/bootstrap-icons.css" rel="stylesheet">
     <link href="../css/font.css" rel="stylesheet">
     <link href="../css/navbar-superadmin.css" rel="stylesheet">
-    <link href="../css/admin_management.css?v=<?= @filemtime(__DIR__ . '/../css/admin_management.css') ?>" rel="stylesheet">
+    <link href="../css/user_management.css?v=<?= @filemtime(__DIR__ . '/../css/user_management.css') ?>" rel="stylesheet">
 </head>
 <body>
 
@@ -599,6 +597,6 @@ unset($_SESSION['um_reset_flash']);
     data-show-add-modal="<?= (isset($error) && isset($_POST['add_admin'])) ? 'true' : 'false' ?>"
     data-show-toggle-error="<?= isset($toggleError) ? 'true' : 'false' ?>">
 </div>
-<script src="../js/admin_management.js?v=<?= @filemtime(__DIR__ . '/../js/admin_management.js') ?>"></script>
+<script src="../js/user_management.js?v=<?= @filemtime(__DIR__ . '/../js/user_management.js') ?>"></script>
 </body>
 </html>

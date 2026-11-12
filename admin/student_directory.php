@@ -209,6 +209,91 @@ function sarFrameLines($mask, $w, $h, $minRun, $maxGap, $band)
     return [$cols, $rows];
 }
 
+function sarPhotoByContent(array $ppm, $sx, $sy)
+{
+    $w = $ppm['width'];
+    $h = $ppm['height'];
+    $data = $ppm['data'];
+    $cell = 16;
+    $cols = intdiv($w, $cell);
+    $rows = intdiv($h, $cell);
+    $grid = [];
+    for ($cy = 0; $cy < $rows; $cy++) {
+        for ($cx = 0; $cx < $cols; $cx++) {
+            $ink = 0;
+            $n = 0;
+            for ($y = $cy * $cell + 2; $y < ($cy + 1) * $cell; $y += 4) {
+                for ($x = $cx * $cell + 2; $x < ($cx + 1) * $cell; $x += 4) {
+                    $o = ($y * $w + $x) * 3;
+                    $r = ord($data[$o]);
+                    $g = ord($data[$o + 1]);
+                    $b = ord($data[$o + 2]);
+                    $n++;
+                    if ($r + $g + $b < 600 || max($r, $g, $b) - min($r, $g, $b) > 40) {
+                        $ink++;
+                    }
+                }
+            }
+            if ($n > 0 && $ink / $n >= 0.45) {
+                $grid[$cy * $cols + $cx] = true;
+            }
+        }
+    }
+    $seen = [];
+    $best = null;
+    foreach (array_keys($grid) as $start) {
+        if (isset($seen[$start])) {
+            continue;
+        }
+        $queue = [$start];
+        $seen[$start] = true;
+        $cells = [];
+        while ($queue) {
+            $i = array_pop($queue);
+            $cells[] = $i;
+            $cx = $i % $cols;
+            $cy = intdiv($i, $cols);
+            foreach ([[$cx - 1, $cy], [$cx + 1, $cy], [$cx, $cy - 1], [$cx, $cy + 1]] as [$nx, $ny]) {
+                $j = $ny * $cols + $nx;
+                if ($nx >= 0 && $ny >= 0 && $nx < $cols && $ny < $rows && isset($grid[$j]) && !isset($seen[$j])) {
+                    $seen[$j] = true;
+                    $queue[] = $j;
+                }
+            }
+        }
+        if ($best === null || count($cells) > count($best)) {
+            $best = $cells;
+        }
+    }
+    if ($best === null || count($best) < 150) {
+        return null;
+    }
+    $xs = array_map(fn($i) => $i % $cols, $best);
+    $ys = array_map(fn($i) => intdiv($i, $cols), $best);
+    $top = min($ys);
+    $bottom = max($ys) + 1;
+    $left = min($xs);
+    $right = max($xs) + 1;
+    if (($bottom - $top) * $cell < 250 || ($right - $left) * $cell < 200 || ($right - $left) * $cell > 900) {
+        return null;
+    }
+    $headRows = $top + max(2, (int) round(($bottom - $top) * 0.3));
+    $headXs = [];
+    foreach ($best as $i) {
+        if (intdiv($i, $cols) < $headRows) {
+            $headXs[] = $i % $cols;
+        }
+    }
+    $centerX = (array_sum($headXs) / count($headXs) + 0.5) * $cell;
+    $size = (int) round(max(($bottom - $top), ($right - $left)) * $cell * 1.05);
+    $size = min($size, $w, $h);
+    $x = (int) round($centerX - $size / 2);
+    $y = (int) round($top * $cell - $size * 0.10);
+    $x = max(0, min($x, $w - $size));
+    $y = max(0, min($y, $h - $size));
+    return ['x' => $sx + $x, 'y' => $sy + $y, 'width' => $size, 'height' => $size];
+}
+
 function detectSarPhotoFrame($pdfPath, $page = 1)
 {
     $sx = 1650;
@@ -268,7 +353,11 @@ function detectSarPhotoFrame($pdfPath, $page = 1)
     }
 
     if (!$cols || !$rows) {
-        return null;
+        $content = sarPhotoByContent($ppm, $sx, $sy);
+        if ($content !== null) {
+            error_log('SAR photo: no frame lines, found by content, ' . $content['width'] . 'x' . $content['height'] . ' at ' . $content['x'] . ',' . $content['y'] . '.');
+        }
+        return $content;
     }
 
     $left  = min($cols) + $band - 1;
@@ -326,6 +415,56 @@ function writePngRgb($path, $width, $height, $rgb)
         . $chunk('IDAT', gzcompress($raw, 6))
         . $chunk('IEND', '');
     return file_put_contents($path, $png) !== false;
+}
+
+function photoSubjectOffset($w, $h, $data)
+{
+    if ($w < 50 || $h < 50 || strlen($data) < $w * $h * 3) {
+        return null;
+    }
+    $pw = max(4, (int) ($w * 0.08));
+    $ph = max(4, (int) ($h * 0.08));
+    $sum = [0, 0, 0];
+    $n = 0;
+    foreach ([0, $w - $pw] as $x0) {
+        for ($y = 0; $y < $ph; $y += 2) {
+            for ($x = $x0; $x < $x0 + $pw; $x += 2) {
+                $o = ($y * $w + $x) * 3;
+                $sum[0] += ord($data[$o]);
+                $sum[1] += ord($data[$o + 1]);
+                $sum[2] += ord($data[$o + 2]);
+                $n++;
+            }
+        }
+    }
+    $bg = [$sum[0] / $n, $sum[1] / $n, $sum[2] / $n];
+    $step = max(1, (int) ($w / 160));
+    $total = 0;
+    $moment = 0;
+    for ($y = (int) ($h * 0.10); $y < (int) ($h * 0.65); $y += $step) {
+        for ($x = 0; $x < $w; $x += $step) {
+            $o = ($y * $w + $x) * 3;
+            $diff = abs(ord($data[$o]) - $bg[0]) + abs(ord($data[$o + 1]) - $bg[1]) + abs(ord($data[$o + 2]) - $bg[2]);
+            if ($diff > 80) {
+                $total++;
+                $moment += $x;
+            }
+        }
+    }
+    if ($total < 50) {
+        return null;
+    }
+    return ($moment / $total) / $w - 0.5;
+}
+
+function photoIsOffCenter($w, $h, $data, $label)
+{
+    $offset = photoSubjectOffset($w, $h, $data);
+    if ($offset !== null && abs($offset) > 0.10) {
+        error_log($label . ': the person is not centered (' . ($offset < 0 ? 'left' : 'right') . ' by ' . round(abs($offset) * 100) . '%), so the photo was not used.');
+        return true;
+    }
+    return false;
 }
 
 function savePhotoWithTopSpace($pdfPath, $page, array $box, $photoBase, $spaceRatio = 0.10)
@@ -387,6 +526,9 @@ function savePhotoWithTopSpace($pdfPath, $page, array $box, $photoBase, $spaceRa
         ? chr((int) ($sum[0] / $count)) . chr((int) ($sum[1] / $count)) . chr((int) ($sum[2] / $count))
         : "\xFF\xFF\xFF";
 
+    if (photoIsOffCenter($w, $h, $data, 'SAR photo')) {
+        return false;
+    }
     $rgb = str_repeat(str_repeat($bg, $w), $space) . substr($data, 0, $w * $h * 3);
     $path = $photoBase . '.png';
     return writePngRgb($path, $w, $h + $space, $rgb) ? $path : null;
@@ -859,6 +1001,7 @@ function extractHealthPhoto($pdfPath, $page, array $fallback, $photoBase)
     ]];
 
     $best = null;
+    $fixed = null;
     foreach ($candidates as [$method, $candidate]) {
         $square = healthPhotoSquare($candidate);
         $square['x'] = max(0, $square['x']);
@@ -889,6 +1032,10 @@ function extractHealthPhoto($pdfPath, $page, array $fallback, $photoBase)
             }
         }
         $ratio = $count ? $skin / $count : 0;
+        if ($method === 'fixed position') {
+            $fixed = ['method' => $method, 'box' => $square, 'crop' => $crop, 'ratio' => $ratio];
+            continue;
+        }
         $fullSize = $square['width'] >= 450 && $square['width'] <= 720;
         if ($fullSize && $ratio >= 0.03 && ($best === null || empty($best['full']))) {
             $best = ['method' => $method, 'box' => $square, 'crop' => $crop, 'ratio' => $ratio, 'full' => true];
@@ -896,16 +1043,26 @@ function extractHealthPhoto($pdfPath, $page, array $fallback, $photoBase)
             $best = ['method' => $method, 'box' => $square, 'crop' => $crop, 'ratio' => $ratio, 'full' => false];
         }
     }
-    if ($best === null || $best['ratio'] < 0.03) {
-        error_log('Health form photo: no area that looks like a photo was found (best skin ' . round(($best['ratio'] ?? 0) * 100, 1) . '%).');
-        return null;
+    $useFixed = $best === null || $best['ratio'] < 0.03;
+    if (!$useFixed) {
+        $box = $best['box'];
+        [$outW, $outH, $outData] = tidyHealthPhotoCrop($box['width'], $box['height'], $best['crop']);
+        $useFixed = photoIsOffCenter($outW, $outH, $outData, 'Health form photo');
+        if (!$useFixed) {
+            error_log('Health form photo: found by ' . $best['method'] . ', ' . $box['width'] . 'x' . $box['height'] . ' at '
+                . ($box['x'] + $sx) . ',' . ($box['y'] + $sy) . ', skin ' . round($best['ratio'] * 100, 1) . '%.');
+        }
     }
-    $box = $best['box'];
-    $crop = $best['crop'];
-    error_log('Health form photo: found by ' . $best['method'] . ', ' . $box['width'] . 'x' . $box['height'] . ' at '
-        . ($box['x'] + $sx) . ',' . ($box['y'] + $sy) . ', skin ' . round($best['ratio'] * 100, 1) . '%.');
-
-    [$outW, $outH, $outData] = tidyHealthPhotoCrop($box['width'], $box['height'], $crop);
+    if ($useFixed) {
+        if ($fixed === null || $fixed['ratio'] < 0.03) {
+            error_log('Health form photo: no photo was found, not even in the fixed photo box (skin ' . round(($fixed['ratio'] ?? 0) * 100, 1) . '%).');
+            return null;
+        }
+        $box = $fixed['box'];
+        error_log('Health form photo: not detected, using the fixed photo box of the form, ' . $box['width'] . 'x' . $box['height'] . ' at '
+            . ($box['x'] + $sx) . ',' . ($box['y'] + $sy) . ', skin ' . round($fixed['ratio'] * 100, 1) . '%.');
+        [$outW, $outH, $outData] = tidyHealthPhotoCrop($box['width'], $box['height'], $fixed['crop']);
+    }
 
     $path = $photoBase . '.png';
     return writePngRgb($path, $outW, $outH, $outData) ? $path : null;
@@ -1027,7 +1184,11 @@ function extractIdPhoto($pdfPath, $docType, $page = 1)
     }
     $box = $idPhotoBoxes[$docType];
     if ($docType === 'sar_form') {
-        $frame = detectSarPhotoFrame($pdfPath, $page) ?? $box;
+        $frame = detectSarPhotoFrame($pdfPath, $page);
+        if ($frame === null) {
+            error_log('SAR photo: no photo was detected, so none was taken.');
+            return null;
+        }
         $box = sarPhotoBox($frame);
     }
 
@@ -1042,6 +1203,12 @@ function extractIdPhoto($pdfPath, $docType, $page = 1)
             return null;
         }
         $withSpace = savePhotoWithTopSpace($pdfPath, $page, $box, $photoBase, 0.075);
+        if ($withSpace === false) {
+            if (isset($generated)) {
+                @unlink($generated);
+            }
+            return null;
+        }
         if ($withSpace !== null) {
             return $withSpace;
         }
@@ -1072,6 +1239,12 @@ function extractIdPhoto($pdfPath, $docType, $page = 1)
 
     if ($docType === 'sar_form') {
         $withSpace = savePhotoWithTopSpace($pdfPath, $page, $box, $photoBase, 0.075);
+        if ($withSpace === false) {
+            if (isset($generated)) {
+                @unlink($generated);
+            }
+            return null;
+        }
         if ($withSpace !== null) {
             @unlink($generated);
             return $withSpace;
@@ -2073,6 +2246,9 @@ include 'navbar.php';
                 <input type="file" id="replacePhotoInput" name="photo" accept=".jpg,.jpeg,.png" hidden>
                 <button type="button" class="btn btn-sm btn-outline-secondary replace-photo-btn" id="replacePhotoBtn">
                     <i class="bi bi-upload"></i> Upload photo
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary replace-photo-btn remove-photo-btn" id="removePhotoBtn" hidden>
+                    <i class="bi bi-trash"></i> Remove photo
                 </button>
 
                 </div>

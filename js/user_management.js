@@ -30,7 +30,7 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
         var query = params.toString();
-        window.location = 'admin_management.php' + (query ? '?' + query : '');
+        window.location = 'user_management.php' + (query ? '?' + query : '');
     }
     document.querySelectorAll('.filter-tab').forEach(function (btn) {
         btn.addEventListener('click', function () {

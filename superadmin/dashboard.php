@@ -145,7 +145,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sy_action'])) {
                         'effect'      => 'Graduates and year levels of ' . $label . ' are updated after the Super Admin confirms on this date.',
                     ],
                 ]);
-                $flash = ['type' => 'success', 'message' => 'Saved. Graduating students of ' . $label . ' will be marked as GRADUATE after ' . date('F j, Y', strtotime($date)) . '.'];
+                $flash = ['type' => 'success', 'message' => 'Saved.'];
             }
         } elseif ($_POST['sy_action'] === 'clear' && $before !== '') {
             schoolYearClearEnd($endYear);

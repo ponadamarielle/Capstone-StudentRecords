@@ -111,3 +111,64 @@ function buildTemporaryPasswordEmail($name, $email, $password, $refNumber, $rese
 
     return [$html, $text];
 }
+
+function buildLoginCodeEmail($name, $code, $minutes)
+{
+    $e = fn($v) => htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8');
+    $date = (new DateTime('now', new DateTimeZone('Asia/Manila')))->format('F j, Y \a\t g:i A');
+    $first = trim(explode(' ', trim((string) $name))[0] ?? '') ?: 'there';
+    $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+
+    $html = '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Your sign-in code</title></head>'
+        . '<body style="margin:0;padding:0;background:#eceff3;">'
+        . '<div style="display:none;max-height:0;overflow:hidden;">Your PUP eRecords sign-in code is ' . $e($code) . '. It expires in ' . (int) $minutes . ' minutes.</div>'
+        . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eceff3;"><tr><td align="center" style="padding:32px 12px;">'
+        . '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e6dcd7;">'
+
+        . '<tr><td style="background:#6e0000;background-image:linear-gradient(135deg,#7d0000 0%,#560000 100%);padding:26px 32px 22px 32px;">'
+        . '<div style="font-family:Georgia,\'Times New Roman\',serif;font-size:20px;line-height:24px;color:#ffffff;font-weight:bold;">PUP eRecords</div>'
+        . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;letter-spacing:2px;color:#e8c9c9;text-transform:uppercase;margin-top:4px;">Polytechnic University of the Philippines &middot; Bi&ntilde;an Campus</div>'
+        . '</td></tr>'
+        . '<tr><td style="height:4px;background:#f5c542;font-size:0;line-height:0;">&nbsp;</td></tr>'
+
+        . '<tr><td style="padding:30px 32px 6px 32px;">'
+        . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;color:#6e0000;">Sign-in Verification</div>'
+        . '<h1 style="margin:8px 0 0 0;font-family:Georgia,\'Times New Roman\',serif;font-size:24px;line-height:31px;color:#3a0b0b;font-weight:normal;">Your sign-in code</h1>'
+        . '</td></tr>'
+
+        . '<tr><td style="padding:16px 32px 0 32px;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:24px;color:#3b3b3b;">'
+        . '<p style="margin:0 0 12px 0;">Hi ' . $e($first) . ',</p>'
+        . '<p style="margin:0;">Enter this code on the PUP eRecords sign-in page to finish signing in.</p>'
+        . '</td></tr>'
+
+        . '<tr><td align="center" style="padding:22px 32px 0 32px;">'
+        . '<span style="display:inline-block;padding:14px 26px;background:#fbf7f4;border:1px dashed #6e0000;border-radius:10px;font-family:\'Courier New\',Courier,monospace;font-size:32px;letter-spacing:8px;color:#6e0000;font-weight:bold;">' . $e($code) . '</span>'
+        . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#8a7b74;margin-top:10px;">This code expires in ' . (int) $minutes . ' minutes.</div>'
+        . '</td></tr>'
+
+        . '<tr><td style="padding:24px 32px 0 32px;">'
+        . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="background:#fff8e6;border-left:4px solid #e0a100;border-radius:6px;padding:14px 18px;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:20px;color:#5c5240;">'
+        . '<strong style="color:#8a6100;">Did not try to sign in?</strong> Someone may know your password. Do not share this code, and contact the Super Admin to change your password.'
+        . '</td></tr></table>'
+        . '</td></tr>'
+
+        . '<tr><td style="padding:24px 32px 30px 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:22px;color:#3b3b3b;">'
+        . '<p style="margin:0;">Regards,<br><span style="font-family:Georgia,serif;font-size:16px;color:#6e0000;font-weight:bold;">PUP eRecords</span><br>'
+        . '<span style="font-size:13px;color:#8a7b74;">PUP Bi&ntilde;an Campus</span></p>'
+        . '</td></tr>'
+
+        . '<tr><td style="background:#f6f7f9;border-top:1px solid #e3e6eb;padding:18px 32px;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:17px;color:#7a808a;">'
+        . 'This is an automated message from PUP eRecords sent on ' . $e($date) . ' (request from ' . $e($ip) . '). Please do not reply to this email.<br>'
+        . 'PUP Bi&ntilde;an Campus, Brgy. Zapote, Bi&ntilde;an City, Laguna &middot; &copy; ' . date('Y') . ' Polytechnic University of the Philippines'
+        . '</td></tr>'
+
+        . '</table></td></tr></table></body></html>';
+
+    $text = "Hi {$first},\n\n"
+        . "Your PUP eRecords sign-in code is: {$code}\n"
+        . "This code expires in {$minutes} minutes.\n\n"
+        . "If you did not try to sign in, do not share this code and contact the Super Admin to change your password.\n\n"
+        . "PUP eRecords\nPUP Biñan Campus";
+
+    return [$html, $text];
+}

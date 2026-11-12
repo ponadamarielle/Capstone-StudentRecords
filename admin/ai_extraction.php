@@ -1199,7 +1199,7 @@ function aiPageReadMessages(array $dataUrls)
     ];
 }
 
-function aiReadImages(array $imagePaths)
+function aiReadImages(array $imagePaths, array $extraBodies = [], &$extraReplies = null)
 {
     static $byFile = [];
     $results = array_fill_keys(array_keys($imagePaths), null);
@@ -1227,7 +1227,12 @@ function aiReadImages(array $imagePaths)
         $bodies[$key] = groqRequestBody(aiPageReadMessages($dataUrls), true, 700);
     }
 
-    foreach (groqChatMany($bodies) as $key => $reply) {
+    $extraReplies = [];
+    foreach (($bodies || $extraBodies) ? groqChatMany($bodies + $extraBodies) : [] as $key => $reply) {
+        if (isset($extraBodies[$key])) {
+            $extraReplies[$key] = $reply;
+            continue;
+        }
         $json = aiDecodeJson($reply);
         if ($json === null) {
             continue;
@@ -1360,7 +1365,7 @@ function aiSidewaysPages($pdfPath, array $pages, $workDir)
     return $sideways;
 }
 
-function aiReadPdfPages($pdfPath, array $pages, $workDir)
+function aiReadPdfPages($pdfPath, array $pages, $workDir, array $knownTypes = [])
 {
     $renderStart = microtime(true);
     $sideways = aiSidewaysPages($pdfPath, $pages, $workDir);
@@ -1370,6 +1375,8 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir)
     $commands = [];
     $files = [];
     $wideFiles = [];
+    $earlyHealth = [];
+    $earlySlip = [];
     foreach ($pages as $page) {
         [$cmd, $file] = isset($sideways[$page])
             ? aiPageFullRenderCommand($pdfPath, $page, $workDir)
@@ -1379,8 +1386,38 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir)
         if (!isset($sideways[$page]) && count($pages) <= 3) {
             [$commands['wide' . $page], $wideFiles[$page]] = aiPageWideRenderCommand($pdfPath, $page, $workDir);
         }
+        if (!isset($sideways[$page]) && ($knownTypes[$page] ?? '') === 'health_information_form') {
+            [$commands['health' . $page], $earlyHealth[$page]] = aiHealthNumberCropCommand($pdfPath, $page, $workDir);
+            $files[$page][] = $earlyHealth[$page];
+        }
     }
     aiRunCommandsParallel($commands);
+    $slipCommandsEarly = [];
+    foreach ($pages as $page) {
+        if (($knownTypes[$page] ?? '') === 'route_approval_slip' && isset($wideFiles[$page]) && is_file($wideFiles[$page])) {
+            $band = aiRouteSlipBandCommand($pdfPath, $page, $wideFiles[$page], $workDir);
+            if ($band !== null) {
+                [$slipCommandsEarly[$page], $earlySlip[$page]] = $band;
+                $files[$page][] = $earlySlip[$page];
+            }
+        }
+    }
+    if ($slipCommandsEarly) {
+        aiRunCommandsParallel($slipCommandsEarly);
+    }
+    $extraBodies = [];
+    foreach ($earlyHealth as $page => $cropFile) {
+        $body = aiHealthNumberBody($cropFile);
+        if ($body !== null) {
+            $extraBodies['health_' . $page] = $body;
+        }
+    }
+    foreach ($earlySlip as $page => $bandFile) {
+        $body = aiRouteSlipBody($bandFile);
+        if ($body !== null) {
+            $extraBodies['slip_' . $page] = $body;
+        }
+    }
     if (microtime(true) - $renderStart >= 5) {
         error_log(sprintf('AI page render was slow: %.2fs for page(s) %s.', microtime(true) - $renderStart, implode(', ', $pages)));
     }
@@ -1398,9 +1435,28 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir)
         }
     }
 
-    foreach (aiReadImages($images) as $page => $read) {
+    $extraReplies = [];
+    foreach (aiReadImages($images, $extraBodies, $extraReplies) as $page => $read) {
         if ($read !== null) {
             $results[$page] = $read + $results[$page];
+        }
+    }
+    foreach ($knownTypes as $page => $code) {
+        if (isset($results[$page]) && $results[$page]['text'] !== null && is_string($code) && $code !== '') {
+            $results[$page]['doc_type'] = $code;
+        }
+    }
+    $doneHealth = [];
+    $doneSlip = [];
+    foreach ($extraReplies as $key => $reply) {
+        [$kind, $page] = explode('_', $key, 2);
+        $page = (int) $page;
+        if ($kind === 'health') {
+            aiApplyHealthNumberReply($page, $reply, $results);
+            $doneHealth[$page] = true;
+        } elseif ($kind === 'slip') {
+            aiApplyRouteSlipReply($page, $reply, $results);
+            $doneSlip[$page] = true;
         }
     }
 
@@ -1452,7 +1508,7 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir)
 
     $slipPages = [];
     foreach ($results as $page => $read) {
-        if ((string) $read['doc_type'] === 'route_approval_slip' && !isset($sideways[$page]) && trim((string) $read['text']) !== '') {
+        if ((string) $read['doc_type'] === 'route_approval_slip' && !isset($sideways[$page]) && !isset($doneSlip[$page]) && trim((string) $read['text']) !== '') {
             if (isset($wideFiles[$page]) && is_file($wideFiles[$page])) {
                 $slipPages[$page] = $wideFiles[$page];
                 continue;
@@ -1466,19 +1522,15 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir)
         if (!empty($slipCommands)) {
             aiRunCommandsParallel($slipCommands);
         }
-        aiReadRouteSlipProgram($slipPages, $results, $workDir, $files);
+        aiReadRouteSlipProgram($slipPages, $results, $workDir, $files, $pdfPath);
     }
 
     $healthPages = [];
     $healthCommands = [];
     foreach ($results as $page => $read) {
-        if ((string) $read['doc_type'] === 'health_information_form' && !isset($sideways[$page]) && trim((string) $read['text']) !== '') {
-            $base = rtrim($workDir, '/\\') . '/' . uniqid('aihealth_', true);
-            $healthCommands[$page] = escapeshellarg(PDFTOPPM_BIN) . ' -jpeg -jpegopt quality=92 -scale-to-x 4000 -scale-to-y -1'
-                . ' -x 2400 -y 840 -W 1600 -H 480 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
-                . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($base);
-            $files[$page][] = $base . '.jpg';
-            $healthPages[$page] = $base . '.jpg';
+        if ((string) $read['doc_type'] === 'health_information_form' && !isset($sideways[$page]) && !isset($doneHealth[$page]) && trim((string) $read['text']) !== '') {
+            [$healthCommands[$page], $healthPages[$page]] = aiHealthNumberCropCommand($pdfPath, $page, $workDir);
+            $files[$page][] = $healthPages[$page];
         }
     }
     if ($healthPages) {
@@ -1543,67 +1595,145 @@ function aiPageWideRenderCommand($pdfPath, $page, $outDir)
     return [$cmd, $base . '.jpg'];
 }
 
-function aiReadRouteSlipProgram(array $slipPages, array $results, $workDir, array &$files)
+function aiRouteSlipBandCommand($pdfPath, $page, $wideFile, $workDir)
 {
-    if (!function_exists('imagecreatefromjpeg')) {
+    $size = is_file($wideFile) ? @getimagesize($wideFile) : false;
+    if (!$size || $size[0] <= 0 || !defined('PDFTOPPM_BIN')) {
+        return null;
+    }
+    $height = (int) round(1100 * $size[1] / $size[0]);
+    $base = rtrim($workDir, '/\\') . '/' . uniqid('aiband_', true);
+    $cmd = escapeshellarg(PDFTOPPM_BIN) . ' -jpeg -jpegopt quality=85 -scale-to-x 1100 -scale-to-y -1'
+        . ' -x 0 -y ' . (int) round($height * 0.45) . ' -W 1100 -H ' . (int) round($height * 0.30)
+        . ' -singlefile -f ' . (int) $page . ' -l ' . (int) $page . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($base);
+    return [$cmd, $base . '.jpg'];
+}
+
+function aiRouteSlipBody($bandFile)
+{
+    if (!is_file($bandFile)) {
+        return null;
+    }
+    $url = imageToDataUrlForAi($bandFile, 1100, 500000);
+    if ($url === null) {
+        return null;
+    }
+    return groqRequestBody([
+        ['role' => 'system', 'content' => "You read one part of a PUP Route and Approval Slip and reply with ONLY a JSON object: {\"program\": \"\", \"section\": \"\"}.\n"
+            . "Find Step 2 (College Interview and Tagging of Program). \"program\": the handwritten course written after Program:, exactly as written, usually an abbreviation such as BSIT, BSCPE, BSPSY, BSA. "
+            . "\"section\": the handwritten value after Section:, a single digit. A lone short vertical stroke that looks like I, l or | is the digit 1. "
+            . "Use \"\" only when the blank is truly empty."],
+        ['role' => 'user', 'content' => [
+            ['type' => 'text', 'text' => 'Read the Program and Section in Step 2.'],
+            ['type' => 'image_url', 'image_url' => ['url' => $url]],
+        ]],
+    ], true, 60);
+}
+
+function aiApplyRouteSlipReply($page, $reply, array $results)
+{
+    $json = aiDecodeJson($reply);
+    if ($json === null) {
         return;
+    }
+    $section = trim((string) ($json['section'] ?? ''));
+    $fields = sanitizeAiStudentFields([
+        'course'       => (string) ($json['program'] ?? ''),
+        'year_section' => $section !== '' ? 'Section ' . $section : '',
+    ]);
+    error_log('AI route slip re-check: program=' . ($json['program'] ?? '') . ', section=' . $section);
+    $text = trim((string) ($results[$page]['text'] ?? ''));
+    if ($text !== '' && ($fields['course'] !== '' || $fields['year_section'] !== '')) {
+        aiPageCache($text, $fields, true);
+    }
+}
+
+function aiReadRouteSlipProgram(array $slipPages, array $results, $workDir, array &$files, $pdfPath = '')
+{
+    if ($pdfPath === '') {
+        return;
+    }
+    $commands = [];
+    $bandFiles = [];
+    foreach ($slipPages as $page => $file) {
+        $band = aiRouteSlipBandCommand($pdfPath, $page, $file, $workDir);
+        if ($band !== null) {
+            [$commands[$page], $bandFiles[$page]] = $band;
+            $files[$page][] = $bandFiles[$page];
+        }
+    }
+    if ($commands) {
+        aiRunCommandsParallel($commands);
     }
     $bodies = [];
-    foreach ($slipPages as $page => $file) {
-        $img = is_file($file) ? @imagecreatefromjpeg($file) : false;
-        if (!$img) {
-            continue;
+    foreach ($bandFiles as $page => $bandFile) {
+        $body = aiRouteSlipBody($bandFile);
+        if ($body !== null) {
+            $bodies[$page] = $body;
         }
-        $w = imagesx($img);
-        $h = imagesy($img);
-        $top = (int) round($h * 0.45);
-        $band = imagecrop($img, ['x' => 0, 'y' => $top, 'width' => $w, 'height' => (int) round($h * 0.30)]);
-        imagedestroy($img);
-        if (!$band) {
-            continue;
-        }
-        $small = imagescale($band, 1100, -1, IMG_BILINEAR_FIXED);
-        if ($small) {
-            imagedestroy($band);
-            $band = $small;
-        }
-        $bandFile = rtrim($workDir, '/\\') . '/' . uniqid('aiband_', true) . '.jpg';
-        imagejpeg($band, $bandFile, 85);
-        imagedestroy($band);
-        $files[$page][] = $bandFile;
-        $url = imageToDataUrlForAi($bandFile, 1100, 500000);
-        if ($url === null) {
-            continue;
-        }
-        $bodies[$page] = groqRequestBody([
-            ['role' => 'system', 'content' => "You read one part of a PUP Route and Approval Slip and reply with ONLY a JSON object: {\"program\": \"\", \"section\": \"\"}.\n"
-                . "Find Step 2 (College Interview and Tagging of Program). \"program\": the handwritten course written after Program:, exactly as written, usually an abbreviation such as BSIT, BSCPE, BSPSY, BSA. "
-                . "\"section\": the handwritten value after Section:, a single digit. A lone short vertical stroke that looks like I, l or | is the digit 1. "
-                . "Use \"\" only when the blank is truly empty."],
-            ['role' => 'user', 'content' => [
-                ['type' => 'text', 'text' => 'Read the Program and Section in Step 2.'],
-                ['type' => 'image_url', 'image_url' => ['url' => $url]],
-            ]],
-        ], true, 60);
     }
-    if (!$bodies) {
+    foreach ($bodies ? groqChatMany($bodies) : [] as $page => $reply) {
+        aiApplyRouteSlipReply($page, $reply, $results);
+    }
+}
+
+function aiHealthNumberCropCommand($pdfPath, $page, $workDir)
+{
+    $base = rtrim($workDir, '/\\') . '/' . uniqid('aihealth_', true);
+    $cmd = escapeshellarg(PDFTOPPM_BIN) . ' -jpeg -jpegopt quality=92 -scale-to-x 4000 -scale-to-y -1'
+        . ' -x 2400 -y 840 -W 1600 -H 480 -singlefile -f ' . (int) $page . ' -l ' . (int) $page
+        . ' ' . escapeshellarg($pdfPath) . ' ' . escapeshellarg($base);
+    return [$cmd, $base . '.jpg'];
+}
+
+function aiHealthNumberBody($cropFile)
+{
+    if (!is_file($cropFile) || filesize($cropFile) < 1000) {
+        return null;
+    }
+    $url = imageToDataUrlForAi($cropFile, 1600, 1200000);
+    if ($url === null) {
+        return null;
+    }
+    return groqRequestBody([
+        ['role' => 'system', 'content' => "You read one part of a PUP Health Information Form and reply with ONLY a JSON object: {\"characters\": [], \"student_number\": \"\"}.\n"
+            . "\"characters\": every character of the handwritten PUP Student No., one per item, left to right, including the dashes. Decide each one on its own before writing the next.\n"
+            . "\"student_number\": the handwritten value after \"PUP Student No.:\", exactly as written. "
+            . "The format is YYYY-NNNNN-XX-N, for example 2022-00213-BN-0: a 4-digit year that starts with 20, five digits, two capital letters (the campus code, usually BN) and one digit. "
+            . "Read every digit one by one and look closely at each one; 1, 2 and 7 are easy to confuse in handwriting. "
+            . "The same person writes a digit the same way every time, so compare each digit with the same digit elsewhere in the number "
+            . "(for example a 2 in the year and a 2 later in the number) before deciding. A handwritten 2 has a curved or hooked top and a flat bottom stroke, even when it is small, faint or written quickly; "
+            . "a 1 is a single straight stroke with no hook and no flat base. If a digit has any bottom stroke going sideways, it is a 2, not a 1. "
+            . "Do not read the School Year or any other line. Use \"\" if the blank is empty or unreadable."],
+        ['role' => 'user', 'content' => [
+            ['type' => 'text', 'text' => 'Read the PUP Student No. character by character.'],
+            ['type' => 'image_url', 'image_url' => ['url' => $url]],
+        ]],
+    ], true, 200);
+}
+
+function aiApplyHealthNumberReply($page, $reply, array $results)
+{
+    $json = aiDecodeJson($reply);
+    if ($json === null) {
         return;
     }
-    foreach (groqChatMany($bodies) as $page => $reply) {
-        $json = aiDecodeJson($reply);
-        if ($json === null) {
-            continue;
-        }
-        $section = trim((string) ($json['section'] ?? ''));
-        $fields = sanitizeAiStudentFields([
-            'course'       => (string) ($json['program'] ?? ''),
-            'year_section' => $section !== '' ? 'Section ' . $section : '',
-        ]);
-        error_log('AI route slip re-check: program=' . ($json['program'] ?? '') . ', section=' . $section);
-        $text = trim((string) ($results[$page]['text'] ?? ''));
-        if ($text !== '' && ($fields['course'] !== '' || $fields['year_section'] !== '')) {
-            aiPageCache($text, $fields, true);
-        }
+    $chars = is_array($json['characters'] ?? null) ? implode('', array_map('strval', $json['characters'])) : '';
+    $raw = (string) ($json['student_number'] ?? '');
+    $fields = sanitizeAiStudentFields(['student_number' => $raw]);
+    $fromChars = sanitizeAiStudentFields(['student_number' => $chars]);
+    if ($fromChars['student_number'] !== '') {
+        $fields = $fromChars;
+    }
+    $number = $fields['student_number'];
+    $year = (int) substr($number, 0, 4);
+    error_log('AI health form student number re-check: page ' . $page . ' characters=' . $chars . ' student_number=' . $raw . ' -> ' . $number);
+    if ($number === '' || $year < 2000 || $year > (int) date('Y') + 1) {
+        return;
+    }
+    $text = trim((string) ($results[$page]['text'] ?? ''));
+    if ($text !== '') {
+        aiPageCache($text, ['student_number' => $number] + array_fill_keys(AI_STUDENT_FIELDS, ''), true);
     }
 }
 
@@ -1611,55 +1741,13 @@ function aiReadHealthStudentNumber(array $healthPages, array $results, $workDir,
 {
     $bodies = [];
     foreach ($healthPages as $page => $cropFile) {
-        if (!is_file($cropFile) || filesize($cropFile) < 1000) {
-            continue;
+        $body = aiHealthNumberBody($cropFile);
+        if ($body !== null) {
+            $bodies[$page] = $body;
         }
-        $url = imageToDataUrlForAi($cropFile, 1600, 1200000);
-        if ($url === null) {
-            continue;
-        }
-        $bodies[$page] = groqRequestBody([
-            ['role' => 'system', 'content' => "You read one part of a PUP Health Information Form and reply with ONLY a JSON object: {\"characters\": [], \"student_number\": \"\"}.\n"
-                . "\"characters\": every character of the handwritten PUP Student No., one per item, left to right, including the dashes. Decide each one on its own before writing the next.\n"
-                . "\"student_number\": the handwritten value after \"PUP Student No.:\", exactly as written. "
-                . "The format is YYYY-NNNNN-XX-N, for example 2022-00213-BN-0: a 4-digit year that starts with 20, five digits, two capital letters (the campus code, usually BN) and one digit. "
-                . "Read every digit one by one and look closely at each one; 1, 2 and 7 are easy to confuse in handwriting. "
-                . "The same person writes a digit the same way every time, so compare each digit with the same digit elsewhere in the number "
-                . "(for example a 2 in the year and a 2 later in the number) before deciding. A handwritten 2 has a curved or hooked top and a flat bottom stroke, even when it is small, faint or written quickly; "
-                . "a 1 is a single straight stroke with no hook and no flat base. If a digit has any bottom stroke going sideways, it is a 2, not a 1. "
-                . "Do not read the School Year or any other line. Use \"\" if the blank is empty or unreadable."],
-            ['role' => 'user', 'content' => [
-                ['type' => 'text', 'text' => 'Read the PUP Student No. character by character.'],
-                ['type' => 'image_url', 'image_url' => ['url' => $url]],
-            ]],
-        ], true, 200);
     }
-    if (!$bodies) {
-        return;
-    }
-    $maxYear = (int) date('Y') + 1;
-    foreach (groqChatMany($bodies) as $page => $reply) {
-        $json = aiDecodeJson($reply);
-        if ($json === null) {
-            continue;
-        }
-        $chars = is_array($json['characters'] ?? null) ? implode('', array_map('strval', $json['characters'])) : '';
-        $raw = (string) ($json['student_number'] ?? '');
-        $fields = sanitizeAiStudentFields(['student_number' => $raw]);
-        $fromChars = sanitizeAiStudentFields(['student_number' => $chars]);
-        if ($fromChars['student_number'] !== '') {
-            $fields = $fromChars;
-        }
-        $number = $fields['student_number'];
-        $year = (int) substr($number, 0, 4);
-        error_log('AI health form student number re-check: page ' . $page . ' characters=' . $chars . ' student_number=' . $raw . ' -> ' . $number);
-        if ($number === '' || $year < 2000 || $year > $maxYear) {
-            continue;
-        }
-        $text = trim((string) ($results[$page]['text'] ?? ''));
-        if ($text !== '') {
-            aiPageCache($text, ['student_number' => $number] + array_fill_keys(AI_STUDENT_FIELDS, ''), true);
-        }
+    foreach ($bodies ? groqChatMany($bodies) : [] as $page => $reply) {
+        aiApplyHealthNumberReply($page, $reply, $results);
     }
 }
 

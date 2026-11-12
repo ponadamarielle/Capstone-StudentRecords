@@ -646,6 +646,58 @@ if ($action === 'discard') {
     scanJson(['success' => true]);
 }
 
+if ($action === 'remove_page') {
+    $token = $_POST['token'] ?? '';
+    $number = (int) ($_POST['n'] ?? 0);
+    session_write_close();
+    $images = scanOwnsToken($token) ? scanPageImages($token) : [];
+    if (!$images || !is_file(scanFilePath($token))) {
+        scanJson(['success' => false, 'message' => 'The scanned document is no longer available. Please scan again.']);
+    }
+    if (count($images) < 2) {
+        scanJson(['success' => false, 'message' => 'A document needs at least one page. Use RESCAN instead.']);
+    }
+    if ($number < 1 || $number > count($images)) {
+        scanJson(['success' => false, 'message' => 'Page not found.']);
+    }
+    $lock = @fopen(scanTempDir() . DIRECTORY_SEPARATOR . 'scanner.lock', 'c');
+    if (!$lock || !flock($lock, LOCK_EX)) {
+        scanJson(['success' => false, 'message' => 'The scanner is busy. Please try again.']);
+    }
+    $dir = scanTokenDir($token);
+    $keep = [];
+    foreach ($images as $i => $file) {
+        if ($i === $number - 1) {
+            @unlink($file);
+            continue;
+        }
+        $temp = $dir . DIRECTORY_SEPARATOR . sprintf('keep_%03d.jpg', count($keep) + 1);
+        if (@rename($file, $temp)) {
+            $keep[] = $temp;
+        }
+    }
+    $pages = [];
+    foreach ($keep as $file) {
+        $target = $dir . DIRECTORY_SEPARATOR . sprintf('page_%03d.jpg', count($pages) + 1);
+        if (@rename($file, $target)) {
+            $pages[] = $target;
+        }
+    }
+    $built = $pages && scanBuildPdf($pages, scanFilePath($token), (int) scanEnv('SCANNER_DPI', '300'));
+    flock($lock, LOCK_UN);
+    fclose($lock);
+    if (!$built) {
+        scanJson(['success' => false, 'message' => 'The page could not be removed. Please rescan.']);
+    }
+    scanJson([
+        'success' => true,
+        'token'   => $token,
+        'pages'   => count($pages),
+        'url'     => 'scanner.php?action=preview&token=' . $token,
+        'images'  => count($pages),
+    ]);
+}
+
 if ($action === 'status') {
     session_write_close();
     $console = scanConsolePath();

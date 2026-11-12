@@ -85,7 +85,10 @@ document.addEventListener('DOMContentLoaded', function () {
     const previewInfo = el('div', 'scan-preview-info');
     const previewFrame = el('iframe', 'scan-preview-frame');
     previewFrame.title = 'Scanned document preview';
+    const pagesStrip = el('div', 'scan-pages');
+    pagesStrip.hidden = true;
     previewWrap.appendChild(previewInfo);
+    previewWrap.appendChild(pagesStrip);
     previewWrap.appendChild(previewFrame);
     const readyInfo = el('div', 'scan-ready');
     readyInfo.hidden = true;
@@ -267,16 +270,85 @@ document.addEventListener('DOMContentLoaded', function () {
         }, delay));
     }
 
-    function showResult(result) {
+    function showResult(result, removed) {
         const replaced = replacePage;
         replacePage = 0;
         currentToken = result.token;
         currentPages = result.pages || 0;
-        previewFrame.src = result.url + '&t=' + Date.now() + '#page=' + (replaced || 1) + '&view=FitH&pagemode=none&toolbar=1';
+        const focusPage = replaced || (removed ? Math.min(removed, currentPages) : 1);
+        previewFrame.src = result.url + '&t=' + Date.now() + '#page=' + focusPage + '&view=FitH&pagemode=none&toolbar=1';
         previewInfo.textContent = (replaced ? 'Page ' + replaced + ' was rescanned. ' : '')
+            + (removed ? 'Page ' + removed + ' was removed. ' : '')
             + result.pages + ' page' + (result.pages === 1 ? '' : 's')
             + ' scanned. Check that the scan is clear and complete before using it.';
+        renderPages(result.images === result.pages ? currentPages : 0);
         setView('preview');
+    }
+
+    function renderPages(count) {
+        pagesStrip.innerHTML = '';
+        pagesStrip.hidden = count < 2;
+        if (count < 2) return;
+        const stamp = Date.now();
+        for (let n = 1; n <= count; n++) {
+            const item = el('div', 'scan-page');
+            const view = el('button', 'scan-page-thumb');
+            view.type = 'button';
+            view.title = 'View page ' + n;
+            const img = el('img');
+            img.loading = 'lazy';
+            img.alt = 'Page ' + n;
+            img.src = SCANNER_URL + '?action=page&token=' + encodeURIComponent(currentToken) + '&n=' + n + '&t=' + stamp;
+            view.appendChild(img);
+            view.addEventListener('click', () => {
+                previewFrame.src = SCANNER_URL + '?action=preview&token=' + encodeURIComponent(currentToken)
+                    + '&t=' + Date.now() + '#page=' + n + '&view=FitH&pagemode=none&toolbar=1';
+            });
+            const label = el('span', 'scan-page-label', 'Page ' + n);
+            const remove = el('button', 'scan-page-remove');
+            remove.type = 'button';
+            remove.title = 'Remove page ' + n;
+            remove.setAttribute('aria-label', 'Remove page ' + n);
+            remove.appendChild(el('i', 'bi bi-trash'));
+            remove.appendChild(el('span', '', 'Remove'));
+            remove.disabled = busy;
+            remove.addEventListener('click', () => removePage(n));
+            item.appendChild(view);
+            item.appendChild(label);
+            item.appendChild(remove);
+            pagesStrip.appendChild(item);
+        }
+    }
+
+    async function removePage(n) {
+        if (busy || !currentToken || currentPages < 2) return;
+        hideRescanMenu();
+        const folderWaiting = scanMode === 'folder' && waiting;
+        stopWaiting();
+        await pollPromise;
+        if (!currentToken || n > currentPages) return;
+        setView('loading', 'Removing page ' + n + '...');
+        let result = null;
+        try {
+            const data = new FormData();
+            data.append('action', 'remove_page');
+            data.append('token', currentToken);
+            data.append('n', String(n));
+            result = await readJson(await fetch(SCANNER_URL, { method: 'POST', body: data }));
+        } catch (err) {
+            result = { success: false, message: 'Could not reach the scanner service. Please try again.' };
+        }
+        busy = false;
+        if (result.success) {
+            showResult(result, n);
+        } else {
+            setView('preview');
+        }
+        if (folderWaiting && scannerReady && modalEl.classList.contains('show')) waitForScan(true);
+        if (!result.success) {
+            errorBox.hidden = false;
+            errorBox.textContent = result.message || 'The page could not be removed.';
+        }
     }
 
     function hideRescanMenu() {
@@ -347,6 +419,7 @@ document.addEventListener('DOMContentLoaded', function () {
         nextBtn.hidden = !currentToken || !!replaceCallback;
         updateReady();
         [startBtn, rescanBtn, addPageBtn, useBtn, nextBtn, cancelBtn, closeX].forEach((b) => { b.disabled = busy; });
+        pagesStrip.querySelectorAll('button').forEach((b) => { b.disabled = busy; });
         startBtn.hidden = !!currentToken || (scanMode === 'folder' && waiting);
         applyScannerReady();
     }
@@ -367,6 +440,7 @@ document.addEventListener('DOMContentLoaded', function () {
         hideRescanMenu();
         previewFrame.removeAttribute('src');
         previewInfo.textContent = '';
+        renderPages(0);
     }
 
     async function readJson(res) {
