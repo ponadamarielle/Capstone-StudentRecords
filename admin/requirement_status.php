@@ -65,10 +65,59 @@ function requirementStatusBadge(array $status)
 {
     $title = $status['complete']
         ? 'All ' . $status['total'] . ' required documents are on file'
-        : 'Missing: ' . implode(', ', $status['missing']);
+        : 'Not yet submitted: ' . implode(', ', $status['missing']);
     $class = $status['complete'] ? 'req-completion-complete' : 'req-completion-incomplete';
     $icon  = $status['complete'] ? 'bi-check-circle-fill' : 'bi-exclamation-circle-fill';
 
     return '<span class="req-completion ' . $class . '" title="' . htmlspecialchars($title) . '">'
+        . '<i class="bi ' . $icon . '"></i> ' . htmlspecialchars($status['label']) . '</span>';
+}
+
+if (!defined('GRADUATION_TRACK')) {
+    define('GRADUATION_TRACK', 'graduating');
+}
+
+function graduationCompletion(array $requirements, array $student, array $storedCodes)
+{
+    $graduated = strtolower((string) ($student['status'] ?? '')) === 'graduated';
+    $candidate = function_exists('isGraduationCandidate') && isGraduationCandidate($student);
+    if (!$graduated && !$candidate) {
+        return null;
+    }
+    $status = requirementCompletion($requirements, GRADUATION_TRACK, $storedCodes);
+    return $status['total'] > 0 ? $status : null;
+}
+
+function directoryRequirementBadge(array $completion, ?array $graduation)
+{
+    if (!$graduation) {
+        return requirementStatusBadge($completion);
+    }
+    if (!$completion['complete']) {
+        $title = 'Not yet submitted: ' . implode(', ', $completion['missing']);
+        if (!$graduation['complete']) {
+            $title .= ' | Not yet submitted for graduation: ' . implode(', ', $graduation['missing']);
+        }
+        return '<span class="req-completion req-completion-incomplete" title="' . htmlspecialchars($title) . '">'
+            . '<i class="bi bi-exclamation-circle-fill"></i> Incomplete</span>';
+    }
+    if ($graduation['complete']) {
+        return '<span class="req-completion req-completion-complete" title="All admission and graduation requirements are on file">'
+            . '<i class="bi bi-check-circle-fill"></i> Complete</span>';
+    }
+    return '<span class="req-completion req-completion-graduation req-completion-incomplete" title="'
+        . htmlspecialchars('Not yet submitted for graduation: ' . implode(', ', $graduation['missing'])) . '">'
+        . '<i class="bi bi-mortarboard"></i> Incomplete</span>';
+}
+
+function graduationStatusBadge(array $status)
+{
+    $title = $status['complete']
+        ? 'All ' . $status['total'] . ' graduation requirements are on file'
+        : 'Not yet submitted for graduation: ' . implode(', ', $status['missing']);
+    $class = $status['complete'] ? 'req-completion-complete' : 'req-completion-incomplete';
+    $icon  = $status['complete'] ? 'bi-mortarboard-fill' : 'bi-mortarboard';
+
+    return '<span class="req-completion req-completion-graduation ' . $class . '" title="' . htmlspecialchars($title) . '">'
         . '<i class="bi ' . $icon . '"></i> ' . htmlspecialchars($status['label']) . '</span>';
 }

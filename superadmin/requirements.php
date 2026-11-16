@@ -26,8 +26,8 @@ if (!$conn) {
 mysqli_set_charset($conn, 'utf8mb4');
 
 $trackGroups = requirementTrackGroups();
-$typeLabels = ['regular' => 'Regular', 'shiftee' => 'Shiftee', 'transferee' => 'Transferee'];
-$typeGroups = ['regular' => 'credential', 'shiftee' => 'shiftee', 'transferee' => 'transferee'];
+$typeLabels = ['regular' => 'Regular', 'shiftee' => 'Shiftee', 'transferee' => 'Transferee', 'graduating' => 'Graduating'];
+$typeGroups = ['regular' => 'credential', 'shiftee' => 'shiftee', 'transferee' => 'transferee', 'graduating' => 'graduation'];
 $trackShort = ['shs_current' => 'SHS current', 'shs_past' => 'SHS past', 'als' => 'ALS'];
 $trackNames = ['shs_current' => 'SHS graduates (current school year)', 'shs_past' => 'SHS graduates (past school years)', 'als' => 'ALS graduates'];
 $type = array_key_exists($_GET['type'] ?? 'regular', $trackGroups) ? ($_GET['type'] ?? 'regular') : 'regular';
@@ -206,7 +206,7 @@ $formAction = htmlspecialchars(rqUrl($type, $sub));
     <link href="../css/font.css" rel="stylesheet">
     <link href="../css/navbar-superadmin.css" rel="stylesheet">
     <link href="../css/course_management.css" rel="stylesheet">
-    <link href="../css/requirements.css?v=4" rel="stylesheet">
+    <link href="../css/requirements.css?v=6" rel="stylesheet">
 </head>
 <body>
 

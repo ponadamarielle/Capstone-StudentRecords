@@ -25,6 +25,50 @@ const RESTORABLE_STATUSES   = ['withdrawn', 'onleave', 'inactive'];
 const PROGRAM_LENGTH_YEARS  = 4;
 const GRADUATE_ARCHIVE_YEARS = 4;
 
+if (!defined('GRADUATION_TRACK')) {
+    define('GRADUATION_TRACK', 'graduating');
+}
+
+function isGraduationCandidate(array $student)
+{
+    $status = (string) ($student['status'] ?? '');
+    if (!in_array($status, ['enrollee', 'active', ''], true)) {
+        return false;
+    }
+    $endYear = expectedGraduationYear($student);
+    return $endYear !== null && $endYear <= currentSchoolYearEndYear();
+}
+
+function graduationRequirementList()
+{
+    if (!function_exists('getDocumentRequirementsForClient')) {
+        require_once __DIR__ . '/document_classifier.php';
+    }
+    $list = [];
+    foreach (getDocumentRequirementsForClient() as $r) {
+        if (in_array(GRADUATION_TRACK, $r['required_for'] ?? [], true)) {
+            $list[$r['code']] = $r['label'];
+        }
+    }
+    return $list;
+}
+
+function graduationMissingFor($conn, $studentId)
+{
+    $required = graduationRequirementList();
+    if (!$required) {
+        return [];
+    }
+    $studentId = (int) $studentId;
+    $stmt = mysqli_prepare($conn, "SELECT requirement_code FROM documents WHERE student_id = ?");
+    mysqli_stmt_bind_param($stmt, "i", $studentId);
+    mysqli_stmt_execute($stmt);
+    foreach (mysqli_fetch_all(mysqli_stmt_get_result($stmt), MYSQLI_ASSOC) as $doc) {
+        unset($required[$doc['requirement_code'] ?? '']);
+    }
+    return array_values($required);
+}
+
 function studentColumns($conn, $refresh = false)
 {
     static $names = null;
@@ -237,6 +281,9 @@ function syncGraduateStatus($conn, $studentId)
     $endYear = expectedGraduationYear($student);
     $ended   = $endYear !== null && schoolYearHasEnded($endYear);
     if ($ended && in_array($status, ['enrollee', 'active', ''], true)) {
+        if (graduationMissingFor($conn, $studentId)) {
+            return null;
+        }
         $newStatus = 'graduated';
     } elseif (!$ended && $status === 'graduated') {
         $newStatus = 'enrollee';
@@ -764,7 +811,7 @@ function archiveStudentRecord($conn, $studentId, $status, $force = false)
                 'success'    => false,
                 'incomplete' => true,
                 'missing'    => $missingRequirements,
-                'message'    => 'This student cannot be archived as GRADUATE because the requirements are incomplete. Missing: ' . implode(', ', $missingRequirements) . '.',
+                'message'    => 'This student cannot be archived as GRADUATE because the requirements are incomplete. Not yet submitted: ' . implode(', ', $missingRequirements) . '.',
             ];
         }
     }
@@ -959,9 +1006,10 @@ function yearEndPreview($conn, $endedThrough)
 {
     $hasColumn = in_array('graduation_year', studentColumns($conn), true);
     $result = mysqli_query($conn, "SELECT student_number, year_section" . ($hasColumn ? ", graduation_year" : "")
-        . " FROM students WHERE (status IN ('enrollee', 'active') OR status IS NULL OR status = '')"
+        . ", student_id FROM students WHERE (status IN ('enrollee', 'active') OR status IS NULL OR status = '')"
         . (studentHasArchivedAt($conn) ? " AND archived_at IS NULL" : ""));
     $graduate = 0;
+    $held = 0;
     $moveUp = 0;
     while ($result && ($row = mysqli_fetch_assoc($result))) {
         $endYear = expectedGraduationYear($row);
@@ -969,7 +1017,11 @@ function yearEndPreview($conn, $endedThrough)
             continue;
         }
         if ($endYear <= $endedThrough) {
-            $graduate++;
+            if (graduationMissingFor($conn, (int) $row['student_id'])) {
+                $held++;
+            } else {
+                $graduate++;
+            }
             continue;
         }
         $level = yearLevelOf($row['year_section'] ?? '');
@@ -978,7 +1030,7 @@ function yearEndPreview($conn, $endedThrough)
             $moveUp++;
         }
     }
-    return ['graduate' => $graduate, 'move_up' => $moveUp];
+    return ['graduate' => $graduate, 'move_up' => $moveUp, 'held' => $held];
 }
 
 function applyYearEnd($conn, $confirmedBy)
@@ -995,12 +1047,13 @@ function applyYearEnd($conn, $confirmedBy)
         return ['success' => false, 'message' => 'The year-end update could not be saved.'];
     }
     yearEndConfirmedThrough($conn, true);
-    $graduated = markGraduatedStudents($conn, PHP_INT_MAX);
+    $held = 0;
+    $graduated = markGraduatedStudents($conn, PHP_INT_MAX, $held);
     $movedUp = updateYearLevels($conn);
     $update = mysqli_prepare($conn, "UPDATE year_end_updates SET graduated = ?, moved_up = ? WHERE end_year = ?");
     mysqli_stmt_bind_param($update, "iii", $graduated, $movedUp, $endedThrough);
     mysqli_stmt_execute($update);
-    return ['success' => true, 'graduated' => $graduated, 'moved_up' => $movedUp, 'end_year' => $endedThrough];
+    return ['success' => true, 'graduated' => $graduated, 'moved_up' => $movedUp, 'held' => $held, 'end_year' => $endedThrough];
 }
 
 function schoolYearLabel($endYear)
@@ -1033,8 +1086,9 @@ function migrateEnrolleeStatus($conn)
     }
 }
 
-function markGraduatedStudents($conn, $limit = 200)
+function markGraduatedStudents($conn, $limit = 200, &$held = 0)
 {
+    $held = 0;
     migrateEnrolleeStatus($conn);
     $hasColumn = in_array('graduation_year', studentColumns($conn), true);
     $result = mysqli_query($conn, "SELECT student_id, student_number"
@@ -1054,6 +1108,10 @@ function markGraduatedStudents($conn, $limit = 200)
             continue;
         }
         $studentId = (int) $row['student_id'];
+        if (graduationMissingFor($conn, $studentId)) {
+            $held++;
+            continue;
+        }
         mysqli_stmt_bind_param($update, "i", $studentId);
         if (!mysqli_stmt_execute($update)) {
             error_log('Marking graduate ' . $row['student_number'] . ' failed: ' . mysqli_error($conn));

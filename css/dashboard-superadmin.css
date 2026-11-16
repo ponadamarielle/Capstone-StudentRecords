@@ -79,7 +79,7 @@ body {
 
 .dash-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px;
     align-items: start;
 }
@@ -467,4 +467,21 @@ body {
 .dash-sy-form .dash-sy-year:focus {
     border-color: var(--neutral-border-strong, #D6D0C9);
     box-shadow: none;
+}
+
+@media (max-width: 640px) {
+    .dash-stat,
+    .dash-panel {
+        padding: 16px;
+    }
+    .dash-stat-value {
+        font-size: 26px;
+        line-height: 34px;
+    }
+    .dash-alert {
+        align-items: flex-start;
+    }
+    .dash-updated {
+        align-self: flex-start;
+    }
 }

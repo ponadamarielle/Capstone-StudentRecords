@@ -407,22 +407,17 @@ $formAction = htmlspecialchars('course_management.php' . ($view !== 'all' ? '?vi
           <div class="cm-field">
             <label for="courseCode" class="cm-label">Code <span class="req-mark">*</span></label>
             <input type="text" class="form-control<?= isset($formErrors['code']) ? ' is-invalid' : '' ?>" id="courseCode" name="code" maxlength="30" autocomplete="off"
-                   placeholder="e.g. BSA" value="<?= htmlspecialchars($formOld['code']) ?>">
+                   placeholder="e.g. BSIT" value="<?= htmlspecialchars($formOld['code']) ?>">
             <div class="invalid-feedback" id="courseCodeFeedback"><?= htmlspecialchars($formErrors['code'] ?? '') ?></div>
           </div>
           <div class="cm-field">
             <label for="courseName" class="cm-label">Program name <span class="req-mark">*</span></label>
             <input type="text" class="form-control<?= isset($formErrors['name']) ? ' is-invalid' : '' ?>" id="courseName" name="name" maxlength="255" autocomplete="off"
-                   placeholder="e.g. Bachelor of Science in Accountancy" value="<?= htmlspecialchars($formOld['name']) ?>">
+                   placeholder="e.g. Bachelor of Science in Information Technology" value="<?= htmlspecialchars($formOld['name']) ?>">
             <div class="invalid-feedback" id="courseNameFeedback"><?= htmlspecialchars($formErrors['name'] ?? '') ?></div>
           </div>
-          <div class="cm-field">
-            <label for="courseAliases" class="cm-label">Other names <span class="cm-optional">(optional)</span></label>
-            <input type="text" class="form-control<?= isset($formErrors['aliases']) ? ' is-invalid' : '' ?>" id="courseAliases" name="aliases" maxlength="500" autocomplete="off"
-                   placeholder="e.g. BSACC, BS Accountancy" value="<?= htmlspecialchars($formOld['aliases']) ?>">
-            <div class="cm-hint">Short forms written on documents, separated by commas. They are matched to this course.</div>
-            <div class="invalid-feedback" id="courseAliasesFeedback"><?= htmlspecialchars($formErrors['aliases'] ?? '') ?></div>
-          </div>
+          <input type="hidden" id="courseAliases" name="aliases" value="<?= htmlspecialchars($formOld['aliases']) ?>">
+          <div class="invalid-feedback" id="courseAliasesFeedback" hidden></div>
         </div>
         <div class="modal-footer cm-modal-footer">
           <button type="button" class="btn cm-cancel-btn" data-bs-dismiss="modal">Cancel</button>

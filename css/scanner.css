@@ -354,3 +354,36 @@
 .replace-chooser-option:focus .bi {
     color: var(--brand-maroon, #7B1113);
 }
+
+@media (max-width: 576px) {
+    .scan-modal .modal-dialog {
+        margin: 8px;
+    }
+    .scan-modal .scan-header,
+    .scan-modal .modal-body {
+        padding: 16px;
+    }
+    .scan-instructions {
+        flex-direction: column;
+        padding: 16px;
+    }
+    .scan-preview-frame {
+        height: 50vh;
+    }
+    .scan-footer {
+        flex-wrap: wrap;
+        padding: 12px 16px;
+    }
+    .scan-footer > *,
+    .scan-footer .btn,
+    .scan-rescan-wrap,
+    .scan-rescan-wrap .btn {
+        flex: 1 1 calc(50% - 10px);
+        min-width: 0;
+    }
+    .scan-rescan-menu {
+        min-width: 0;
+        width: max-content;
+        max-width: calc(100vw - 48px);
+    }
+}

@@ -273,9 +273,9 @@ class ClassReportPdf extends FPDF
             }
             $this->Rect($x, $y0, $w, $total);
             $this->SetXY($x, $y0 + 1);
-            $color = $leftStyles[$i]['color'] ?? [0, 0, 0];
-            $this->SetTextColor($color[0], $color[1], $color[2]);
             foreach ($parts as $part) {
+                $color = $part[2] ?? ($leftStyles[$i]['color'] ?? [0, 0, 0]);
+                $this->SetTextColor($color[0], $color[1], $color[2]);
                 $this->SetFont('Helvetica', $part[1], 9);
                 $this->SetX($x);
                 $this->MultiCell($w, $lineHeight, reportText($part[0]), 0, $leftStyles[$i]['align'] ?? 'L');
@@ -346,7 +346,14 @@ function xlsxSheet(array $rows, array $widths, $autoFilter = null)
             }
             [$value, $style] = is_array($cell) ? $cell : [$cell, 0];
             $ref = xlsxColumn($c) . ($r + 1);
-            if (is_int($value) || is_float($value)) {
+            if (is_array($value)) {
+                $xml .= '<c r="' . $ref . '" s="' . $style . '" t="inlineStr"><is>';
+                foreach ($value as [$text, $rgb]) {
+                    $xml .= '<r><rPr><b/><sz val="11"/><color rgb="' . $rgb . '"/><rFont val="Calibri"/></rPr><t xml:space="preserve">'
+                        . htmlspecialchars((string) $text, ENT_QUOTES | ENT_XML1, 'UTF-8') . '</t></r>';
+                }
+                $xml .= '</is></c>';
+            } elseif (is_int($value) || is_float($value)) {
                 $xml .= '<c r="' . $ref . '" s="' . $style . '"><v>' . $value . '</v></c>';
             } else {
                 $text = htmlspecialchars((string) $value, ENT_QUOTES | ENT_XML1, 'UTF-8');
@@ -465,7 +472,7 @@ function xlsxBuild(array $sheets, $path)
 
 $courseFilter      = trim((string) ($_GET['course'] ?? ''));
 $yearSectionFilter = trim((string) ($_GET['year_section'] ?? ''));
-$statusFilter      = in_array($_GET['status'] ?? '', ['enrollee', 'graduated'], true) ? $_GET['status'] : '';
+$statusFilter      = in_array($_GET['status'] ?? '', ['enrollee', 'graduating', 'graduated'], true) ? $_GET['status'] : '';
 $typeFilter        = isset(STUDENT_TYPES[$_GET['type'] ?? '']) ? $_GET['type'] : '';
 $download          = ($_GET['download'] ?? '') === '1';
 $format            = ($_GET['format'] ?? '') === 'xlsx' ? 'xlsx' : 'pdf';
@@ -509,7 +516,7 @@ if ($yearSectionFilter !== '') {
 }
 if ($statusFilter === 'graduated') {
     $conditions[] = "status = 'graduated'";
-} elseif ($statusFilter === 'enrollee') {
+} elseif ($statusFilter === 'enrollee' || $statusFilter === 'graduating') {
     $conditions[] = "(status IN ('enrollee', 'active') OR status IS NULL OR status = '')";
 }
 if ($typeFilter === 'shiftee' || $typeFilter === 'transferee') {
@@ -529,6 +536,11 @@ if ($params) {
     $result = mysqli_query($conn, $sql);
 }
 $students = $result ? mysqli_fetch_all($result, MYSQLI_ASSOC) : [];
+if ($statusFilter === 'enrollee' || $statusFilter === 'graduating') {
+    $students = array_values(array_filter($students, function ($row) use ($statusFilter) {
+        return isGraduationCandidate($row) === ($statusFilter === 'graduating');
+    }));
+}
 
 $requirements = reportRequirements();
 $codesByStudent = requirementCodesByStudent($conn, array_column($students, 'student_id'));
@@ -546,14 +558,36 @@ foreach ($students as &$row) {
     foreach ($row['completion']['missing'] as $label) {
         $missingCounts[$label] = ($missingCounts[$label] ?? 0) + 1;
     }
+    $row['graduation'] = graduationCompletion(
+        $requirements,
+        $row,
+        $codesByStudent[(int) $row['student_id']] ?? []
+    );
+    foreach ($row['graduation']['missing'] ?? [] as $label) {
+        $missingCounts[$label] = ($missingCounts[$label] ?? 0) + 1;
+    }
 }
 unset($row);
 arsort($missingCounts);
 
+$statusCounts = ['Enrollees' => 0, 'Graduating' => 0, 'Graduates' => 0];
+$gradTotal = 0;
+$gradComplete = 0;
+foreach ($students as $row) {
+    $key = ($row['status'] ?? '') === 'graduated' ? 'Graduates' : (isGraduationCandidate($row) ? 'Graduating' : 'Enrollees');
+    $statusCounts[$key]++;
+    if ($row['graduation']) {
+        $gradTotal++;
+        if ($row['graduation']['complete']) {
+            $gradComplete++;
+        }
+    }
+}
+
 $groupCounts = [];
 foreach ($students as &$row) {
     $row['group_course'] = trim((string) ($row['course'] ?? '')) !== '' ? trim((string) $row['course']) : 'No Course';
-    $row['group_status'] = ($row['status'] ?? '') === 'graduated' ? 'Graduates' : 'Enrollees';
+    $row['group_status'] = ($row['status'] ?? '') === 'graduated' ? 'Graduates' : (isGraduationCandidate($row) ? 'Graduating' : 'Enrollees');
     if ($row['group_status'] === 'Graduates') {
         $graduationYear = (int) (expectedGraduationYear($row) ?? 0);
         $row['group_section'] = $graduationYear > 0 ? (string) $graduationYear : 'No Year';
@@ -569,7 +603,8 @@ usort($students, function ($a, $b) {
         return $byCourse;
     }
     if ($a['group_status'] !== $b['group_status']) {
-        return $a['group_status'] === 'Enrollees' ? -1 : 1;
+        $order = ['Enrollees' => 0, 'Graduating' => 1, 'Graduates' => 2];
+        return ($order[$a['group_status']] ?? 0) <=> ($order[$b['group_status']] ?? 0);
     }
     $aNone = in_array($a['group_section'], ['No Section', 'No Year'], true);
     $bNone = in_array($b['group_section'], ['No Section', 'No Year'], true);
@@ -616,11 +651,11 @@ if ($studentIds) {
     }
 }
 
-$statusLabels = ['' => 'All', 'enrollee' => 'Enrollee', 'graduated' => 'Graduate'];
+$statusLabels = ['' => 'All', 'enrollee' => 'Enrollee', 'graduating' => 'Graduating', 'graduated' => 'Graduate'];
 $filterRows = [
     ['Course', $courseLabel],
     ['Year & Section', $yearSectionFilter !== '' ? $yearSectionFilter : 'All'],
-    ['Status', $statusLabels[$statusFilter]],
+    ['Status', $statusFilter === '' ? 'All (Enrollee, Graduating, Graduate)' : $statusLabels[$statusFilter]],
     ['Student Type', $typeFilter !== '' ? STUDENT_TYPES[$typeFilter] : 'All'],
 ];
 $generatedAt = date('F j, Y \a\t g:i A');
@@ -640,9 +675,10 @@ if ($format === 'xlsx') {
     foreach ($filterRows as $filterRow) {
         $rows[] = [null, [$filterRow[0], 1], $filterRow[1]];
     }
+    $rows[] = [null, ['Enrollees', 1], $statusCounts['Enrollees']];
+    $rows[] = [null, ['Graduating', 1], $statusCounts['Graduating']];
+    $rows[] = [null, ['Graduates', 1], $statusCounts['Graduates']];
     $rows[] = [null, ['Total Students', 1], $total];
-    $rows[] = [null, ['Complete Requirements', 1], $completeCount];
-    $rows[] = [null, ['Incomplete Requirements', 1], $total - $completeCount];
     $courseStats = [];
     foreach ($students as $row) {
         $stat = $courseStats[$row['group_course']] ?? ['total' => 0, 'complete' => 0];
@@ -705,9 +741,13 @@ if ($format === 'xlsx') {
                 [(string) ($row['name'] ?? ''), 3],
                 [$row['group_status'] === 'Graduates' ? ($row['group_section'] === 'No Year' ? '' : $row['group_section']) : (string) ($row['year_section'] ?? ''), 3],
                 [STUDENT_TYPES[studentTypeOf($row['admission_track'] ?? '')] ?? 'Regular', 3],
-                [($row['status'] ?? '') === 'graduated' ? 'Graduate' : 'Enrollee', 3],
-                [$completion['complete'] ? 'Complete' : 'Incomplete (' . $completion['fulfilled'] . ' of ' . $completion['total'] . ')',
-                    $completion['complete'] ? 4 : 5],
+                [($row['status'] ?? '') === 'graduated' ? 'Graduate' : (isGraduationCandidate($row) ? 'Graduating' : 'Enrollee'), 3],
+                [array_merge(
+                    [['Admission: ' . ($completion['complete'] ? 'Complete' : 'Incomplete (' . $completion['fulfilled'] . ' of ' . $completion['total'] . ')'),
+                        $completion['complete'] ? 'FF19783C' : 'FFB41E28']],
+                    $row['graduation'] ? [['; ', 'FF000000'], ['Graduation: ' . ($row['graduation']['complete'] ? 'Complete' : 'Incomplete (' . $row['graduation']['fulfilled'] . ' of ' . $row['graduation']['total'] . ')'),
+                        $row['graduation']['complete'] ? 'FF19783C' : 'FFB41E28']] : []
+                ), 3],
             ];
             $blank = array_fill(0, 7, ['', 3]);
             $docLines = [];
@@ -720,7 +760,10 @@ if ($format === 'xlsx') {
                 ];
             }
             foreach ($completion['missing'] as $label) {
-                $docLines[] = [[$label, 3], ['Missing', 5], ['-', 3], ['-', 3]];
+                $docLines[] = [[$label, 3], ['Not yet submitted', 5], ['-', 3], ['-', 3]];
+            }
+            foreach ($row['graduation']['missing'] ?? [] as $label) {
+                $docLines[] = [[$label, 3], ['Not yet submitted (graduation)', 5], ['-', 3], ['-', 3]];
             }
             if (!$docLines) {
                 $docLines[] = [['No documents submitted', 3], ['-', 3], ['-', 3], ['-', 3]];
@@ -735,21 +778,11 @@ if ($format === 'xlsx') {
         $sheetName = substr($sheetName !== '' ? $sheetName : 'Course', 0, 28);
         $base = $sheetName;
         $k = 2;
-        while (isset($sheets[$sheetName]) || $sheetName === 'Missing Documents') {
+        while (isset($sheets[$sheetName])) {
             $sheetName = $base . ' ' . $k++;
         }
         $sheets[$sheetName] = xlsxSheet($courseRows, [6, 20, 32, 14, 13, 11, 20, 44, 16, 22, 20]);
     }
-
-    $missingRows = [array_map(fn($h) => [$h, 2], ['No.', 'Document', 'Students Missing'])];
-    $n = 0;
-    foreach ($missingCounts as $label => $count) {
-        $missingRows[] = [[++$n, 3], [$label, 3], [$count, 3]];
-    }
-    if (!$missingCounts) {
-        $missingRows[] = [['-', 3], ['No missing documents', 3], [0, 3]];
-    }
-    $sheets['Missing Documents'] = xlsxSheet($missingRows, [6, 50, 18]);
 
     $tmp = tempnam(sys_get_temp_dir(), 'xlsx');
     if (!xlsxBuild($sheets, $tmp)) {
@@ -806,24 +839,39 @@ foreach ($filterRows as $i => $filterRow) {
 }
 
 $pdf->SectionTitle('Summary');
-$summaryWidths = [$contentWidth / 3, $contentWidth / 3, $contentWidth / 3];
-$pdf->TableHeader($summaryWidths, ['Total Students', 'Complete Requirements', 'Incomplete Requirements']);
+$summaryWidths = [$contentWidth / 4, $contentWidth / 4, $contentWidth / 4, $contentWidth / 4];
+$pdf->TableHeader($summaryWidths, ['Enrollees', 'Graduating', 'Graduates', 'Total Students']);
 $pdf->TableRow($summaryWidths, [
+    (string) $statusCounts['Enrollees'],
+    (string) $statusCounts['Graduating'],
+    (string) $statusCounts['Graduates'],
     (string) $total,
-    (string) $completeCount,
-    (string) ($total - $completeCount),
 ], 6, [
     ['font' => 'B', 'align' => 'C'],
+    ['font' => 'B', 'align' => 'C'],
+    ['font' => 'B', 'align' => 'C'],
+    ['font' => 'B', 'align' => 'C'],
+]);
+$pdf->Ln(3);
+$requirementWidths = [$contentWidth - 100, 50, 50];
+$pdf->TableHeader($requirementWidths, ['', 'Complete Requirements', 'Incomplete Requirements']);
+$pdf->TableRow($requirementWidths, ['Admission', (string) $completeCount, (string) ($total - $completeCount)], 6, [
+    ['font' => 'B'],
     ['font' => 'B', 'align' => 'C', 'color' => [25, 120, 60]],
     ['font' => 'B', 'align' => 'C', 'color' => [180, 30, 40]],
 ]);
+$pdf->TableRow($requirementWidths, ['Graduation (Graduating + Graduates)', (string) $gradComplete, (string) ($gradTotal - $gradComplete)], 6, [
+    ['font' => 'B'],
+    ['font' => 'B', 'align' => 'C', 'color' => [25, 120, 60]],
+    ['font' => 'B', 'align' => 'C', 'color' => [180, 30, 40]],
+], true);
 
 $pdf->SectionTitle('Student Records');
 if (!$students) {
     $pdf->SetFont('Helvetica', 'I', 9.5);
     $pdf->Cell(0, 6, reportText('No students match the selected filters.'), 0, 1);
 } else {
-    $widths = [8, 40, 22, 0, 16, 22, 22];
+    $widths = [8, 38, 24, 0, 26, 22, 22];
     $widths[3] = $contentWidth - array_sum($widths);
     $titles = ['No.', 'Student', 'Completion', 'Document', 'Status', 'Date Uploaded', 'Uploaded By'];
     $byCourse = [];
@@ -848,18 +896,23 @@ if (!$students) {
                 $pdf->TableHeader($widths, $titles);
             }
             $completion = $row['completion'];
-            $details = $row['group_status'] === 'Enrollees' && trim((string) ($row['year_section'] ?? '')) !== '' ? $row['year_section'] . ' | ' : '';
+            $details = $row['group_status'] !== 'Graduates' && trim((string) ($row['year_section'] ?? '')) !== '' ? $row['year_section'] . ' | ' : '';
             $details .= (STUDENT_TYPES[studentTypeOf($row['admission_track'] ?? '')] ?? 'Regular') . ' | '
-                . (($row['status'] ?? '') === 'graduated' ? 'Graduate' : 'Enrollee');
+                . (($row['status'] ?? '') === 'graduated' ? 'Graduate' : (isGraduationCandidate($row) ? 'Graduating' : 'Enrollee'));
             $left = [
                 [[(string) ($i + 1), '']],
                 [[(string) ($row['name'] ?? ''), 'B'], [(string) ($row['student_number'] ?? ''), ''], [$details, '']],
-                [[$completion['complete'] ? 'Complete' : "Incomplete\n(" . $completion['fulfilled'] . ' of ' . $completion['total'] . ')', 'B']],
+                array_merge(
+                    [["Admission:\n" . ($completion['complete'] ? 'Complete' : 'Incomplete (' . $completion['fulfilled'] . ' of ' . $completion['total'] . ')'), 'B',
+                        $completion['complete'] ? [25, 120, 60] : [180, 30, 40]]],
+                    $row['graduation'] ? [["Graduation:\n" . ($row['graduation']['complete'] ? 'Complete' : 'Incomplete (' . $row['graduation']['fulfilled'] . ' of ' . $row['graduation']['total'] . ')'), 'B',
+                        $row['graduation']['complete'] ? [25, 120, 60] : [180, 30, 40]]] : []
+                ),
             ];
             $leftStyles = [
                 ['align' => 'C'],
                 [],
-                ['color' => $completion['complete'] ? [25, 120, 60] : [180, 30, 40]],
+                ['color' => $completion['complete'] && (!$row['graduation'] || $row['graduation']['complete']) ? [25, 120, 60] : [180, 30, 40]],
             ];
             $lines = [];
             foreach ($documentsByStudent[(int) $row['student_id']] ?? [] as $doc) {
@@ -873,7 +926,15 @@ if (!$students) {
             foreach ($completion['missing'] as $label) {
                 $lines[] = [
                     [$label, []],
-                    ['Missing', ['font' => 'B', 'color' => [180, 30, 40]]],
+                    ['Not yet submitted', ['font' => 'B', 'color' => [180, 30, 40]]],
+                    ['-', []],
+                    ['-', []],
+                ];
+            }
+            foreach ($row['graduation']['missing'] ?? [] as $label) {
+                $lines[] = [
+                    [$label, []],
+                    ['Not yet submitted (graduation)', ['font' => 'B', 'color' => [180, 30, 40]]],
                     ['-', []],
                     ['-', []],
                 ];
@@ -884,16 +945,6 @@ if (!$students) {
             $pdf->GroupRow($widths, $titles, $left, $leftStyles, $lines, $i % 2 === 1);
             $i++;
         }
-    }
-}
-
-if ($missingCounts) {
-    $pdf->SectionTitle('Most Commonly Missing Documents');
-    $widths = [10, $contentWidth - 50, 40];
-    $pdf->TableHeader($widths, ['No.', 'Document', 'Students Missing']);
-    $n = 0;
-    foreach ($missingCounts as $label => $count) {
-        $pdf->TableRow($widths, [(string) (++$n), $label, (string) $count], 5.2, [['align' => 'C'], [], ['align' => 'C']], $n % 2 === 0);
     }
 }
 

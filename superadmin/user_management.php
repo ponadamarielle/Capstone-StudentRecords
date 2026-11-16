@@ -152,6 +152,12 @@ if (isset($_POST['add_admin'])) {
                     'details'     => ['notification' => $role . ' account temporary password', 'recipient' => $email, 'error' => $mail->ErrorInfo],
                 ]);
             }
+            $_SESSION['um_reset_flash'] = isset($error)
+                ? ['type' => 'error', 'message' => 'The account of ' . $name . ' was created, but the email with the temporary password could not be sent. Use Reset password to send a new one.']
+                : ['type' => 'success', 'message' => 'Account created. A temporary password was emailed to ' . $email . '.'];
+            $checkStmt->close();
+            header('Location: ' . $listUrl);
+            exit();
         } else {
             $error = "Could not create account: " . $insertStmt->error;
         }
@@ -477,7 +483,7 @@ unset($_SESSION['um_reset_flash']);
                 <label for="name" class="um-label">Full name <span class="req-mark">*</span></label>
                 <div class="um-input">
                     <i class="bi bi-person um-input-icon"></i>
-                    <input type="text" class="form-control<?= isset($nameError) ? ' is-invalid' : '' ?>" id="name" name="name" placeholder="e.g. Juan Dela Cruz" required
+                    <input type="text" class="form-control<?= isset($nameError) ? ' is-invalid' : '' ?>" id="name" name="name" placeholder="Name" required
                            maxlength="100" autocomplete="off"
                            value="<?= isset($error) && isset($_POST['add_admin']) ? htmlspecialchars($_POST['name'] ?? '') : '' ?>">
                     <div class="invalid-feedback" id="nameFeedback"><?= isset($nameError) ? htmlspecialchars($nameError) : '' ?></div>
@@ -488,7 +494,7 @@ unset($_SESSION['um_reset_flash']);
                 <label for="email" class="um-label">Email address <span class="req-mark">*</span></label>
                 <div class="um-input">
                     <i class="bi bi-envelope um-input-icon"></i>
-                    <input type="email" class="form-control<?= isset($emailError) ? ' is-invalid' : '' ?>" id="email" name="email" placeholder="e.g. name@gmail.com" required
+                    <input type="email" class="form-control<?= isset($emailError) ? ' is-invalid' : '' ?>" id="email" name="email" placeholder="name@example.com" required
                            maxlength="150" autocomplete="off"
                            value="<?= isset($error) && isset($_POST['add_admin']) ? htmlspecialchars($_POST['email'] ?? '') : '' ?>">
                     <div class="invalid-feedback" id="emailFeedback"><?= isset($emailError) ? htmlspecialchars($emailError) : '' ?></div>

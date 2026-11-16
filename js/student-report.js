@@ -39,6 +39,18 @@ document.addEventListener('DOMContentLoaded', function () {
     frame.title = 'Student report preview';
     body.appendChild(status);
     body.appendChild(frame);
+    const noPdfViewer = navigator.pdfViewerEnabled === false;
+    const fallbackLink = el('a', 'btn btn-sm btn-outline-secondary', 'Open PDF');
+    if (noPdfViewer) {
+        const fallback = el('div', 'text-center text-muted py-5');
+        fallback.appendChild(el('p', '', 'PDF preview is not available on this device. Tap Open PDF to view it.'));
+        fallbackLink.target = '_blank';
+        fallbackLink.rel = 'noopener';
+        fallback.appendChild(fallbackLink);
+        body.appendChild(fallback);
+        frame.style.display = 'none';
+        status.hidden = true;
+    }
 
     const footer = el('div', 'modal-footer report-footer');
     const closeBtn = el('button', 'btn report-secondary-btn', 'CLOSE');
@@ -58,6 +70,10 @@ document.addEventListener('DOMContentLoaded', function () {
     let loadTimer = null;
 
     function loadReport() {
+        if (noPdfViewer) {
+            fallbackLink.href = REPORT_URL + '&t=' + Date.now();
+            return;
+        }
         status.hidden = false;
         frame.classList.add('is-loading');
         clearTimeout(loadTimer);

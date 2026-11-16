@@ -1,6 +1,10 @@
 <?php
 require_once __DIR__ . '/ai_extraction.php';
 
+if (!defined('GRADUATION_TRACK')) {
+    define('GRADUATION_TRACK', 'graduating');
+}
+
 if (!defined('DOC_CLASSIFY_MAX_PAGES')) {
     define('DOC_CLASSIFY_MAX_PAGES', 20);   
 }
@@ -14,6 +18,7 @@ function getDocumentRequirementGroups()
         'als'            => 'Graduates of Alternative Learning System (2.3)',
         'transferee'     => 'Transferees',
         'shiftee'        => 'Shiftees',
+        'graduation'     => 'Graduation Requirements',
         'other'          => 'Other',
     ];
 }
@@ -213,6 +218,28 @@ function getDocumentRequirements()
             'ai_hint' => 'PUP student copy of grades / grade slip / PUPSIS grades printout for the previous PUP program.',
         ],
 
+        'graduation_clearance' => [
+            'label' => 'Clearance',
+            'group' => 'graduation', 'store' => true, 'required_for' => [GRADUATION_TRACK],
+            'ref' => 'Graduating', 'note' => 'Signed by the offices that must clear the student before graduation.',
+            'extract_fields' => false, 'field_priority' => 9,
+            'ai_hint' => 'PUP student clearance form for graduating students, with signatures of the offices (library, accounting, guidance, department, registrar) that cleared the student.',
+        ],
+        'certificate_of_candidacy' => [
+            'label' => 'Certificate of Candidacy',
+            'group' => 'graduation', 'store' => true, 'required_for' => [GRADUATION_TRACK],
+            'ref' => 'Graduating', 'note' => 'Certifies that the student is a candidate for graduation.',
+            'extract_fields' => false, 'field_priority' => 9,
+            'ai_hint' => 'PUP Certificate of Candidacy for Graduation certifying that the student is a candidate for graduation in the program, signed by the registrar or dean.',
+        ],
+        'application_for_graduation' => [
+            'label' => 'Application for Graduation',
+            'group' => 'graduation', 'store' => true, 'required_for' => [GRADUATION_TRACK],
+            'ref' => 'Graduating', 'note' => 'Filled out by the graduating student.',
+            'extract_fields' => false, 'field_priority' => 9,
+            'ai_hint' => 'PUP Application for Graduation form filled out by the graduating student, with the program, expected date of graduation and signatures.',
+        ],
+
         'health_information_form' => [
             'label' => 'Health Information Form',
             'group' => 'info', 'store' => false, 'extract_only' => true, 'required_for' => [],
@@ -255,6 +282,7 @@ function requirementTrackGroups()
         'regular'    => ['shs_current', 'shs_past', 'als'],
         'shiftee'    => ['shiftee'],
         'transferee' => ['transferee'],
+        'graduating' => [GRADUATION_TRACK],
     ];
 }
 
@@ -279,7 +307,7 @@ function requirementSettingsDb()
 
 function requirementTrackColumns()
 {
-    return array_keys(getAdmissionTracks());
+    return array_merge(array_keys(getAdmissionTracks()), [GRADUATION_TRACK]);
 }
 
 function setRequirementTracks($conn, $code, array $tracks, $value)
@@ -746,6 +774,9 @@ function requirementKeywordSeeds()
         'transcript_of_records'        => 'TRANSCRIPT OF RECORDS, TRANSCRIPT, CERTIFIED TRUE COPY OF GRADES',
         'shifting_form'                => 'SHIFTING, APPLICATION FOR SHIFTING, SHIFTING FORM',
         'copy_of_grades'               => 'COPY OF GRADES, GRADE SLIP, PUPSIS',
+        'graduation_clearance'         => 'STUDENT CLEARANCE, GRADUATION CLEARANCE, CLEARANCE FORM, CLEARANCE',
+        'certificate_of_candidacy'     => 'CERTIFICATE OF CANDIDACY, CANDIDACY FOR GRADUATION, CANDIDATE FOR GRADUATION',
+        'application_for_graduation'   => 'APPLICATION FOR GRADUATION, GRADUATION APPLICATION',
         'health_information_form'      => 'HEALTH INFORMATION FORM, PUP-HIFS',
         'info_enrollment_procedure'    => 'ADMISSION AND ENROLLMENT PROCEDURE, ENROLLMENT PROCEDURE',
         'info_welcome'                 => 'WELCOME TO THE PUP COMMUNITY',

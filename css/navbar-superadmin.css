@@ -517,3 +517,69 @@ body {
         margin-top: 8px;
     }
 }
+
+@media (max-width: 575.98px) {
+    .admin-topbar {
+        gap: 10px;
+        min-height: 64px;
+    }
+    .admin-page-title {
+        font-size: 16px;
+        line-height: 22px;
+    }
+    .admin-page-subtitle {
+        display: none;
+    }
+    .user-dropdown .dropdown-menu {
+        right: -8px;
+        max-width: calc(100vw - 24px);
+    }
+}
+
+@media (max-width: 575.98px) {
+    #logoutModal .modal-dialog {
+        margin: 12px auto;
+        max-width: calc(100vw - 24px);
+    }
+}
+
+@media (max-width: 991.98px) {
+    .admin-sidebar.offcanvas-lg {
+        --bs-offcanvas-width: min(280px, 85vw);
+        --bs-offcanvas-bg: var(--brand-maroon-dark);
+        --bs-offcanvas-color: var(--text-on-brand);
+        width: min(280px, 85vw) !important;
+        border-right: none !important;
+        background-color: var(--brand-maroon-dark) !important;
+        color: var(--text-on-brand) !important;
+        z-index: 1045 !important;
+    }
+}
+
+@media (max-width: 991.98px) {
+    .admin-sidebar.offcanvas-lg {
+        overflow: visible;
+    }
+    .admin-sidebar-close {
+        position: absolute;
+        top: 28px;
+        right: -22px;
+        z-index: 2;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 36px;
+        margin: 0;
+        padding: 0;
+        border-radius: 0 10px 10px 0;
+        background: var(--brand-maroon-dark);
+        color: rgba(255, 255, 255, 0.75);
+        font-size: 13px;
+        box-shadow: 3px 0 8px rgba(28, 25, 23, 0.12);
+    }
+    .admin-sidebar-close:hover {
+        background: var(--brand-maroon);
+        color: #ffffff;
+    }
+}

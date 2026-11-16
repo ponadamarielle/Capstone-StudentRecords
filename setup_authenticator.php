@@ -63,7 +63,7 @@ $csrf = htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8');
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Set up Google Authenticator - PUP Student Records</title>
+    <title>Set up Google Authenticator - PUP eRecords</title>
     <link href="css/bootstrap.min.css" rel="stylesheet">
     <link href="css/bootstrap-icons.css" rel="stylesheet">
     <link href="css/font.css" rel="stylesheet">
@@ -153,6 +153,9 @@ $csrf = htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8');
                     <input type="hidden" name="action" value="cancel">
                     <button type="submit" class="auth-link"><i class="bi bi-arrow-left"></i> Back to sign in</button>
                 </form>
+            </div>
+            <div class="auth-mobile-info">
+                <p class="auth-mobile-copyright">&copy; <?= date('Y') ?> Polytechnic University of the Philippines - Biñan Campus</p>
             </div>
         </section>
     </main>

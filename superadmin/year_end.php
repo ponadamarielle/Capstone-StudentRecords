@@ -47,7 +47,10 @@ logActivity('year_end_confirmed', 'Confirmed the year-end update of ' . schoolYe
         'school_year' => schoolYearLabel($endYear),
         'graduated'   => $result['graduated'],
         'moved_up'    => $result['moved_up'],
+        'not_graduated_incomplete_requirements' => (int) ($result['held'] ?? 0),
     ],
 ]);
 
-yearEndReply(true, $result['graduated'] . ' students marked as graduate and ' . $result['moved_up'] . ' moved up a year level.');
+$held = (int) ($result['held'] ?? 0);
+yearEndReply(true, $result['graduated'] . ' students marked as graduate and ' . $result['moved_up'] . ' moved up a year level.'
+    . ($held > 0 ? ' ' . $held . ' graduating student' . ($held === 1 ? ' was' : 's were') . ' not marked as graduate because the graduation requirements are incomplete.' : ''));

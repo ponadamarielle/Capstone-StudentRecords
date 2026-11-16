@@ -9,6 +9,24 @@ document.addEventListener('DOMContentLoaded', function () {
     var excel = document.getElementById('classReportExcel');
     var subtitle = document.getElementById('classReportSubtitle');
     var modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    var noPdfViewer = navigator.pdfViewerEnabled === false;
+    var fallback = null;
+    var fallbackLink = null;
+    if (noPdfViewer) {
+        fallback = document.createElement('div');
+        fallback.className = 'text-center text-muted py-5';
+        var fallbackText = document.createElement('p');
+        fallbackText.textContent = 'PDF preview is not available on this device. Tap Open PDF to view it.';
+        fallbackLink = document.createElement('a');
+        fallbackLink.className = 'btn btn-sm btn-outline-secondary';
+        fallbackLink.target = '_blank';
+        fallbackLink.rel = 'noopener';
+        fallbackLink.textContent = 'Open PDF';
+        fallback.appendChild(fallbackText);
+        fallback.appendChild(fallbackLink);
+        frame.parentNode.insertBefore(fallback, frame.nextSibling);
+        frame.style.display = 'none';
+    }
 
     function selectedText(id, fallback) {
         var select = document.getElementById(id);
@@ -39,6 +57,12 @@ document.addEventListener('DOMContentLoaded', function () {
         var excelParams = new URLSearchParams(params);
         excelParams.set('format', 'xlsx');
         if (excel) excel.href = 'class_report.php?' + excelParams.toString();
+        if (noPdfViewer) {
+            fallbackLink.href = url;
+            status.hidden = true;
+            modal.show();
+            return;
+        }
         status.hidden = false;
         frame.classList.add('is-loading');
         frame.src = url;

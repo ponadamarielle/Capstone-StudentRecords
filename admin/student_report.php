@@ -252,13 +252,14 @@ $track = function_exists('normalizeAdmissionTrack')
     ? normalizeAdmissionTrack($student['admission_track'] ?? '')
     : ($student['admission_track'] ?? '');
 $completion = requirementCompletion($requirements, $track, array_column($documents, 'requirement_code'));
+$graduation = graduationCompletion($requirements, $student, array_column($documents, 'requirement_code'));
 
 $fullName = trim((string) ($student['name'] ?? ''));
 if ($fullName === '') {
     $fullName = trim(($student['last_name'] ?? '') . ', ' . ($student['first_name'] ?? '') . ' ' . ($student['middle_name'] ?? ''), ' ,');
 }
 $statusValue = strtolower((string) ($student['status'] ?? ''));
-$statusLabel = in_array($statusValue, ['graduated'], true) ? 'Graduate' : 'Enrollee';
+$statusLabel = in_array($statusValue, ['graduated'], true) ? 'Graduate' : ($graduation ? 'Graduating' : 'Enrollee');
 $gradYear = function_exists('expectedGraduationYear') ? expectedGraduationYear($student) : null;
 $gradLabel = $gradYear ? schoolYearLabel($gradYear) : '';
 $generatedAt = date('F j, Y \a\t g:i A');
@@ -315,10 +316,10 @@ $rows = [
     ['Student Number', $student['student_number'] ?? ''],
     ['Full Name', $fullName],
     ['Course', $student['course'] ?? ''],
-    ['Year & Section', $student['year_section'] ?? ''],
+    [$statusValue === 'graduated' ? 'Last Year & Section' : 'Year & Section', $student['year_section'] ?? ''],
     ['Admission Type', $tracks[$track] ?? ($student['admission_track'] ?? '')],
     ['Student Status', $statusLabel],
-    ['Expected Graduation', $gradLabel],
+    [$statusValue === 'graduated' ? 'Year Graduated' : 'Expected Graduation', $gradLabel],
     ['Gender', $student['sex'] ?? ''],
     ['Date of Birth', reportDate($student['date_of_birth'] ?? '')],
     ['Place of Birth', $student['place_of_birth'] ?? ''],
@@ -347,7 +348,7 @@ if ($photoFile && $pdf->GetY() < $infoTop + $photoWidth * 1.15) {
     $pdf->SetY($infoTop + $photoWidth * 1.15 + 2);
 }
 
-$pdf->SectionTitle('Overall Document Status');
+$pdf->SectionTitle('Admission Requirements');
 $pdf->SetFont('Helvetica', 'B', 13);
 if ($completion['complete']) {
     $pdf->SetTextColor(25, 120, 60);
@@ -363,11 +364,32 @@ $pdf->MultiCell(0, 5, reportText(
 ));
 if ($completion['missing']) {
     $pdf->SetFont('Helvetica', 'B', 9.5);
-    $pdf->Cell(18, 5, reportText('Missing:'), 0, 0);
+    $pdf->Cell($pdf->GetStringWidth(reportText('Not yet submitted:')) + 2, 5, reportText('Not yet submitted:'), 0, 0);
     $pdf->SetFont('Helvetica', '', 9.5);
     $pdf->MultiCell(0, 5, reportText(implode(', ', $completion['missing'])));
 }
 $pdf->Ln(1);
+
+if ($graduation) {
+    $pdf->SectionTitle('Graduation Requirements');
+    $pdf->SetFont('Helvetica', 'B', 13);
+    if ($graduation['complete']) {
+        $pdf->SetTextColor(25, 120, 60);
+    } else {
+        $pdf->SetTextColor(180, 30, 40);
+    }
+    $pdf->Cell(0, 7, reportText(strtoupper($graduation['label'])), 0, 1, 'L');
+    $pdf->SetTextColor(0, 0, 0);
+    $pdf->SetFont('Helvetica', '', 9.5);
+    $pdf->MultiCell(0, 5, reportText($graduation['fulfilled'] . ' of ' . $graduation['total'] . ' graduation requirements submitted.'));
+    if ($graduation['missing']) {
+        $pdf->SetFont('Helvetica', 'B', 9.5);
+        $pdf->Cell($pdf->GetStringWidth(reportText('Not yet submitted:')) + 2, 5, reportText('Not yet submitted:'), 0, 0);
+        $pdf->SetFont('Helvetica', '', 9.5);
+        $pdf->MultiCell(0, 5, reportText(implode(', ', $graduation['missing'])));
+    }
+    $pdf->Ln(1);
+}
 
 $pdf->SectionTitle('Submitted Documents');
 if (!$documents) {
@@ -427,6 +449,7 @@ if (!$download) {
             'target_id'   => $studentId,
             'details'     => [
                 'document_status' => $completion['label'],
+                'graduation_requirements' => $graduation ? $graduation['label'] : 'Not graduating yet',
                 'documents'       => count($documents),
             ],
         ]);

@@ -229,3 +229,16 @@
         padding: 20px 16px;
     }
 }
+
+@media (max-width: 576px) {
+    .rt-card {
+        padding: 16px;
+    }
+    .rt-actions,
+    .rt-actions .rt-btn {
+        width: 100%;
+    }
+    .rt-paper-body {
+        padding: 20px 24px;
+    }
+}

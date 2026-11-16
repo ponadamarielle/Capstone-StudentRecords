@@ -95,6 +95,10 @@ if ($isAjaxAction) {
         case 'delete_document':
             handleDeleteDocument($conn);
             break;
+        case 'notify_graduating':
+            requirePermission('students.status', true);
+            handleNotifyGraduating($conn);
+            break;
         default:
             echo json_encode(['success' => false, 'message' => 'Invalid action.']);
     }
@@ -1494,6 +1498,72 @@ function handleDeleteDocument($conn = null)
     }
 }
 
+function graduatingEmailTargets($conn)
+{
+    $result = mysqli_query($conn, "SELECT student_id, student_number, status"
+        . (in_array('graduation_year', studentColumns($conn), true) ? ", graduation_year" : "")
+        . " FROM students WHERE (status IN ('enrollee', 'active') OR status IS NULL OR status = '')");
+    $requirements = requirementsForClient();
+    $targets = [];
+    while ($result && ($row = mysqli_fetch_assoc($result))) {
+        if (!isGraduationCandidate($row)) {
+            continue;
+        }
+        $snapshot = studentRequirementSnapshot($conn, (int) $row['student_id'], $requirements);
+        if (!$snapshot || !$snapshot['total'] || !filter_var(trim((string) ($snapshot['student']['email'] ?? '')), FILTER_VALIDATE_EMAIL)) {
+            continue;
+        }
+        if (decideStudentNotification($snapshot, latestStudentNotification($conn, (int) $row['student_id'], true)) !== null) {
+            $targets[] = (int) $row['student_id'];
+        }
+    }
+    return $targets;
+}
+
+function handleNotifyGraduating($conn)
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        echo json_encode(['success' => false, 'message' => 'Invalid request.']);
+        return;
+    }
+    session_write_close();
+    @set_time_limit(900);
+    $socket = @fsockopen('smtp.gmail.com', 587, $errno, $errstr, 5);
+    if (!$socket) {
+        echo json_encode(['success' => false, 'message' => 'There is no internet connection, so the emails could not be sent. Please try again when online.']);
+        return;
+    }
+    fclose($socket);
+
+    $sent = 0;
+    $failed = 0;
+    $requirements = requirementsForClient();
+    foreach (graduatingEmailTargets($conn) as $studentId) {
+        $notification = notifyStudentRequirements($conn, $studentId, $requirements);
+        if (!empty($notification['sent'])) {
+            $sent++;
+        } elseif (empty($notification['skipped'])) {
+            $failed++;
+        }
+    }
+    logActivity('graduation_emails_sent',
+        'Sent graduation requirements emails to ' . $sent . ' graduating student' . ($sent === 1 ? '' : 's'),
+        [
+            'category'    => 'audit',
+            'target_type' => 'student',
+            'details'     => [
+                'sent'   => $sent,
+                'failed' => $failed,
+                'action' => 'EMAIL ALL from the Student Directory (Graduating filter)',
+            ],
+        ]);
+    $message = $sent . ' graduating student' . ($sent === 1 ? ' was' : 's were') . ' emailed about their requirements.';
+    if ($failed > 0) {
+        $message .= ' ' . $failed . ' email' . ($failed === 1 ? '' : 's') . ' could not be sent. Check the Activity Log for details.';
+    }
+    echo json_encode(['success' => true, 'sent' => $sent, 'failed' => $failed, 'message' => $message]);
+}
+
 function handleUpdateStatus($conn)
 {
     $studentId = $_POST['student_id'] ?? '';
@@ -1873,7 +1943,7 @@ runScheduledBackupIfDue();
 $search            = isset($_GET['search']) ? trim(preg_replace('/\s+/u', ' ', preg_replace("/[^\\p{L}\\p{M}0-9\\s.,'\\-]/u", '', $_GET['search']))) : '';
 $courseFilter      = isset($_GET['course']) ? trim($_GET['course']) : '';
 $yearSectionFilter = isset($_GET['year_section']) ? trim($_GET['year_section']) : '';
-$statusFilter      = in_array($_GET['status'] ?? '', ['enrollee', 'graduated'], true) ? $_GET['status'] : '';
+$statusFilter      = in_array($_GET['status'] ?? '', ['enrollee', 'graduating', 'graduated'], true) ? $_GET['status'] : '';
 $typeFilter        = isset(STUDENT_TYPES[$_GET['type'] ?? '']) ? $_GET['type'] : '';
 $canSearchStudents = can('students.list') || can('students.search');
 $showStudentTable  = can('students.list') || (can('students.search') && $search !== '');
@@ -1920,7 +1990,7 @@ if ($yearSectionFilter !== '') {
 
 if ($statusFilter === 'graduated') {
     $conditions[] = "status = 'graduated'";
-} elseif ($statusFilter === 'enrollee') {
+} elseif ($statusFilter === 'enrollee' || $statusFilter === 'graduating') {
     $conditions[] = "(status IN ('enrollee', 'active') OR status IS NULL OR status = '')";
 }
 
@@ -1930,7 +2000,8 @@ if ($typeFilter === 'shiftee' || $typeFilter === 'transferee') {
     $conditions[] = "(admission_track IS NULL OR admission_track NOT IN ('shiftee', 'transferee'))";
 }
 
-$sql = "SELECT student_id, student_number, name, course, year_section, status, admission_track FROM students";
+$sql = "SELECT student_id, student_number, name, course, year_section, status, admission_track"
+    . (in_array('graduation_year', studentColumns($conn), true) ? ", graduation_year" : "") . " FROM students";
 if (!empty($conditions)) {
     $sql .= " WHERE " . implode(' AND ', $conditions);
 }
@@ -1948,6 +2019,11 @@ if (!empty($params)) {
 }
 
 $studentRows        = ($result && $showStudentTable) ? mysqli_fetch_all($result, MYSQLI_ASSOC) : [];
+if ($statusFilter === 'enrollee' || $statusFilter === 'graduating') {
+    $studentRows = array_values(array_filter($studentRows, function ($row) use ($statusFilter) {
+        return isGraduationCandidate($row) === ($statusFilter === 'graduating');
+    }));
+}
 $perPage            = 20;
 $totalStudents      = count($studentRows);
 $totalPages         = max(1, (int) ceil($totalStudents / $perPage));
@@ -1971,6 +2047,11 @@ foreach ($studentRows as &$studentRow) {
     $studentRow['completion'] = requirementCompletion(
         $clientRequirements,
         normalizeAdmissionTrack($studentRow['admission_track'] ?? ''),
+        $codesByStudent[(int) $studentRow['student_id']] ?? []
+    );
+    $studentRow['graduation'] = graduationCompletion(
+        $clientRequirements,
+        $studentRow,
         $codesByStudent[(int) $studentRow['student_id']] ?? []
     );
 }
@@ -2088,6 +2169,7 @@ include 'navbar.php';
         <select class="filter filter-status<?= $statusFilter !== '' ? ' has-value' : '' ?>" id="statusFilterSelect" name="status">
             <option value="">All Status</option>
             <option value="enrollee" <?= $statusFilter === 'enrollee' ? 'selected' : '' ?>>Enrollee</option>
+            <option value="graduating" <?= $statusFilter === 'graduating' ? 'selected' : '' ?>>Graduating</option>
             <option value="graduated" <?= $statusFilter === 'graduated' ? 'selected' : '' ?>>Graduate</option>
         </select>
         <?php if ($statusFilter !== ''): ?>
@@ -2131,6 +2213,24 @@ include 'navbar.php';
         </div>
     </div>
     <?php else: ?>
+    <?php if ($statusFilter === 'graduating' && can('students.status')): ?>
+    <?php $graduatingToEmail = count(graduatingEmailTargets($conn)); ?>
+    <div class="graduating-email-bar">
+        <span class="graduating-email-icon"><i class="bi bi-envelope"></i></span>
+        <span class="graduating-email-text">
+            <?php if ($graduatingToEmail > 0): ?>
+                <strong><?= $graduatingToEmail ?> graduating student<?= $graduatingToEmail === 1 ? '' : 's' ?></strong> <?= $graduatingToEmail === 1 ? 'has' : 'have' ?> not been emailed about their requirements yet.
+            <?php else: ?>
+                All graduating students with an email address have been emailed about their requirements.
+            <?php endif; ?>
+        </span>
+        <?php if ($graduatingToEmail > 0): ?>
+            <button type="button" class="graduating-email-btn" id="emailGraduatingBtn" data-count="<?= $graduatingToEmail ?>">
+                <i class="bi bi-send"></i> <span>EMAIL ALL</span>
+            </button>
+        <?php endif; ?>
+    </div>
+    <?php endif; ?>
     <!-- table -->
     <div class="table-scroll-wrapper">
     <table class="student-table">
@@ -2153,10 +2253,14 @@ include 'navbar.php';
             <td><?= htmlspecialchars(STUDENT_TYPES[studentTypeOf($row['admission_track'] ?? '')]) ?></td>
             <?php if (($row['status'] ?? '') === 'graduated'): ?>
             <td class="status-graduate">GRADUATE</td>
+            <?php elseif (isGraduationCandidate($row)): ?>
+            <td class="status-graduating">GRADUATING</td>
             <?php else: ?>
             <td>ENROLLEE</td>
             <?php endif; ?>
-            <td><?= requirementStatusBadge($row['completion']) ?></td>
+            <td>
+                <?= directoryRequirementBadge($row['completion'], $row['graduation']) ?>
+            </td>
             <td>
                <button class="view-btn" data-id="<?= htmlspecialchars($row['student_id']) ?>"><i class="bi bi-eye-fill"></i>View</button>
             </td>
@@ -2294,7 +2398,7 @@ include 'navbar.php';
                         <label for="last_name" class="form-label form-label-custom">
                             Last name <span class="req-mark">*</span>
                         </label>
-                        <input type="text" id="last_name" name="last_name" class="form-control input-custom" required
+                        <input type="text" id="last_name" name="last_name" class="form-control input-custom" required placeholder="Last name"
                                pattern="[A-Za-zÑñ\s.,'\-]+">
                     </div>
 
@@ -2302,7 +2406,7 @@ include 'navbar.php';
                         <label for="first_name" class="form-label form-label-custom">
                             First name <span class="req-mark">*</span>
                         </label>
-                        <input type="text" id="first_name" name="first_name" class="form-control input-custom" required
+                        <input type="text" id="first_name" name="first_name" class="form-control input-custom" required placeholder="First name"
                                pattern="[A-Za-zÑñ\s.,'\-]+">
                     </div>
 
@@ -2555,7 +2659,7 @@ include 'navbar.php';
                     <tr><th>Year of Graduation</th><td id="confirmSummaryGraduation"></td></tr>
                     <tr><th>Attached Documents</th><td id="confirmSummaryDocs"></td></tr>
                     <tr><th>Requirements Status</th><td id="confirmSummaryCompletion"></td></tr>
-                    <tr><th>Missing Requirements</th><td id="confirmSummaryMissing"></td></tr>
+                    <tr><th>Requirements Not Yet Submitted</th><td id="confirmSummaryMissing"></td></tr>
                 </table>
             </div>
             <div class="modal-footer confirm-footer">
@@ -2648,6 +2752,7 @@ include 'navbar.php';
 <script src="../js/scanner.js?v=<?= @filemtime(__DIR__ . '/../js/scanner.js') ?>"></script>
 <script src="../js/course-filter.js?v=<?= @filemtime(__DIR__ . '/../js/course-filter.js') ?>"></script>
 <script src="../js/class-report.js?v=<?= @filemtime(__DIR__ . '/../js/class-report.js') ?>"></script>
+<script src="../js/graduating-email.js?v=<?= @filemtime(__DIR__ . '/../js/graduating-email.js') ?>"></script>
     </div>
 </body>
 </html>

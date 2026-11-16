@@ -75,3 +75,33 @@
     background: var(--brand-maroon-100, #F4DCDC);
     color: var(--brand-maroon, #7B1113);
 }
+.rq-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-top: -6px;
+    padding: 10px 14px;
+    border: 1px solid var(--neutral-border, #E9E5E0);
+    border-radius: 10px;
+    background: var(--brand-gold-50, #FFF7DB);
+    color: #7A5A00;
+    font-size: 13px;
+    line-height: 1.45;
+}
+.rq-note .bi {
+    margin-top: 1px;
+}
+
+.rq-table {
+    min-width: 0;
+}
+@media (max-width: 576px) {
+    .rq-subtabs {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        padding-bottom: 4px;
+    }
+    .rq-subtabs a.rq-subtab {
+        flex: 0 0 auto;
+    }
+}

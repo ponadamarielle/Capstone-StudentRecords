@@ -1579,3 +1579,279 @@ a.directory-pager-num:hover {
     opacity: .5;
     cursor: not-allowed;
 }
+.req-completion-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+}
+.requirement-summary-graduation {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--neutral-border, #E9E5E0);
+}
+.student-table:not(.archive-table) td.status-graduating {
+    color: var(--status-warning, #A35A00);
+}
+.profile-name-row .profile-status.profile-status-graduating {
+    color: var(--status-warning, #A35A00);
+    background-color: var(--status-warning-bg, #FFF1D6);
+}
+.profile-name-row .profile-status.profile-status-graduating::before {
+    background-color: currentColor;
+}
+.graduating-email-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+    padding: 12px 16px;
+    border: 1px solid #F3D9A4;
+    border-radius: 12px;
+    background: #FFF8E6;
+    color: #5C4A1E;
+    font-size: 14px;
+}
+.graduating-email-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: #FFFFFF;
+    color: #A35A00;
+}
+.graduating-email-text {
+    flex: 1;
+}
+.graduating-email-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 36px;
+    padding: 0 16px;
+    border: none;
+    border-radius: 8px;
+    background: #7B1113;
+    color: #FFFFFF;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.graduating-email-btn:hover:not(:disabled) {
+    background: #5E0D0E;
+}
+.graduating-email-btn:disabled {
+    opacity: .65;
+    cursor: not-allowed;
+}
+.requirement-summary.requirement-email {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+.requirement-email-text {
+    flex: 1;
+    min-width: 0;
+}
+.requirement-email-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+.requirement-email:not(:has(:not([hidden]))) {
+    display: none;
+}
+.documents-split {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr));
+    gap: 20px;
+    align-items: start;
+}
+.documents-split-col {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+.documents-card-status {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 14px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--neutral-border, #E9E5E0);
+}
+.documents-split-col.profile-info-card .document-row {
+    background: var(--neutral-surface, #FFFFFF);
+}
+.documents-split-col.profile-info-card:hover {
+    box-shadow: none;
+    transform: none;
+}
+.documents-split-col.profile-info-card .document-row:hover,
+.documents-split-col.profile-info-card .requirement-view-row:hover {
+    background: var(--neutral-surface, #FFFFFF);
+    border-color: var(--neutral-border, #E9E5E0);
+    box-shadow: none;
+    transform: none;
+}
+.documents-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+.documents-card-head .profile-info-title {
+    margin-bottom: 0;
+}
+.documents-split-col {
+    container-type: inline-size;
+}
+.documents-split-col .requirement-view-row .req-body {
+    min-width: 0;
+}
+.documents-split-col .requirement-view-row .req-label {
+    overflow-wrap: anywhere;
+}
+@container (max-width: 520px) {
+    .documents-split-col .requirement-view-row {
+        flex-wrap: wrap;
+        row-gap: 6px;
+    }
+    .documents-split-col .requirement-view-row .req-body {
+        flex: 1 1 calc(100% - 60px);
+    }
+    .documents-split-col .requirement-view-row .document-actions {
+        flex: 1 1 100%;
+        justify-content: flex-end;
+    }
+    .documents-split-col .requirement-view-row .doc-uploaded-ago {
+        margin-right: auto;
+    }
+}
+
+@media (max-width: 1200px) {
+    .add-filter .filter-row {
+        flex-wrap: wrap;
+    }
+}
+@media (max-width: 768px) {
+    .filter-row .filter-wrap,
+    .filter-row .course-filter {
+        flex: 1 1 calc(50% - 10px);
+    }
+    .filter-row .filter,
+    .filter-row .course-filter .course-filter-button {
+        width: 100%;
+    }
+    .graduating-email-bar {
+        flex-wrap: wrap;
+    }
+    .graduating-email-btn {
+        width: 100%;
+        justify-content: center;
+    }
+    .requirement-summary.requirement-email {
+        flex-wrap: wrap;
+    }
+    .requirement-email-btn {
+        width: 100%;
+        justify-content: center;
+    }
+    .directory-pager {
+        justify-content: center;
+    }
+    #addRecordsModal .add-header {
+        padding: 16px;
+    }
+    #addRecordsModal .header-btn-group {
+        width: 100%;
+    }
+    #addRecordsModal .header-btn-group .btn {
+        flex: 1 1 auto;
+        justify-content: center;
+    }
+    #addRecordsModal .tab-content {
+        height: auto;
+        max-height: none;
+        padding: 16px !important;
+    }
+    #addRecordsModal .nav-tabs {
+        padding: 0 16px;
+        overflow-x: auto;
+        flex-wrap: nowrap;
+    }
+    #addRecordsModal .add-footer,
+    #addRecordsModal .modal-footer {
+        flex-wrap: wrap;
+        padding: 12px 16px;
+    }
+    #confirmSaveModal .modal-body,
+    #confirmSaveModal .confirm-header,
+    #confirmSaveModal .confirm-footer {
+        padding-left: 16px;
+        padding-right: 16px;
+    }
+}
+@media (max-width: 576px) {
+    .filter-row .filter-wrap,
+    .filter-row .course-filter {
+        flex: 1 1 100%;
+    }
+    .filter-row .filter-wrap.filter-wrap-year-section,
+    .filter-row .filter-wrap.filter-wrap-status {
+        flex: 1 1 calc(50% - 10px);
+        min-width: 0;
+    }
+    .filter-row .filter-wrap .filter.filter-year-section {
+        flex: 1 1 auto;
+        width: 100%;
+        min-width: 0;
+    }
+    #addRecordsModal .modal-dialog {
+        margin: 8px;
+    }
+    #addRecordsModal .btn-cancel,
+    #addRecordsModal .btn-save,
+    #confirmSaveModal .btn-cancel,
+    #confirmSaveModal .btn-save {
+        flex: 1 1 auto;
+    }
+    #confirmSaveModal .confirm-summary-table th,
+    #confirmSaveModal .confirm-summary-table td {
+        display: block;
+        width: 100%;
+    }
+    #confirmSaveModal .confirm-summary-table th {
+        border-bottom: none;
+        padding-bottom: 2px;
+    }
+    .documents-card-head {
+        flex-wrap: wrap;
+    }
+}
+
+@media (max-width: 768px) {
+    #directoryFilterOnlyForm {
+        flex-wrap: wrap;
+    }
+    #directoryFilterOnlyForm .filter-wrap,
+    #directoryFilterOnlyForm .course-filter {
+        flex: 1 1 100%;
+    }
+    #directoryFilterOnlyForm .filter-wrap.filter-wrap-year-section,
+    #directoryFilterOnlyForm .filter-wrap.filter-wrap-status,
+    #directoryFilterOnlyForm .filter-wrap.filter-wrap-type {
+        flex: 1 1 0;
+        min-width: 0;
+    }
+    #directoryFilterOnlyForm .filter-wrap .filter {
+        flex: 1 1 auto;
+        width: 100%;
+        min-width: 0;
+    }
+}

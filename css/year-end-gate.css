@@ -108,3 +108,36 @@
 #yearEndGate .ye-confirm:disabled {
     opacity: 0.65;
 }
+
+#yearEndGate .ye-held {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    margin: 12px 0 0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #FFF7E6;
+    color: #8A5A00;
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+@media (max-width: 576px) {
+    #yearEndGate .modal-dialog {
+        margin: 12px auto;
+        max-width: calc(100vw - 24px);
+    }
+    #yearEndGate .ye-head,
+    #yearEndGate .ye-body {
+        padding: 16px;
+    }
+    #yearEndGate .ye-foot {
+        padding: 12px 16px;
+    }
+    #yearEndGate .ye-confirm {
+        width: 100%;
+    }
+    #yearEndGate .ye-stat-value {
+        font-size: 22px;
+    }
+}

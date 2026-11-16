@@ -101,10 +101,27 @@ function studentRequirementSnapshot($conn, $studentId, array $requirements)
             continue;
         }
         $items[] = [
-            'label'    => $r['label'] ?? $r['code'],
-            'received' => isset($onFile[$r['code']]),
-            'date'     => isset($onFile[$r['code']]) ? ($onFile[$r['code']]['uploaded_at'] ?? '') : '',
+            'label'      => $r['label'] ?? $r['code'],
+            'received'   => isset($onFile[$r['code']]),
+            'date'       => isset($onFile[$r['code']]) ? ($onFile[$r['code']]['uploaded_at'] ?? '') : '',
+            'graduation' => false,
         ];
+    }
+    $graduating = function_exists('isGraduationCandidate') && isGraduationCandidate($student);
+    if ($graduating) {
+        $graduationTrack = defined('GRADUATION_TRACK') ? GRADUATION_TRACK : 'graduating';
+        foreach ($requirements as $r) {
+            $requiredFor = $r['required_for'] ?? [];
+            if (!is_array($requiredFor) || !in_array($graduationTrack, $requiredFor, true)) {
+                continue;
+            }
+            $items[] = [
+                'label'      => $r['label'] ?? $r['code'],
+                'received'   => isset($onFile[$r['code']]),
+                'date'       => isset($onFile[$r['code']]) ? ($onFile[$r['code']]['uploaded_at'] ?? '') : '',
+                'graduation' => true,
+            ];
+        }
     }
     $missing = array_values(array_map(fn($i) => $i['label'], array_filter($items, fn($i) => !$i['received'])));
     $tracks = function_exists('getAdmissionTracks') ? getAdmissionTracks() : [];
@@ -117,7 +134,20 @@ function studentRequirementSnapshot($conn, $studentId, array $requirements)
         'total'    => count($items),
         'received' => count($items) - count($missing),
         'track'    => $tracks[$track] ?? '',
+        'graduating' => $graduating && (bool) array_filter($items, fn($i) => $i['graduation']),
     ];
+}
+
+function studentNotificationAllowed(array $student)
+{
+    if (!function_exists('expectedGraduationYear') || !function_exists('schoolYearHasEnded')) {
+        return true;
+    }
+    $end = expectedGraduationYear($student);
+    if ($end === null || !schoolYearHasEnded($end)) {
+        return true;
+    }
+    return function_exists('isGraduationCandidate') && isGraduationCandidate($student);
 }
 
 function decideStudentNotification(array $snapshot, ?array $last)
@@ -154,11 +184,8 @@ function notifyStudentRequirements($conn, $studentId, array $requirements, $forc
         if (in_array($statusValue, ['graduated', 'inactive', 'onleave'], true)) {
             return ['sent' => false, 'skipped' => true, 'reason' => 'Archived student.'];
         }
-        if (function_exists('expectedGraduationYear') && function_exists('schoolYearHasEnded')) {
-            $end = expectedGraduationYear($student);
-            if ($end !== null && schoolYearHasEnded($end)) {
-                return ['sent' => false, 'skipped' => true, 'reason' => 'Graduated student.'];
-            }
+        if (!studentNotificationAllowed($student)) {
+            return ['sent' => false, 'skipped' => true, 'reason' => 'Graduated student.'];
         }
 
         $type = decideStudentNotification($snapshot, latestStudentNotification($conn, $studentId, true));
@@ -211,11 +238,13 @@ function sendStudentNotification($conn, array $snapshot, $type)
     }
 
     $opts = activityStudentOpts($conn, $studentId, $student);
+    $admissionMissing = (bool) array_filter($snapshot['items'], fn($i) => empty($i['graduation']) && !$i['received']);
+    $scope = empty($snapshot['graduating']) ? 'admission' : ($admissionMissing ? 'admission and graduation' : 'graduation');
     $labels = [
-        'complete'   => 'requirements complete',
-        'incomplete' => 'missing requirements',
-        'updated'    => 'updated missing requirements',
-        'completed'  => 'requirements updated and completed',
+        'complete'   => $scope . ' requirements complete',
+        'incomplete' => $scope . ' requirements not yet submitted',
+        'updated'    => 'updated ' . $scope . ' requirements not yet submitted',
+        'completed'  => $scope . ' requirements updated and completed',
     ];
     logActivity($success ? 'email_sent' : 'email_failed',
         ($success ? 'Sent' : 'Could not send') . ' the "' . $labels[$type] . '" email to ' . activityStudentLabel($opts)
@@ -228,7 +257,7 @@ function sendStudentNotification($conn, array $snapshot, $type)
                 'notification'    => ucfirst($labels[$type]),
                 'document_status' => $status,
                 'recipient'       => $recipient,
-                'missing'         => $snapshot['missing'] ? implode(', ', $snapshot['missing']) : 'None',
+                'not_yet_submitted' => $snapshot['missing'] ? implode(', ', $snapshot['missing']) : 'None',
                 'error'           => $error,
             ], fn($v) => $v !== null && $v !== ''),
         ]);
@@ -309,33 +338,62 @@ function buildStudentNotificationEmail(array $snapshot, $type)
     $office   = notifyEnv('NOTIFY_OFFICE_NAME', 'Admission and Registration Office');
     $campus   = 'PUP Biñan Campus';
     $date     = (new DateTime('now', new DateTimeZone(STUDENT_NOTIFY_TIMEZONE)))->format('F j, Y \a\t g:i A');
+    $graduating = !empty($snapshot['graduating']);
+    $scope    = $graduating ? 'admission and graduation' : 'admission';
+    $onlyGraduation = $graduating
+        && !array_filter($snapshot['items'], fn($i) => empty($i['graduation']) && !$i['received']);
+    if ($onlyGraduation) {
+        $snapshot['items'] = array_values(array_filter($snapshot['items'], fn($i) => !empty($i['graduation'])));
+        $snapshot['total'] = count($snapshot['items']);
+        $snapshot['received'] = count(array_filter($snapshot['items'], fn($i) => $i['received']));
+    }
+    $showSections = $graduating && !$onlyGraduation;
+    $firstNotice = $onlyGraduation && (int) $snapshot['received'] === 0;
 
     $copy = [
         'complete' => [
-            'subject' => 'Your admission requirements are complete',
+            'subject' => 'Your ' . $scope . ' requirements are complete',
             'eyebrow' => 'Requirements Update',
             'title'   => 'All set, your requirements are complete',
-            'lead'    => 'We have received and checked every document required for your admission. Your student record is now marked <strong>Complete</strong>. No further action is needed from you.',
+            'lead'    => 'We have received and checked every document required for your ' . $scope . '. Your student record is now marked <strong>Complete</strong>. No further action is needed from you.',
         ],
         'incomplete' => [
-            'subject' => 'Action needed: missing admission requirements',
+            'subject' => 'Action needed: ' . $scope . ' requirements not yet submitted',
             'eyebrow' => 'Action Needed',
-            'title'   => 'A few requirements are still missing',
-            'lead'    => 'We have reviewed the documents in your student record, and some required documents have not been submitted yet. Your record is currently marked <strong>Incomplete</strong>.',
+            'title'   => 'A few requirements have not been submitted yet',
+            'lead'    => 'We have reviewed the documents in your student record, and some required documents have not been submitted yet. Your record is currently marked <strong>Incomplete</strong>.'
+                . ($graduating ? ' As a candidate for graduation, you are required to submit all of the requirements below.' : ''),
         ],
         'updated' => [
-            'subject' => 'Update on your missing admission requirements',
+            'subject' => 'Update on your ' . $scope . ' requirements',
             'eyebrow' => 'Requirements Update',
             'title'   => 'Thank you, we received your documents',
-            'lead'    => 'Your newly submitted documents have been added to your student record. A few requirements are still missing, so your record remains <strong>Incomplete</strong> for now.',
+            'lead'    => 'Your newly submitted documents have been added to your student record. A few requirements have not been submitted yet, so your record remains <strong>Incomplete</strong> for now.',
         ],
         'completed' => [
             'subject' => 'Your requirements have been updated and completed',
             'eyebrow' => 'Requirements Completed',
             'title'   => 'Your requirements are now complete',
-            'lead'    => 'The missing documents you submitted have been received and checked. We rechecked your record and it is now marked <strong>Complete</strong>. Thank you for completing your requirements.',
+            'lead'    => 'The remaining documents you submitted have been received and checked. We rechecked your record and it is now marked <strong>Complete</strong>. Thank you for completing your requirements.',
         ],
     ][$type];
+    if ($onlyGraduation && $type === 'incomplete') {
+        $copy = [
+            'subject' => 'Action needed: graduation requirements not yet submitted',
+            'eyebrow' => 'Graduation Requirements',
+            'title'   => 'Please submit your graduation requirements',
+            'lead'    => 'You are now a candidate for graduation. You need to submit the graduation requirements below before you can graduate.',
+        ];
+    } elseif ($onlyGraduation && $type === 'updated') {
+        $copy['subject'] = 'Update on your graduation requirements';
+    } elseif ($onlyGraduation && ($type === 'completed' || $type === 'complete')) {
+        $copy = [
+            'subject' => 'Your graduation requirements are complete',
+            'eyebrow' => 'Requirements Completed',
+            'title'   => 'Your graduation requirements are complete',
+            'lead'    => 'We have received and checked all of your graduation requirements. Your record is now marked <strong>Complete</strong>. Thank you for completing your requirements.',
+        ];
+    }
 
     $accent    = $complete ? '#1f7a4d' : '#b3261e';
     $accentBg  = $complete ? '#e9f6ef' : '#fdecea';
@@ -345,10 +403,28 @@ function buildStudentNotificationEmail(array $snapshot, $type)
     $barRest   = 100 - $barFill;
 
     $rows = '';
+    $section = function ($title) {
+        return '<tr><td colspan="3" style="padding:16px 0 4px 0;font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:#6e0000;">' . $title . '</td></tr>';
+    };
+    $graduationStarted = false;
+    if ($showSections) {
+        $rows .= $section('Admission requirements');
+    }
     foreach ($snapshot['items'] as $item) {
+        if ($firstNotice) {
+            $rows .= '<tr>'
+                . '<td style="padding:11px 0;border-bottom:1px solid #efe7e3;width:14px;vertical-align:top;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:20px;font-weight:bold;color:#6e0000;">&bull;</td>'
+                . '<td style="padding:11px 0;border-bottom:1px solid #efe7e3;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#2b2b2b;">' . $e($item['label']) . '</td>'
+                . '</tr>';
+            continue;
+        }
+        if ($showSections && !empty($item['graduation']) && !$graduationStarted) {
+            $graduationStarted = true;
+            $rows .= $section('Graduation requirements');
+        }
         $mark  = $item['received'] ? '&#10003;' : '&#10007;';
         $color = $item['received'] ? '#1f7a4d' : '#b3261e';
-        $badge = $item['received'] ? 'Received' : 'Missing';
+        $badge = $item['received'] ? 'Received' : 'Not yet submitted';
         $badgeBg = $item['received'] ? '#e9f6ef' : '#fdecea';
         $rows .= '<tr>'
             . '<td style="padding:11px 0 11px 0;border-bottom:1px solid #efe7e3;width:28px;vertical-align:top;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;color:' . $color . ';">' . $mark . '</td>'
@@ -359,7 +435,7 @@ function buildStudentNotificationEmail(array $snapshot, $type)
     }
 
     $missingBlock = '';
-    if (!$complete) {
+    if (!$complete && !$firstNotice) {
         $count = count($snapshot['missing']);
         $missingBlock = '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:22px 0 4px 0;">'
             . '<tr><td style="background:#fff8e6;border-left:4px solid #e0a100;border-radius:6px;padding:14px 18px;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:20px;color:#5c5240;">'
@@ -373,6 +449,7 @@ function buildStudentNotificationEmail(array $snapshot, $type)
         ['Course', $student['course'] ?? ''],
         ['Year & Section', $student['year_section'] ?? ''],
         ['Admission Type', $snapshot['track']],
+        ['Graduation', $graduating ? 'Candidate for graduation' : ''],
     ];
     $infoRows = '';
     foreach ($info as [$label, $value]) {
@@ -385,9 +462,26 @@ function buildStudentNotificationEmail(array $snapshot, $type)
             . '</tr>';
     }
 
+    $statusBox = $onlyGraduation && (int) $snapshot['received'] === 0 ? '' : ''
+        . '<tr><td style="padding:22px 32px 0 32px;">'
+        . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:' . $accentBg . ';border-radius:10px;">'
+        . '<tr><td style="padding:16px 18px;">'
+        . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+        . '<td style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#6b5f5a;">Document status<br>'
+        . '<span style="font-family:Georgia,serif;font-size:22px;line-height:30px;font-weight:bold;color:' . $accent . ';letter-spacing:1px;">' . $statusTxt . '</span></td>'
+        . '<td align="right" style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#6b5f5a;">Submitted<br>'
+        . '<span style="font-family:Georgia,serif;font-size:22px;line-height:30px;font-weight:bold;color:#2b2b2b;">' . (int) $snapshot['received'] . '<span style="font-size:15px;color:#8a7b74;"> / ' . (int) $snapshot['total'] . '</span></span></td>'
+        . '</tr></table>'
+        . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px;border-radius:999px;overflow:hidden;"><tr>'
+        . '<td width="' . $barFill . '%" style="height:8px;background:' . $accent . ';font-size:0;line-height:0;">&nbsp;</td>'
+        . ($barRest > 0 ? '<td width="' . $barRest . '%" style="height:8px;background:#ffffff;font-size:0;line-height:0;">&nbsp;</td>' : '')
+        . '</tr></table>'
+        . '</td></tr></table>'
+        . '</td></tr>';
+
     $html = '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' . $e($copy['subject']) . '</title></head>'
         . '<body style="margin:0;padding:0;background:#eceff3;">'
-        . '<div style="display:none;max-height:0;overflow:hidden;">' . $e($complete ? 'Your document status is Complete.' : count($snapshot['missing']) . ' requirement(s) still missing.') . '</div>'
+        . '<div style="display:none;max-height:0;overflow:hidden;">' . $e($complete ? 'Your document status is Complete.' : count($snapshot['missing']) . ' requirement(s) not yet submitted.') . '</div>'
         . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eceff3;"><tr><td align="center" style="padding:32px 12px;">'
         . '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e6dcd7;">'
 
@@ -411,24 +505,10 @@ function buildStudentNotificationEmail(array $snapshot, $type)
         . '<p style="margin:0;">' . $copy['lead'] . '</p>'
         . '</td></tr>'
 
-        . '<tr><td style="padding:22px 32px 0 32px;">'
-        . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:' . $accentBg . ';border-radius:10px;">'
-        . '<tr><td style="padding:16px 18px;">'
-        . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-        . '<td style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#6b5f5a;">Document status<br>'
-        . '<span style="font-family:Georgia,serif;font-size:22px;line-height:30px;font-weight:bold;color:' . $accent . ';letter-spacing:1px;">' . $statusTxt . '</span></td>'
-        . '<td align="right" style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#6b5f5a;">Submitted<br>'
-        . '<span style="font-family:Georgia,serif;font-size:22px;line-height:30px;font-weight:bold;color:#2b2b2b;">' . (int) $snapshot['received'] . '<span style="font-size:15px;color:#8a7b74;"> / ' . (int) $snapshot['total'] . '</span></span></td>'
-        . '</tr></table>'
-        . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px;border-radius:999px;overflow:hidden;"><tr>'
-        . '<td width="' . $barFill . '%" style="height:8px;background:' . $accent . ';font-size:0;line-height:0;">&nbsp;</td>'
-        . ($barRest > 0 ? '<td width="' . $barRest . '%" style="height:8px;background:#ffffff;font-size:0;line-height:0;">&nbsp;</td>' : '')
-        . '</tr></table>'
-        . '</td></tr></table>'
-        . '</td></tr>'
+        . $statusBox
 
         . '<tr><td style="padding:22px 32px 0 32px;">'
-        . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:#8a7b74;margin-bottom:4px;">Your requirements</div>'
+        . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:#8a7b74;margin-bottom:4px;">' . ($onlyGraduation ? 'Your graduation requirements' : 'Your requirements') . '</div>'
         . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' . $rows . '</table>'
         . $missingBlock
         . '</td></tr>'
@@ -456,7 +536,12 @@ function buildStudentNotificationEmail(array $snapshot, $type)
         . strip_tags($copy['lead']) . "\n\n"
         . 'Document status: ' . ($complete ? 'Complete' : 'Incomplete') . ' (' . $snapshot['received'] . ' of ' . $snapshot['total'] . " submitted)\n";
     if (!$complete) {
-        $text .= "\nStill to submit:\n- " . implode("\n- ", $snapshot['missing']) . "\n";
+        $text .= "\nStill to submit:\n";
+        foreach ($snapshot['items'] as $item) {
+            if (!$item['received']) {
+                $text .= '- ' . $item['label'] . (!empty($item['graduation']) ? ' (graduation)' : '') . "\n";
+            }
+        }
     }
     $text .= "\n" . $office . "\n" . $campus . "\n\nThis is an automated message. Please do not reply.";
 
@@ -487,11 +572,8 @@ function studentNotificationPending($conn, $studentId, array $requirements)
         if (in_array(strtolower((string) ($student['status'] ?? '')), ['graduated', 'inactive', 'onleave'], true)) {
             return null;
         }
-        if (function_exists('expectedGraduationYear') && function_exists('schoolYearHasEnded')) {
-            $end = expectedGraduationYear($student);
-            if ($end !== null && schoolYearHasEnded($end)) {
-                return null;
-            }
+        if (!studentNotificationAllowed($student)) {
+            return null;
         }
         if (!filter_var(trim((string) ($student['email'] ?? '')), FILTER_VALIDATE_EMAIL)) {
             return null;
@@ -501,11 +583,32 @@ function studentNotificationPending($conn, $studentId, array $requirements)
             return null;
         }
         $status = $snapshot['complete'] ? 'Complete' : 'Incomplete';
+        $admissionMissing = [];
+        $graduationMissing = [];
+        foreach ($snapshot['items'] as $item) {
+            if (!$item['received']) {
+                if (!empty($item['graduation'])) {
+                    $graduationMissing[] = $item['label'];
+                } else {
+                    $admissionMissing[] = $item['label'];
+                }
+            }
+        }
+        $parts = [];
+        if ($admissionMissing) {
+            $parts[] = 'Admission requirements are incomplete';
+        }
+        if ($graduationMissing) {
+            $parts[] = 'Graduation requirements are incomplete';
+        }
+        if (!$parts) {
+            $parts[] = !empty($snapshot['graduating'])
+                ? 'Admission and graduation requirements are now complete'
+                : 'Requirements are now complete';
+        }
         return [
             'status' => $status,
-            'text'   => 'Requirement status changed to ' . $status
-                . ($snapshot['missing'] ? ' (missing: ' . implode(', ', $snapshot['missing']) . ')' : '')
-                . '. The student has not been emailed about this change.',
+            'text'   => implode('. ', $parts) . '. The student has not been emailed about this change.',
         ];
     } catch (Throwable $e) {
         return null;

@@ -83,7 +83,8 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function openDocumentPreview(filePath, fileName) {
-        if (!previewPanel || !previewFrame) {
+        const isPdf = /\.pdf($|[?#])/i.test(filePath);
+        if (!previewPanel || !previewFrame || (isPdf && navigator.pdfViewerEnabled === false)) {
             window.open(filePath, '_blank');
             return;
         }
@@ -1064,7 +1065,7 @@ document.addEventListener('DOMContentLoaded', function () {
         heading.className = 'requirement-checklist-heading';
         const missingNow = missingRequiredLabels();
         heading.appendChild(completionBadge(missingNow.length === 0,
-            missingNow.length ? 'Missing: ' + missingNow.join(', ') : 'All required documents attached'));
+            missingNow.length ? 'Not yet submitted: ' + missingNow.join(', ') : 'All required documents attached'));
         heading.appendChild(document.createTextNode((ADMISSION_TRACKS[currentTrack()] || 'Requirements') + ': '
             + attachedRequired.length + ' of ' + required.length + ' required documents attached'));
         requirementChecklist.appendChild(heading);

@@ -2296,6 +2296,11 @@ $completion = requirementCompletion(
     $admissionTrack,
     array_column($documentRows, 'requirement_code')
 );
+$graduation = graduationCompletion(
+    requirementsForClient(),
+    $student,
+    array_column($documentRows, 'requirement_code')
+);
 
 $clientDocuments = array_map(fn($d) => [
     'document_id'      => (int) $d['document_id'],
@@ -2335,6 +2340,10 @@ if ($savedGradYear !== null && !in_array($savedGradYear, $gradYearOptions, true)
     sort($gradYearOptions);
 }
 $statusLabel  = $statusLabels[$student['status']] ?? ucfirst($student['status'] ?? '');
+$isGraduating = !$isArchivedView && isGraduationCandidate($student);
+if ($isGraduating) {
+    $statusLabel = 'Graduating';
+}
 
 $defaultAvatarSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
     . '<rect width="100" height="100" fill="#e9ecef"/>'
@@ -2390,10 +2399,10 @@ include 'navbar.php';
                     <?php elseif (($student['status'] ?? '') === 'graduated'): ?>
                     <span class="profile-status profile-status-graduate"><?= htmlspecialchars($statusLabel) ?></span>
                     <?php elseif (!can('students.status')): ?>
-                    <span class="profile-status"><?= htmlspecialchars($statusLabel) ?></span>
+                    <span class="profile-status<?= $isGraduating ? ' profile-status-graduating' : '' ?>"><?= htmlspecialchars($statusLabel) ?></span>
                     <?php else: ?>
                     <div class="dropdown status-dropdown">
-                        <button type="button" class="profile-status status-dropdown-toggle dropdown-toggle" aria-haspopup="true" aria-expanded="false" aria-label="Change status">
+                        <button type="button" class="profile-status status-dropdown-toggle dropdown-toggle<?= $isGraduating ? ' profile-status-graduating' : '' ?>" aria-haspopup="true" aria-expanded="false" aria-label="Change status">
                             <?= htmlspecialchars($statusLabel) ?>
                         </button>
                         <div class="course-filter-menu status-dropdown-menu" role="listbox" hidden>
@@ -2502,25 +2511,55 @@ include 'navbar.php';
                 </div>
 
                 <div class="tab-pane fade" id="view-docs" role="tabpanel">
-                    <div class="requirement-summary">
+                    <?php
+                    $graduationCodes = [];
+                    foreach (requirementsForClient() as $req) {
+                        if (in_array(GRADUATION_TRACK, $req['required_for'] ?? [], true)) {
+                            $graduationCodes[$req['code']] = true;
+                        }
+                    }
+                    $admissionDocs = $graduation ? array_values(array_filter($orderedDocs, fn($d) => !isset($graduationCodes[$d['requirement_code'] ?? '']))) : $orderedDocs;
+                    $graduationDocs = $graduation ? array_values(array_filter($orderedDocs, fn($d) => isset($graduationCodes[$d['requirement_code'] ?? '']))) : [];
+                    $emailSummary = studentNotificationSummary($conn, $studentId);
+                    $emailFailed = $emailSummary && !$emailSummary['success'];
+                    $emailPending = $emailFailed ? null : studentNotificationPending($conn, (int) $studentId, requirementsForClient());
+                    ?>
+                    <?php if ($graduation && ($emailSummary || $emailPending)): ?>
+                    <div class="requirement-summary requirement-email">
+                        <small class="requirement-email-text <?= $emailFailed || $emailPending ? 'text-danger' : 'text-muted' ?>" data-email-note<?= $emailSummary || $emailPending ? '' : ' hidden' ?>>
+                            <i class="bi bi-envelope"></i> <span data-email-note-text><?= $emailPending ? htmlspecialchars($emailPending['text']) : ($emailSummary ? htmlspecialchars($emailSummary['text']) : '') ?></span>
+                        </small>
+                        <button type="button" class="profile-btn profile-btn-primary requirement-email-btn" id="resendEmailBtn" data-student-id="<?= (int) $studentId ?>"<?= ($emailFailed || $emailPending) && !$isArchivedView ? '' : ' hidden' ?>><i class="bi bi-send"></i> <?= $emailPending ? 'SEND EMAIL' : 'SEND EMAIL AGAIN' ?></button>
+                    </div>
+                    <?php endif; ?>
+                    <?php if ($graduation): ?>
+                    <div class="documents-split">
+                        <div class="documents-split-col profile-info-card">
+                            <div class="documents-card-head">
+                                <p class="profile-info-title"><i class="bi bi-file-earmark-text"></i> Admission requirements</p>
+                                <span data-requirement-badge><?= requirementStatusBadge($completion) ?></span>
+                            </div>
+                    <?php endif; ?>
+                    <div class="<?= $graduation ? 'documents-card-status' : 'requirement-summary' ?>">
+                        <?php if (!$graduation): ?>
                         <div class="requirement-summary-head">
-                            <strong class="requirement-summary-title">REQUIREMENT STATUS</strong>
+                            <strong class="requirement-summary-title">ADMISSION REQUIREMENTS</strong>
                             <span data-requirement-badge><?= requirementStatusBadge($completion) ?></span>
                         </div>
+                        <?php endif; ?>
                         <small class="requirement-status-detail text-muted" data-requirement-detail>
-                            <?= (int) $completion['fulfilled'] ?> of <?= (int) $completion['total'] ?> required documents<?= $completion['missing'] ? ' · Missing: ' . htmlspecialchars(implode(', ', $completion['missing'])) : '' ?>
+                            <?= (int) $completion['fulfilled'] ?> of <?= (int) $completion['total'] ?> required documents<?= $completion['missing'] ? ' · Not yet submitted: ' . htmlspecialchars(implode(', ', $completion['missing'])) : '' ?>
                         </small>
-                        <?php $emailSummary = studentNotificationSummary($conn, $studentId); ?>
-                        <?php $emailFailed = $emailSummary && !$emailSummary['success']; ?>
-                        <?php $emailPending = $emailFailed ? null : studentNotificationPending($conn, (int) $studentId, requirementsForClient()); ?>
+                        <?php if (!$graduation): ?>
                         <small class="d-block mt-1 <?= $emailFailed || $emailPending ? 'text-danger' : 'text-muted' ?>" data-email-note<?= $emailSummary || $emailPending ? '' : ' hidden' ?>>
                             <i class="bi bi-envelope"></i> <span data-email-note-text><?= $emailPending ? htmlspecialchars($emailPending['text']) : ($emailSummary ? htmlspecialchars($emailSummary['text']) : '') ?></span>
                         </small>
                         <button type="button" class="btn btn-sm btn-outline-danger mt-2" id="resendEmailBtn" data-student-id="<?= (int) $studentId ?>"<?= ($emailFailed || $emailPending) && !$isArchivedView ? '' : ' hidden' ?>><i class="bi bi-send"></i> <?= $emailPending ? 'SEND EMAIL' : 'SEND EMAIL AGAIN' ?></button>
+                        <?php endif; ?>
                     </div>
                     <div id="documentList" class="d-flex flex-column gap-2">
-                        <?php if (!empty($orderedDocs)): ?>
-                            <?php foreach ($orderedDocs as $doc): ?>
+                        <?php if (!empty($admissionDocs)): ?>
+                            <?php foreach ($admissionDocs as $doc): ?>
                                 <div class="document-row requirement-view-row"
                                      data-document-id="<?= (int) $doc['document_id'] ?>"
                                      data-file-path="<?= htmlspecialchars($doc['file_path']) ?>"
@@ -2548,6 +2587,51 @@ include 'navbar.php';
                             <div class="text-muted document-empty-state">No documents uploaded yet.</div>
                         <?php endif; ?>
                     </div>
+                    <?php if ($graduation): ?>
+                        </div>
+                        <div class="documents-split-col profile-info-card">
+                            <div class="documents-card-head">
+                                <p class="profile-info-title"><i class="bi bi-mortarboard"></i> Graduation requirements</p>
+                                <span data-graduation-badge><?= graduationStatusBadge($graduation) ?></span>
+                            </div>
+                            <div class="documents-card-status">
+                                <small class="requirement-status-detail text-muted" data-graduation-detail>
+                                    <?= (int) $graduation['fulfilled'] ?> of <?= (int) $graduation['total'] ?> required documents<?= $graduation['missing'] ? ' · Not yet submitted: ' . htmlspecialchars(implode(', ', $graduation['missing'])) : '' ?>
+                                </small>
+                            </div>
+                            <div id="documentListGraduation" class="d-flex flex-column gap-2">
+                                <?php if (!empty($graduationDocs)): ?>
+                                    <?php foreach ($graduationDocs as $doc): ?>
+                                <div class="document-row requirement-view-row"
+                                     data-document-id="<?= (int) $doc['document_id'] ?>"
+                                     data-file-path="<?= htmlspecialchars($doc['file_path']) ?>"
+                                     data-sort-name="<?= htmlspecialchars(isStorableRequirement($doc['requirement_code'] ?? null) ? requirementLabel($doc['requirement_code']) : ($doc['document_type'] ?: 'Other Document')) ?>"
+                                     data-uploaded="<?= !empty($doc['uploaded_at']) ? (int) strtotime($doc['uploaded_at']) : 0 ?>">
+                                    <i class="bi bi-file-earmark-text req-status"></i>
+                                    <div class="req-body">
+                                        <div class="req-label"><?= htmlspecialchars(isStorableRequirement($doc['requirement_code'] ?? null) ? requirementLabel($doc['requirement_code']) : ($doc['document_type'] ?: 'Other Document')) ?></div>
+                                    </div>
+                                    <div class="document-actions">
+                                        <?php if (!empty($doc['uploaded_at'])): ?>
+                                            <time class="doc-uploaded-ago" datetime="<?= htmlspecialchars(date('c', strtotime($doc['uploaded_at']))) ?>"><?= htmlspecialchars(date('M j, Y g:i A', strtotime($doc['uploaded_at']))) ?></time>
+                                        <?php endif; ?>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary document-view-btn" title="Preview file">
+                                            <i class="bi bi-eye"></i>
+                                        </button>
+                                        <a href="<?= htmlspecialchars($doc['file_path']) ?>" download
+                                           class="btn btn-sm btn-outline-secondary" title="Download file">
+                                            <i class="bi bi-download"></i>
+                                        </a>
+                                    </div>
+                                </div>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <div class="text-muted document-empty-state">No graduation documents uploaded yet.</div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
+                    <?php endif; ?>
                 </div>
             </div>
         </section>
@@ -2634,12 +2718,12 @@ include 'navbar.php';
                                             <div class="col-md-6">
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_last_name" class="form-label form-label-custom">Last name <span class="req-mark">*</span></label>
-                                                    <input type="text" id="edit_last_name" name="last_name" class="form-control input-custom" required pattern="[A-Za-zÑñ\s.,'\-]+"
+                                                    <input type="text" id="edit_last_name" name="last_name" class="form-control input-custom" required placeholder="Last name" pattern="[A-Za-zÑñ\s.,'\-]+"
                                                            value="<?= htmlspecialchars($editLastName) ?>">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
                                                     <label for="edit_first_name" class="form-label form-label-custom">First name <span class="req-mark">*</span></label>
-                                                    <input type="text" id="edit_first_name" name="first_name" class="form-control input-custom" required pattern="[A-Za-zÑñ\s.,'\-]+"
+                                                    <input type="text" id="edit_first_name" name="first_name" class="form-control input-custom" required placeholder="First name" pattern="[A-Za-zÑñ\s.,'\-]+"
                                                            value="<?= htmlspecialchars($editFirstName) ?>">
                                                 </div>
                                                 <div class="d-flex align-items-center mb-3">
@@ -2877,7 +2961,7 @@ include 'navbar.php';
                         <tr><th>Admission Type</th><td id="confirmSummaryTrack"></td></tr>
                         <tr><th>Attached Documents</th><td id="confirmSummaryDocs"></td></tr>
                         <tr><th>Requirements Status</th><td id="confirmSummaryCompletion"></td></tr>
-                        <tr><th>Missing Requirements</th><td id="confirmSummaryMissing"></td></tr>
+                        <tr><th>Requirements Not Yet Submitted</th><td id="confirmSummaryMissing"></td></tr>
                     </table>
                 </div>
                 <div class="modal-footer">
@@ -2974,13 +3058,14 @@ include 'navbar.php';
         <div class="document-preview-body" id="documentPreviewBody"></div>
     </aside>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <script src="../js/face-api.min.js"></script>
     <div id="documentPageData" hidden data-json="<?= htmlspecialchars(json_encode([
         'requirements' => requirementsForClient(),
         'groups'       => getDocumentRequirementGroups(),
         'tracks'       => getAdmissionTracks(),
         'documents'    => $clientDocuments,
+        'graduating'   => $graduation !== null,
+        'graduationTrack' => GRADUATION_TRACK,
     ]), ENT_QUOTES, 'UTF-8') ?>"></div>
     <script src="../js/view-student.js?v=<?= @filemtime(__DIR__ . '/../js/view-student.js') ?>"></script>
     <script src="../js/document-sort.js?v=<?= @filemtime(__DIR__ . '/../js/document-sort.js') ?>"></script>

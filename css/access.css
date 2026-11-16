@@ -135,3 +135,19 @@
     padding-right: 20px;
     white-space: nowrap;
 }
+
+@media (max-width: 640px) {
+    .access-filters > * {
+        flex: 1 1 100%;
+    }
+    #giveAccessModal .modal-dialog {
+        margin: 12px;
+    }
+    #giveAccessModal .modal-body {
+        padding: 16px;
+    }
+    #accessConfirmBtn {
+        min-width: 0;
+        width: 100%;
+    }
+}

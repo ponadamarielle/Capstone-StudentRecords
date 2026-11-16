@@ -519,3 +519,43 @@
     padding-right: 36px;
     background-position: right 14px center;
 }
+
+@media (max-width: 640px) {
+    .filter-add {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .filter-tabs {
+        max-width: 100%;
+        overflow-x: auto;
+    }
+    .filter-tab {
+        flex: 0 0 auto;
+        white-space: nowrap;
+    }
+    .um-tab-groups {
+        flex-direction: column;
+    }
+    .filter-add .btn-add {
+        width: 100%;
+    }
+    #addStudentModal .modal-dialog,
+    #confirmToggleModal .modal-dialog,
+    #toggleErrorModal .modal-dialog,
+    #resetPasswordModal .modal-dialog {
+        margin: 12px auto;
+        max-width: calc(100vw - 24px);
+    }
+    .um-modal-header,
+    #addStudentModal .modal-body {
+        padding: 16px;
+    }
+    .um-modal-footer {
+        padding: 12px 16px;
+    }
+    .um-modal-footer .um-cancel-btn,
+    .um-modal-footer .btn-custom {
+        flex: 1 1 0;
+        min-width: 0;
+    }
+}

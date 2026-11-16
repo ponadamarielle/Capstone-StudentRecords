@@ -38,3 +38,13 @@
     line-height: 22px;
     color: var(--text-secondary, #625B55);
 }
+
+@media (max-width: 576px) {
+    .intern-add {
+        min-height: auto;
+        padding: 16px 0;
+    }
+    .intern-add-card {
+        padding: 28px 20px;
+    }
+}

@@ -706,3 +706,46 @@ body {
         flex: 1 1 45%;
     }
 }
+
+@media (max-width: 640px) {
+    .logs-header {
+        padding: 16px 16px 0;
+    }
+    .logs-header > div {
+        flex: 1 1 100%;
+    }
+    .logs-export-btn {
+        width: 100%;
+        justify-content: center;
+    }
+    .logs-filters {
+        padding: 12px 16px;
+    }
+    .logs-filter {
+        flex: 1 1 100%;
+    }
+    .logs-filter-actions,
+    .logs-clear-btn {
+        width: 100%;
+        justify-content: center;
+    }
+    .logs-table th:first-child,
+    .logs-table td:first-child {
+        padding-left: 16px;
+    }
+    .logs-table th:last-child,
+    .logs-table td:last-child {
+        padding-right: 16px;
+    }
+    .logs-pagination {
+        flex-wrap: wrap;
+        justify-content: center;
+        padding: 12px 16px;
+    }
+    .backup-card {
+        padding: 16px;
+    }
+    .backup-alert {
+        flex-wrap: wrap;
+    }
+}

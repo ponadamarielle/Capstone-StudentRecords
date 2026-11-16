@@ -21,7 +21,7 @@
         'dashboard.php'       => ['Dashboard', 'Overview of student records and document requirements.'],
         'user_management.php' => ['User Management', 'Manage Admin and OJT Intern accounts and who can access records.'],
         'course_management.php' => ['Course Management', 'Manage the programs offered and how they are recognized in documents.'],
-        'requirements.php'    => ['Requirements', 'Manage the documents required for regular, shiftee and transferee students.'],
+        'requirements.php'    => ['Requirements', 'Manage the documents required for regular, shiftee, transferee and graduating students.'],
         'backup_logs.php'     => ['Backup & Logs', 'Keep records safe and see who did what, and when.'],
         'report_template.php' => ['Report Template', 'Change the letterhead used on the student reports.'],
     ];
@@ -37,6 +37,9 @@
     <button class="admin-collapse-toggle d-none d-lg-inline-flex" type="button" id="sidebarCollapseBtn" aria-controls="adminSidebar" aria-expanded="true" aria-label="Collapse sidebar" title="Collapse sidebar">
         <i class="bi bi-chevron-double-left"></i>
     </button>
+    <button type="button" class="admin-sidebar-close d-lg-none" data-bs-dismiss="offcanvas" data-bs-target="#adminSidebar" aria-label="Close menu" title="Close menu">
+        <i class="bi bi-chevron-double-left"></i>
+    </button>
     <div class="admin-sidebar-inner">
         <div class="admin-brand">
             <img src="../images/logo.png" alt="PUP Logo" class="admin-brand-logo">
@@ -44,9 +47,6 @@
                 <span class="admin-brand-name">PUP eRecords</span>
                 <span class="admin-brand-sub">Student Records System</span>
             </div>
-            <button type="button" class="admin-sidebar-close d-lg-none" data-bs-dismiss="offcanvas" data-bs-target="#adminSidebar" aria-label="Close menu">
-                <i class="bi bi-x-lg"></i>
-            </button>
         </div>
 
         <p class="admin-menu-label">Main menu</p>

@@ -53,6 +53,12 @@ if ($yearEndPending !== null):
                         <span class="ye-stat-value"><?= (int) $yearEndPreview['move_up'] ?></span>
                     </div>
                 </div>
+                <?php if (!empty($yearEndPreview['held'])): ?>
+                    <p class="ye-held">
+                        <i class="bi bi-exclamation-circle"></i>
+                        <?= (int) $yearEndPreview['held'] ?> graduating student<?= (int) $yearEndPreview['held'] === 1 ? '' : 's' ?> will not be marked as GRADUATE because the graduation requirements are incomplete. They stay in the Student Directory until the requirements are complete.
+                    </p>
+                <?php endif; ?>
                 <div id="yearEndError" class="ye-error" role="alert" hidden></div>
             </div>
             <div class="ye-foot">

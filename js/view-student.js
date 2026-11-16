@@ -387,6 +387,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const addDocumentFeedback = document.getElementById('addDocumentFeedback');
     const requirementChecklist = document.getElementById('requirementChecklist');
     const documentList        = document.getElementById('documentList');
+    const graduationDocumentList = document.getElementById('documentListGraduation');
     const modalDocumentList   = document.getElementById('modalDocumentList');
     const trackSelect         = document.getElementById('edit_admission_track');
     const studentId           = form.elements['student_id'].value;
@@ -398,6 +399,8 @@ document.addEventListener('DOMContentLoaded', function () {
     const REQUIREMENTS       = Array.isArray(PAGE_DATA.requirements) ? PAGE_DATA.requirements : [];
     const REQUIREMENT_GROUPS = PAGE_DATA.groups || {};
     const ADMISSION_TRACKS   = PAGE_DATA.tracks || {};
+    const GRADUATING         = !!PAGE_DATA.graduating;
+    const GRADUATION_TRACK   = PAGE_DATA.graduationTrack || 'graduating';
     const requirementByCode  = {};
     REQUIREMENTS.forEach((r) => { requirementByCode[r.code] = r; });
 
@@ -577,6 +580,10 @@ document.addEventListener('DOMContentLoaded', function () {
         field.addEventListener('input', clean);
         field.addEventListener('blur', clean);
     });
+
+    function isGraduationRequirement(r) {
+        return Array.isArray(r.required_for) && r.required_for.indexOf(GRADUATION_TRACK) !== -1;
+    }
 
     function isRequiredForTrack(r) {
         return Array.isArray(r.required_for) && r.required_for.indexOf(currentTrack()) !== -1;
@@ -1006,6 +1013,20 @@ document.addEventListener('DOMContentLoaded', function () {
             img.src = filePath;
             img.alt = label;
             previewBody.appendChild(img);
+        } else if (ext === 'pdf' && navigator.pdfViewerEnabled === false) {
+            const note = document.createElement('div');
+            note.className = 'document-preview-fallback text-muted';
+            const text = document.createElement('p');
+            text.textContent = 'PDF preview is not available on this device. Tap Open PDF to view it.';
+            const link = document.createElement('a');
+            link.href = filePath;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.className = 'btn btn-sm btn-outline-secondary';
+            link.textContent = 'Open PDF';
+            note.appendChild(text);
+            note.appendChild(link);
+            previewBody.appendChild(note);
         } else if (ext === 'pdf') {
             const frame = document.createElement('iframe');
             frame.src = filePath + (filePath.indexOf('#') === -1 ? '#view=FitH' : '');
@@ -1123,16 +1144,43 @@ document.addEventListener('DOMContentLoaded', function () {
         return { complete: missing.length === 0, total: required.length, fulfilled: required.length - missing.length, missing };
     }
 
+    function graduationBadge(complete, title) {
+        const badge = document.createElement('span');
+        badge.className = 'req-completion req-completion-graduation ' + (complete ? 'req-completion-complete' : 'req-completion-incomplete');
+        if (title) badge.title = title;
+        const icon = document.createElement('i');
+        icon.className = 'bi ' + (complete ? 'bi-mortarboard-fill' : 'bi-mortarboard');
+        badge.appendChild(icon);
+        badge.appendChild(document.createTextNode(' ' + (complete ? 'Complete' : 'Incomplete')));
+        return badge;
+    }
+
+    function updateGraduationCompletion() {
+        if (!GRADUATING) return;
+        const required = REQUIREMENTS.filter(isGraduationRequirement);
+        const missing = required.filter((r) => !storedByCode(r.code) && !pendingDeletedDocs.some((p) => p.doc.requirement_code === r.code)).map((r) => r.label);
+        const title = missing.length ? 'Not yet submitted for graduation: ' + missing.join(', ') : 'All graduation requirements are on file';
+        document.querySelectorAll('[data-graduation-badge]').forEach((el) => {
+            el.innerHTML = '';
+            el.appendChild(graduationBadge(missing.length === 0, title));
+        });
+        document.querySelectorAll('[data-graduation-detail]').forEach((el) => {
+            el.textContent = (required.length - missing.length) + ' of ' + required.length + ' required documents'
+                + (missing.length ? ' · Not yet submitted: ' + missing.join(', ') : '');
+        });
+    }
+
     function updatePageCompletion() {
+        updateGraduationCompletion();
         const status = savedCompletion();
-        const title = status.missing.length ? 'Missing: ' + status.missing.join(', ') : 'All required documents are on file';
+        const title = status.missing.length ? 'Not yet submitted: ' + status.missing.join(', ') : 'All required documents are on file';
         document.querySelectorAll('[data-requirement-badge]').forEach((el) => {
             el.innerHTML = '';
             el.appendChild(completionBadge(status.complete, title));
         });
         document.querySelectorAll('[data-requirement-detail]').forEach((el) => {
             el.textContent = status.fulfilled + ' of ' + status.total + ' required documents'
-                + (status.missing.length ? ' · Missing: ' + status.missing.join(', ') : '');
+                + (status.missing.length ? ' · Not yet submitted: ' + status.missing.join(', ') : '');
         });
     }
 
@@ -1149,10 +1197,24 @@ document.addEventListener('DOMContentLoaded', function () {
         heading.className = 'requirement-checklist-heading';
         const missingNow = missingRequiredLabels();
         heading.appendChild(completionBadge(missingNow.length === 0,
-            missingNow.length ? 'Missing: ' + missingNow.join(', ') : 'All required documents will be on file'));
+            missingNow.length ? 'Not yet submitted: ' + missingNow.join(', ') : 'All required documents will be on file'));
         heading.appendChild(document.createTextNode((ADMISSION_TRACKS[currentTrack()] || 'Requirements') + ': '
             + done.length + ' of ' + required.length + ' required documents'));
         requirementChecklist.appendChild(heading);
+
+        if (GRADUATING) {
+            const gradRequired = REQUIREMENTS.filter(isGraduationRequirement);
+            const gradMissing = gradRequired.filter((r) => !requirementWillBeOnFile(r.code)).map((r) => r.label);
+            if (gradRequired.length) {
+                const gradHeading = document.createElement('div');
+                gradHeading.className = 'requirement-checklist-heading';
+                gradHeading.appendChild(graduationBadge(gradMissing.length === 0,
+                    gradMissing.length ? 'Not yet submitted for graduation: ' + gradMissing.join(', ') : 'All graduation requirements will be on file'));
+                gradHeading.appendChild(document.createTextNode('Graduation requirements: '
+                    + (gradRequired.length - gradMissing.length) + ' of ' + gradRequired.length + ' required documents'));
+                requirementChecklist.appendChild(gradHeading);
+            }
+        }
 
     }
 
@@ -1179,6 +1241,7 @@ document.addEventListener('DOMContentLoaded', function () {
         Object.keys(REQUIREMENT_GROUPS).forEach((groupKey) => {
             const reqs = REQUIREMENTS.filter((r) => r.group === groupKey
                 && (r.code === currentCode || isRequiredForTrack(r)
+                    || (GRADUATING && isGraduationRequirement(r))
                     || (!(r.required_for || []).length && !r.clinic_only && HIDDEN_TYPE_OPTIONS.indexOf(r.code) === -1)));
             if (!reqs.length) return;
             const optgroup = document.createElement('optgroup');
@@ -2001,7 +2064,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function getRowsForDocument(documentId) {
         const rows = [];
-        [documentList, modalDocumentList].forEach((container) => {
+        [documentList, graduationDocumentList, modalDocumentList].forEach((container) => {
             if (!container) return;
             const row = container.querySelector(`.document-row[data-document-id="${documentId}"]`);
             if (row) rows.push(row);
@@ -2262,12 +2325,13 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    if (documentList) {
-        documentList.addEventListener('click', (e) => {
+    [documentList, graduationDocumentList].forEach((list) => {
+        if (!list) return;
+        list.addEventListener('click', (e) => {
             const viewBtn = e.target.closest('.document-view-btn');
             if (viewBtn) previewFromRow(viewBtn.closest('.document-row'));
         });
-    }
+    });
 
     const replaceDocumentInput = document.getElementById('replaceDocumentInput');
     if (replaceDocumentInput) {

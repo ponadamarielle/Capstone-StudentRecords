@@ -158,3 +158,13 @@
         align-self: center;
     }
 }
+
+@media (max-width: 480px) {
+    .tf-options {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    .tf-code {
+        letter-spacing: 6px;
+    }
+}

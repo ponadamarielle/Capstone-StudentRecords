@@ -63,8 +63,9 @@ function dashboardStats($conn)
     $graduates = $count("SELECT COUNT(*) FROM students WHERE status = 'graduated'");
 
     $enrolleeRows = [];
-    $result = mysqli_query($conn, "SELECT student_id, admission_track FROM students
-                                   WHERE (status IN ('enrollee', 'active') OR status IS NULL OR status = '')");
+    $result = mysqli_query($conn, "SELECT student_id, student_number, status, admission_track"
+        . (in_array('graduation_year', studentColumns($conn), true) ? ", graduation_year" : "")
+        . " FROM students WHERE (status IN ('enrollee', 'active') OR status IS NULL OR status = '')");
     while ($result && ($row = mysqli_fetch_assoc($result))) {
         $enrolleeRows[] = $row;
     }
@@ -73,6 +74,8 @@ function dashboardStats($conn)
     $codesByStudent = requirementCodesByStudent($conn, array_column($enrolleeRows, 'student_id'));
 
     $complete = 0;
+    $gradTotal = 0;
+    $gradComplete = 0;
     $missingCounts = [];
     foreach ($enrolleeRows as $row) {
         $track = function_exists('normalizeAdmissionTrack')
@@ -84,6 +87,13 @@ function dashboardStats($conn)
         }
         foreach ($status['missing'] as $label) {
             $missingCounts[$label] = ($missingCounts[$label] ?? 0) + 1;
+        }
+        $graduation = graduationCompletion($requirements, $row, $codesByStudent[(int) $row['student_id']] ?? []);
+        if ($graduation) {
+            $gradTotal++;
+            if ($graduation['complete']) {
+                $gradComplete++;
+            }
         }
     }
     arsort($missingCounts);
@@ -102,6 +112,10 @@ function dashboardStats($conn)
         'incomplete'  => $enrolleeCount - $complete,
         'percent'     => $enrolleeCount > 0 ? (int) round($complete / $enrolleeCount * 100) : 0,
         'top_missing' => $topMissing,
+        'grad_total'      => $gradTotal,
+        'grad_complete'   => $gradComplete,
+        'grad_incomplete' => $gradTotal - $gradComplete,
+        'grad_percent'    => $gradTotal > 0 ? (int) round($gradComplete / $gradTotal * 100) : 0,
         'updated_at'  => date('M j, Y g:i:s A'),
     ];
 }
@@ -288,7 +302,7 @@ include 'navbar.php';
         <section class="dash-panel">
             <div class="dash-panel-head">
                 <div>
-                    <h2 class="dash-panel-title">Document requirements</h2>
+                    <h2 class="dash-panel-title">Admission requirements</h2>
                     <p class="dash-panel-sub">Requirement completion of enrollees</p>
                 </div>
             </div>
@@ -331,27 +345,50 @@ include 'navbar.php';
             </div>
         </section>
 
-        <section class="dash-panel dash-missing">
+        <section class="dash-panel">
             <div class="dash-panel-head">
                 <div>
-                    <h2 class="dash-panel-title dash-missing-title">Most commonly missing documents</h2>
-                    <p class="dash-panel-sub">Number of enrollees without the document</p>
+                    <h2 class="dash-panel-title">Graduation requirements</h2>
+                    <p class="dash-panel-sub">Requirement completion of graduating students</p>
                 </div>
             </div>
-            <ul class="dash-missing-list" id="dashMissingList">
-                <?php foreach ($stats['top_missing'] as $item): ?>
-                    <li>
-                        <span class="dash-missing-label"><?= htmlspecialchars($item['label']) ?></span>
-                        <span class="dash-missing-track">
-                            <span class="dash-missing-fill" data-percent="<?= $enrolleeTotal > 0 ? round($item['students'] / $enrolleeTotal * 100, 1) : 0 ?>"></span>
-                        </span>
-                        <span class="dash-missing-value"><?= $item['students'] ?> student<?= $item['students'] === 1 ? '' : 's' ?></span>
-                    </li>
-                <?php endforeach; ?>
-            </ul>
-            <p class="dash-missing-empty" id="dashMissingEmpty" <?= $stats['top_missing'] ? 'hidden' : '' ?>>
-                No missing documents.
-            </p>
+
+            <div class="dash-req-summary">
+                <div class="dash-req-count dash-req-complete">
+                    <span class="dash-req-icon"><i class="bi bi-check-circle"></i></span>
+                    <div>
+                        <div class="dash-req-number" data-stat="grad_complete"><?= number_format($stats['grad_complete']) ?></div>
+                        <div class="dash-req-label">Complete</div>
+                    </div>
+                </div>
+                <div class="dash-req-count dash-req-incomplete">
+                    <span class="dash-req-icon"><i class="bi bi-exclamation-circle"></i></span>
+                    <div>
+                        <div class="dash-req-number" data-stat="grad_incomplete"><?= number_format($stats['grad_incomplete']) ?></div>
+                        <div class="dash-req-label">Incomplete</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dash-req-percent">
+                <span class="dash-req-percent-value"><span data-stat="grad_percent"><?= $stats['grad_percent'] ?></span>%</span>
+                <small>of graduating students have complete requirements</small>
+            </div>
+
+            <div class="dash-bar" id="dashGradBar" role="img"
+                 aria-label="<?= $stats['grad_complete'] ?> complete, <?= $stats['grad_incomplete'] ?> incomplete">
+                <div class="dash-bar-seg dash-bar-complete" id="dashGradBarComplete"
+                     data-value="<?= $stats['grad_complete'] ?>"
+                     title="Complete: <?= $stats['grad_complete'] ?>"></div>
+                <div class="dash-bar-seg dash-bar-incomplete" id="dashGradBarIncomplete"
+                     data-value="<?= $stats['grad_incomplete'] ?>"
+                     title="Incomplete: <?= $stats['grad_incomplete'] ?>"></div>
+                <div class="dash-bar-empty" id="dashGradBarEmpty" <?= $stats['grad_total'] > 0 ? 'hidden' : '' ?>>No graduating students yet</div>
+            </div>
+            <div class="dash-bar-legend">
+                <span><i class="dash-dot dash-dot-complete"></i>Complete</span>
+                <span><i class="dash-dot dash-dot-incomplete"></i>Incomplete</span>
+            </div>
         </section>
     </div>
 

@@ -83,7 +83,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PUP eRecords - Change Password</title>
+    <title>Change Password - PUP eRecords</title>
     <link href="css/bootstrap.min.css" rel="stylesheet">
     <link href="css/bootstrap-icons.css" rel="stylesheet">
     <link href="css/font.css" rel="stylesheet">
@@ -172,6 +172,9 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
 
                     <button type="submit" class="auth-submit" id="save-btn">Save and continue</button>
                 </form>
+            </div>
+            <div class="auth-mobile-info">
+                <p class="auth-mobile-copyright">&copy; <?= date('Y') ?> Polytechnic University of the Philippines - Biñan Campus</p>
             </div>
         </section>
     </main>

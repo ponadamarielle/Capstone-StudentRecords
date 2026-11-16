@@ -220,6 +220,20 @@ document.addEventListener('DOMContentLoaded', function () {
             img.src = url;
             img.alt = label;
             body.appendChild(img);
+        } else if (ext === 'pdf' && navigator.pdfViewerEnabled === false) {
+            const note = document.createElement('div');
+            note.className = 'document-preview-fallback text-muted';
+            const text = document.createElement('p');
+            text.textContent = 'PDF preview is not available on this device. Tap Open PDF to view it.';
+            const link = document.createElement('a');
+            link.href = url;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.className = 'btn btn-sm btn-outline-secondary';
+            link.textContent = 'Open PDF';
+            note.appendChild(text);
+            note.appendChild(link);
+            body.appendChild(note);
         } else if (ext === 'pdf') {
             const frame = document.createElement('iframe');
             frame.src = url + (url.indexOf('#') === -1 ? '#view=FitH' : '');

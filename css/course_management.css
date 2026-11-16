@@ -493,3 +493,46 @@ body {
         padding: 16px;
     }
 }
+
+@media (max-width: 768px) {
+    .cm-container {
+        padding: 20px;
+    }
+    .cm-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .cm-tabs {
+        display: flex;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .cm-tab {
+        flex: 0 0 auto;
+    }
+    .cm-btn-add {
+        width: 100%;
+    }
+}
+@media (max-width: 576px) {
+    .cm-table {
+        min-width: 560px;
+    }
+    .cm-modal .modal-dialog,
+    .cm-confirm-modal .modal-dialog {
+        margin: 12px;
+    }
+    .cm-modal-header,
+    .cm-modal .modal-body,
+    .cm-modal-footer {
+        padding-left: 16px;
+        padding-right: 16px;
+    }
+    .cm-modal-footer {
+        flex-wrap: wrap;
+    }
+    .cm-modal-footer > * {
+        flex: 1 1 auto;
+    }
+}

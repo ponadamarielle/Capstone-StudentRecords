@@ -221,3 +221,36 @@
     font-size: 12px;
     color: var(--text-tertiary, #9C948D);
 }
+
+@media (max-width: 768px) {
+    .archive-records {
+        justify-content: flex-start;
+    }
+    .archive-drive-menu {
+        max-width: calc(100vw - 32px);
+    }
+}
+@media (max-width: 480px) {
+    .archive-connect-card {
+        padding: 24px 18px;
+    }
+    .archive-nowrap-btn {
+        min-width: 0;
+    }
+}
+
+@media (max-width: 576px) {
+    .add-filter .filter-row#archiveFilterForm {
+        width: 100%;
+        flex-wrap: nowrap;
+        justify-content: stretch;
+    }
+    #archiveFilterForm .filter-wrap {
+        flex: 1 1 0;
+        min-width: 0;
+    }
+    #archiveFilterForm .filter-wrap .filter {
+        width: 100%;
+        min-width: 0;
+    }
+}
