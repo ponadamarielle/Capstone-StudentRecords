@@ -23,7 +23,7 @@
         'student_directory.php' => ['Student Directory', 'Search, view and manage student records.'],
         'archive.php'           => ['Archived Records', 'Records of students who have been archived.'],
         'view_student.php'      => ['Student Profile', 'View and update the student record and documents.'],
-        'access.php'            => ['User Management', 'Manage Staff and OJT Intern accounts and what they can access.'],
+        'access.php'            => ['User Management', 'Manage Staff and Intern accounts and what they can access.'],
     ];
     [$pageTitle, $pageSubtitle] = $pageTitles[$currentPage] ?? ['PUP eRecords', ''];
     $directoryLabel = can('students.list') ? 'Student Directory' : (can('students.search') ? 'Search & Add Student' : 'Add Student');

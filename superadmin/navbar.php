@@ -15,11 +15,12 @@
 <script src="../js/bootstrap.bundle.min.js"></script>
 <script src="../js/sidebar.js"></script>
 <script src="../js/update-password.js?v=<?= @filemtime(__DIR__ . '/../js/update-password.js') ?>" defer></script>
+<script src="../js/update-email.js?v=<?= @filemtime(__DIR__ . '/../js/update-email.js') ?>" defer></script>
 
 <?php
     $pageTitles = [
         'dashboard.php'       => ['Dashboard', 'Overview of student records and document requirements.'],
-        'user_management.php' => ['User Management', 'Manage Admin and OJT Intern accounts and who can access records.'],
+        'user_management.php' => ['User Management', 'Manage Admin and Intern accounts and who can access records.'],
         'course_management.php' => ['Course Management', 'Manage the programs offered and how they are recognized in documents.'],
         'requirements.php'    => ['Requirements', 'Manage the documents required for regular, shiftee, transferee and graduating students.'],
         'backup_logs.php'     => ['Backup & Logs', 'Keep records safe and see who did what, and when.'],
@@ -109,6 +110,11 @@
                     <i class="bi bi-key"></i>Change password
                 </button>
             </li>
+            <li>
+                <button type="button" class="dropdown-item" data-bs-toggle="modal" data-bs-target="#changeEmailModal">
+                    <i class="bi bi-envelope"></i>Change email address
+                </button>
+            </li>
         </ul>
     </div>
 </header>
@@ -122,7 +128,7 @@
                     <span class="cp-icon"><i class="bi bi-key"></i></span>
                     <div>
                         <h5 class="modal-title" id="changePasswordTitle">Change password</h5>
-                        <p class="cp-subtitle">Use at least 8 characters with at least one letter and one number.</p>
+                        <p class="cp-subtitle">Use at least 8 characters with uppercase and lowercase letters, a number and a symbol.</p>
                     </div>
                 </div>
                 <div class="modal-body cp-body">
@@ -147,6 +153,68 @@
                 <div class="modal-footer cp-footer">
                     <button type="button" class="btn cp-cancel" data-bs-dismiss="modal" id="cpCancelBtn">Cancel</button>
                     <button type="submit" class="btn cp-save" id="cpSaveBtn">Save password</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="changeEmailModal" tabindex="-1" aria-labelledby="changeEmailTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <form id="changeEmailForm" action="update_email.php" method="POST" novalidate>
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token']); ?>">
+                <div class="modal-header cp-header">
+                    <span class="cp-icon"><i class="bi bi-envelope"></i></span>
+                    <div>
+                        <h5 class="modal-title" id="changeEmailTitle">Change email address</h5>
+                        <p class="cp-subtitle" id="ceSubtitle">Sign-in codes will be sent to the new email address.</p>
+                    </div>
+                </div>
+                <div class="modal-body cp-body">
+                    <div class="cp-success d-none" id="ceSuccess" role="status">
+                        <i class="bi bi-check-circle-fill"></i><span id="ceSuccessText">Your email address was changed.</span>
+                    </div>
+                    <div class="cp-fields" id="ceStepDetails">
+                        <div class="cp-field">
+                            <label class="cp-label">Current email address</label>
+                            <div class="ce-current"><?php echo htmlspecialchars($_SESSION['email'] ?? ''); ?></div>
+                        </div>
+                        <div class="cp-field">
+                            <label class="cp-label" for="ce_current_password">Current password <span class="cp-req">*</span></label>
+                            <div class="cp-input">
+                                <input type="password" class="form-control" id="ce_current_password" name="current_password" maxlength="72" autocomplete="current-password" required>
+                                <button type="button" class="cp-toggle" data-target="ce_current_password" aria-label="Show password"><i class="bi bi-eye"></i></button>
+                            </div>
+                            <div class="cp-error" data-error-for="current_password"></div>
+                        </div>
+                        <div class="cp-field">
+                            <label class="cp-label" for="ce_new_email">New email address <span class="cp-req">*</span></label>
+                            <div class="cp-input">
+                                <input type="email" class="form-control" id="ce_new_email" name="new_email" maxlength="50" autocomplete="email" placeholder="name@example.com" required>
+                            </div>
+                            <div class="cp-error" data-error-for="new_email"></div>
+                        </div>
+                    </div>
+                    <div class="cp-fields d-none" id="ceStepCode">
+                        <p class="ce-sent" id="ceSentText"></p>
+                        <div class="cp-field">
+                            <label class="cp-label" for="ce_code">Verification code <span class="cp-req">*</span></label>
+                            <div class="cp-input">
+                                <input type="text" class="form-control ce-code" id="ce_code" name="code" maxlength="6" inputmode="numeric" autocomplete="one-time-code" placeholder="000000">
+                            </div>
+                            <div class="cp-error" data-error-for="code"></div>
+                        </div>
+                        <div class="ce-links">
+                            <button type="button" class="ce-link" id="ceResendBtn">Resend code</button>
+                            <button type="button" class="ce-link" id="ceBackBtn">Use a different email</button>
+                        </div>
+                    </div>
+                    <div class="cp-error cp-error-general" data-error-for=""></div>
+                </div>
+                <div class="modal-footer cp-footer">
+                    <button type="button" class="btn cp-cancel" data-bs-dismiss="modal" id="ceCancelBtn">Cancel</button>
+                    <button type="submit" class="btn cp-save" id="ceSaveBtn">Send code</button>
                 </div>
             </form>
         </div>

@@ -41,8 +41,8 @@ if ($current === '') {
     passwordReply(false, 'Please enter your current password.', 'current_password');
 }
 if (!$checkOnly) {
-    if (strlen($new) < 8 || !preg_match('/[A-Za-z]/', $new) || !preg_match('/\d/', $new)) {
-        passwordReply(false, 'Use at least 8 characters with at least one letter and one number.', 'new_password');
+    if (strlen($new) < 8 || !preg_match('/[A-Z]/', $new) || !preg_match('/[a-z]/', $new) || !preg_match('/[0-9]/', $new) || !preg_match('/[\W_]/', $new)) {
+        passwordReply(false, 'Use at least 8 characters with uppercase and lowercase letters, a number and a symbol.', 'new_password');
     }
     if (strlen($new) > 72) {
         passwordReply(false, 'The password must be 72 characters or fewer.', 'new_password');

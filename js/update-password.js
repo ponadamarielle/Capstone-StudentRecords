@@ -10,7 +10,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const currentInput = form.current_password;
     const newInput = form.new_password;
     const confirmInput = form.confirm_password;
-    const RULE_MESSAGE = 'Use at least 8 characters with at least one letter and one number.';
+    const RULE_MESSAGE = 'Use at least 8 characters with uppercase and lowercase letters, a number and a symbol.';
     let busy = false;
     let closeTimer = null;
     let currentChecked = '';
@@ -37,7 +37,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function rulesOk(value) {
-        return value.length >= 8 && /[A-Za-z]/.test(value) && /\d/.test(value);
+        return value.length >= 8 && /[A-Z]/.test(value) && /[a-z]/.test(value) && /[0-9]/.test(value) && /[\W_]/.test(value);
     }
 
     function checkNew(final) {

@@ -238,7 +238,7 @@ if (isset($_POST['reset_password']) && $_POST['reset_password'] === '1') {
     }
 
     $resetEmail = trim($_POST['email'] ?? '');
-    $accountStmt = $conn->prepare("SELECT id, name, role, pass, is_first_login FROM accounts WHERE email=? AND role IN ('Admin', 'OJT Intern') AND status='Active' LIMIT 1");
+    $accountStmt = $conn->prepare("SELECT id, name, role, pass, is_first_login FROM accounts WHERE email=? AND role IN ('Admin', 'Intern') AND status='Active' LIMIT 1");
     $accountStmt->bind_param("s", $resetEmail);
     $accountStmt->execute();
     $account = $accountStmt->get_result()->fetch_assoc();
@@ -378,9 +378,9 @@ unset($_SESSION['um_reset_flash']);
 
     <?php
     $where = ($statusParam === 'active') ? "AND status='Active'" : (($statusParam === 'inactive') ? "AND status='Inactive'" : "");
-    $roleWhere = $roleParam !== '' ? "role='" . mysqli_real_escape_string($conn, $roleParam) . "'" : "role IN ('Admin', 'OJT Intern')";
+    $roleWhere = $roleParam !== '' ? "role='" . mysqli_real_escape_string($conn, $roleParam) . "'" : "role IN ('Admin', 'Intern')";
 
-    $result = mysqli_query($conn, "SELECT name, email, role, status FROM accounts WHERE $roleWhere $where ORDER BY FIELD(role, 'Admin', 'OJT Intern'), name ASC");
+    $result = mysqli_query($conn, "SELECT name, email, role, status FROM accounts WHERE $roleWhere $where ORDER BY FIELD(role, 'Admin', 'Intern'), name ASC");
     $deactivatedAt = [];
     try {
         $logResult = mysqli_query($conn, "SELECT created_at, details FROM activity_logs WHERE action = 'account_status_changed' ORDER BY created_at DESC, log_id DESC");

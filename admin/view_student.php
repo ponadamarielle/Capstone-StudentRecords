@@ -2322,7 +2322,7 @@ if (!empty($issuedInfo['uploaded_at'])) {
 }
 $issuedBy = $issuedInfo['added_by'] ?? '';
 if ($issuedBy !== '') {
-    $issuedRoleStmt = mysqli_prepare($conn, "SELECT role FROM accounts WHERE name = ? ORDER BY FIELD(role, 'Admin', 'Staff', 'OJT Intern', 'Super Admin') LIMIT 1");
+    $issuedRoleStmt = mysqli_prepare($conn, "SELECT role FROM accounts WHERE name = ? ORDER BY FIELD(role, 'Admin', 'Staff', 'Intern', 'Super Admin') LIMIT 1");
     mysqli_stmt_bind_param($issuedRoleStmt, "s", $issuedBy);
     mysqli_stmt_execute($issuedRoleStmt);
     $issuedRole = mysqli_fetch_assoc(mysqli_stmt_get_result($issuedRoleStmt))['role'] ?? '';

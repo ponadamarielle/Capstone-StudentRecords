@@ -15,7 +15,7 @@ const LOGIN_LOCK_MINUTES    = 5;
 const LOGIN_ATTEMPT_WINDOW  = 15;
 
 if (isset($_SESSION['name'], $_SESSION['role'])) {
-    if (in_array($_SESSION['role'], ['Admin', 'OJT Intern'], true) && ($_SESSION['is_first_login'] ?? 0) == 1) {
+    if (in_array($_SESSION['role'], ['Admin', 'Intern'], true) && ($_SESSION['is_first_login'] ?? 0) == 1) {
         header("Location: change_password.php");
         exit();
     }
@@ -23,7 +23,7 @@ if (isset($_SESSION['name'], $_SESSION['role'])) {
         header("Location: superadmin/dashboard.php");
         exit();
     }
-    if (in_array($_SESSION['role'], ['Admin', 'OJT Intern'], true)) {
+    if (in_array($_SESSION['role'], ['Admin', 'Intern'], true)) {
         header("Location: admin/student_directory.php");
         exit();
     }
@@ -148,7 +148,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
     } elseif ($row && password_verify($pass, $row['pass'])) {
         clearFailedLogins($conn, $attemptKey);
         if($row['status'] !== 'Active') {
-            $error = in_array($row['role'], ['OJT Intern'], true)
+            $error = in_array($row['role'], ['Intern'], true)
                 ? "Your account is inactive. Please contact the Super Admin."
                 : "Your account is inactive. Please contact super admin.";
         } else {

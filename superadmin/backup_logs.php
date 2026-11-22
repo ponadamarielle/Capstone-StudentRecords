@@ -210,7 +210,7 @@ while ($res && ($row = mysqli_fetch_assoc($res))) {
 }
 
 $users = [];
-$userRes = mysqli_query($conn, "SELECT a.name, MIN(FIELD(a.role, 'Super Admin', 'Admin', 'Staff', 'OJT Intern')) AS role_order FROM accounts a"
+$userRes = mysqli_query($conn, "SELECT a.name, MIN(FIELD(a.role, 'Super Admin', 'Admin', 'Staff', 'Intern')) AS role_order FROM accounts a"
     . " WHERE EXISTS (SELECT 1 FROM activity_logs l WHERE l.user_name = a.name)"
     . " GROUP BY a.name ORDER BY role_order, a.name");
 while ($userRes && ($row = mysqli_fetch_row($userRes))) {
@@ -519,7 +519,7 @@ include 'navbar.php';
                                 <div class="log-details-main">
                                     <?= renderLogDetails($log['details']) ?>
                                     <?php if ($log['action'] === 'backup_created' && isset($downloadableBackups[(int) $log['target_id']])): ?>
-                                        <a class="btn btn-sm backup-download-btn" href="backup_logs.php?download_backup=<?= (int) $log['target_id'] ?>">
+                                        <a class="btn btn-sm backup-download-btn" href="backup_logs.php?download_backup=<?= (int) $log['target_id'] ?>" data-file-name="<?= htmlspecialchars(basename((string) (json_decode((string) $log['details'], true)['file_name'] ?? ''))) ?>">
                                             <i class="bi bi-download"></i> Download backup file
                                         </a>
                                     <?php elseif ($log['action'] === 'backup_created'): ?>
@@ -557,5 +557,6 @@ include 'navbar.php';
 </div>
 
 <script src="../js/activity-logs.js?v=<?= @filemtime(__DIR__ . '/../js/activity-logs.js') ?>"></script>
+<script src="../js/backup-download.js?v=<?= @filemtime(__DIR__ . '/../js/backup-download.js') ?>"></script>
 </body>
 </html>

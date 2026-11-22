@@ -99,6 +99,10 @@ if ($isAjaxAction) {
             requirePermission('students.status', true);
             handleNotifyGraduating($conn);
             break;
+        case 'notify_unsent':
+            requirePermission('students.status', true);
+            handleNotifyUnsent($conn);
+            break;
         default:
             echo json_encode(['success' => false, 'message' => 'Invalid action.']);
     }
@@ -1564,6 +1568,78 @@ function handleNotifyGraduating($conn)
     echo json_encode(['success' => true, 'sent' => $sent, 'failed' => $failed, 'message' => $message]);
 }
 
+function unsentEmailTargets($conn)
+{
+    ensureStudentNotificationTable($conn);
+    $result = mysqli_query($conn, "SELECT n.student_id FROM student_notifications n"
+        . " JOIN (SELECT student_id, MAX(notification_id) AS last_id FROM student_notifications GROUP BY student_id) m ON m.last_id = n.notification_id"
+        . " JOIN students s ON s.student_id = n.student_id"
+        . " WHERE n.success = 0 AND s.archived_at IS NULL");
+    $requirements = requirementsForClient();
+    $targets = [];
+    while ($result && ($row = mysqli_fetch_assoc($result))) {
+        $studentId = (int) $row['student_id'];
+        $snapshot = studentRequirementSnapshot($conn, $studentId, $requirements);
+        if (!$snapshot || !$snapshot['total']) {
+            continue;
+        }
+        $student = $snapshot['student'];
+        if (in_array(strtolower((string) ($student['status'] ?? '')), ['graduated', 'inactive', 'onleave'], true)
+            || !studentNotificationAllowed($student)
+            || !filter_var(trim((string) ($student['email'] ?? '')), FILTER_VALIDATE_EMAIL)) {
+            continue;
+        }
+        if (decideStudentNotification($snapshot, latestStudentNotification($conn, $studentId, true)) !== null) {
+            $targets[] = $studentId;
+        }
+    }
+    return $targets;
+}
+
+function handleNotifyUnsent($conn)
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        echo json_encode(['success' => false, 'message' => 'Invalid request.']);
+        return;
+    }
+    session_write_close();
+    @set_time_limit(900);
+    $socket = @fsockopen('smtp.gmail.com', 587, $errno, $errstr, 5);
+    if (!$socket) {
+        echo json_encode(['success' => false, 'message' => 'There is still no internet connection, so the emails could not be sent. Please try again when online.']);
+        return;
+    }
+    fclose($socket);
+
+    $sent = 0;
+    $failed = 0;
+    $requirements = requirementsForClient();
+    foreach (unsentEmailTargets($conn) as $studentId) {
+        $notification = notifyStudentRequirements($conn, $studentId, $requirements);
+        if (!empty($notification['sent'])) {
+            $sent++;
+        } elseif (empty($notification['skipped'])) {
+            $failed++;
+        }
+    }
+    logActivity('unsent_emails_sent',
+        'Sent ' . $sent . ' requirements email' . ($sent === 1 ? '' : 's') . ' that could not be sent before',
+        [
+            'category'    => 'audit',
+            'target_type' => 'student',
+            'details'     => [
+                'sent'   => $sent,
+                'failed' => $failed,
+                'action' => 'SEND ALL from the Student Directory (unsent emails)',
+            ],
+        ]);
+    $message = $sent . ' unsent email' . ($sent === 1 ? ' was' : 's were') . ' sent.';
+    if ($failed > 0) {
+        $message .= ' ' . $failed . ' email' . ($failed === 1 ? '' : 's') . ' still could not be sent. Check the Activity Log for details.';
+    }
+    echo json_encode(['success' => true, 'sent' => $sent, 'failed' => $failed, 'message' => $message]);
+}
+
 function handleUpdateStatus($conn)
 {
     $studentId = $_POST['student_id'] ?? '';
@@ -2213,6 +2289,18 @@ include 'navbar.php';
         </div>
     </div>
     <?php else: ?>
+    <?php $unsentToEmail = can('students.status') ? count(unsentEmailTargets($conn)) : 0; ?>
+    <?php if ($unsentToEmail > 0): ?>
+    <div class="graduating-email-bar unsent-email-bar">
+        <span class="graduating-email-icon"><i class="bi bi-exclamation-circle"></i></span>
+        <span class="graduating-email-text">
+            <strong><?= $unsentToEmail ?> requirements email<?= $unsentToEmail === 1 ? '' : 's' ?></strong> could not be sent, possibly because there was no internet connection.
+        </span>
+        <button type="button" class="graduating-email-btn" id="emailUnsentBtn" data-count="<?= $unsentToEmail ?>">
+            <i class="bi bi-send"></i> <span>SEND ALL</span>
+        </button>
+    </div>
+    <?php endif; ?>
     <?php if ($statusFilter === 'graduating' && can('students.status')): ?>
     <?php $graduatingToEmail = count(graduatingEmailTargets($conn)); ?>
     <div class="graduating-email-bar">
@@ -2752,6 +2840,21 @@ include 'navbar.php';
 <script src="../js/scanner.js?v=<?= @filemtime(__DIR__ . '/../js/scanner.js') ?>"></script>
 <script src="../js/course-filter.js?v=<?= @filemtime(__DIR__ . '/../js/course-filter.js') ?>"></script>
 <script src="../js/class-report.js?v=<?= @filemtime(__DIR__ . '/../js/class-report.js') ?>"></script>
+<div class="modal fade email-modal" id="emailSendModal" tabindex="-1" aria-labelledby="emailSendTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="email-modal-body">
+                <span class="email-modal-icon" data-email-icon><i class="bi bi-envelope"></i></span>
+                <h5 class="email-modal-title" id="emailSendTitle" data-email-title></h5>
+                <p class="email-modal-text" data-email-text></p>
+            </div>
+            <div class="email-modal-footer">
+                <button type="button" class="btn email-modal-cancel" data-bs-dismiss="modal" data-email-cancel>Cancel</button>
+                <button type="button" class="btn email-modal-confirm" data-email-confirm>Send</button>
+            </div>
+        </div>
+    </div>
+</div>
 <script src="../js/graduating-email.js?v=<?= @filemtime(__DIR__ . '/../js/graduating-email.js') ?>"></script>
     </div>
 </body>

@@ -60,8 +60,8 @@ function accessPeople($conn)
 {
     $people = [];
     $result = mysqli_query($conn, "SELECT id, name, email, role, status FROM accounts
-        WHERE role IN ('Staff', 'OJT Intern')
-        ORDER BY FIELD(status, 'Active', 'Inactive'), FIELD(role, 'Staff', 'OJT Intern'), name ASC");
+        WHERE role IN ('Staff', 'Intern')
+        ORDER BY FIELD(status, 'Active', 'Inactive'), FIELD(role, 'Staff', 'Intern'), name ASC");
     $me = strtolower((string) ($_SESSION['email'] ?? ''));
     $removedAt = [];
     try {
@@ -168,7 +168,7 @@ if ($isAjaxAction) {
         $email = trim((string) ($_POST['email'] ?? ''));
         $role  = (string) ($_POST['role'] ?? '');
         if (!in_array($role, SHAREABLE_ROLES, true)) {
-            accessReply($conn, false, 'Choose Staff or OJT Intern.');
+            accessReply($conn, false, 'Choose Staff or Intern.');
         }
         if ($email === '' || filter_var($email, FILTER_VALIDATE_EMAIL) === false || !preg_match('/^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/', $email)) {
             accessReply($conn, false, 'Please enter a valid email address (e.g. name@gmail.com).', ['field' => 'email']);

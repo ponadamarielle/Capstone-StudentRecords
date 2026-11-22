@@ -404,7 +404,7 @@ function tfFinishLogin(array $row, $method)
         'details' => ['email' => $row['email'], 'verification' => $method],
     ]);
 
-    if ($row['is_first_login'] == 1 && in_array($row['role'], ['Admin', 'OJT Intern'], true)) {
+    if ($row['is_first_login'] == 1 && in_array($row['role'], ['Admin', 'Intern'], true)) {
         header('Location: change_password.php');
         exit();
     }

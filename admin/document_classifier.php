@@ -142,7 +142,7 @@ function getDocumentRequirements()
             'group' => 'credential', 'store' => true, 'required_for' => [],
             'ref' => 'Form 2 item 3', 'note' => 'Copy for PUP; due before the start of the Second Semester.',
             'extract_fields' => false, 'field_priority' => 9,
-            'ai_hint' => 'SF10 / Form 137-A Learner\'s Permanent Academic Record (full scholastic record across grade levels).',
+            'ai_hint' => 'SF10 / Form 137-A Learner\'s Permanent Academic Record (full scholastic record across grade levels, with subjects and grades). Not a certification letter about whether the record was released.',
         ],
 
         'f137_not_sent_certification' => [
@@ -150,7 +150,7 @@ function getDocumentRequirements()
             'group' => 'past_graduate', 'store' => true, 'required_for' => ['shs_past'],
             'ref' => '2.2.1', 'note' => 'From the SHS registrar with school dry seal, noted by the Principal.',
             'extract_fields' => false, 'field_priority' => 9,
-            'ai_hint' => 'Certification from the senior high school registrar that no copy of the student\'s Form 137-A has been sent to any other college or university.',
+            'ai_hint' => 'Certification from the senior high school registrar that no copy of the student\'s Form 137-A has been sent to any other college or university. Also titled Certificate of Non-Release (Form 137): a short letter certifying that the permanent record (Form 137 / SF10) was not released or forwarded to any college or university.',
         ],
         'non_enrollment_certification' => [
             'label' => 'Certification of Non-Enrollment',
@@ -764,7 +764,7 @@ function requirementKeywordSeeds()
         'chest_xray'                   => 'X-RAY, XRAY, CHEST PA, RADIOLOGY, RADIOLOGIC',
         'pwd_id'                       => 'PWD, PERSON WITH DISABILITY, PERSONS WITH DISABILITY',
         'sf10_form137'                 => 'SF10, SF 10, FORM 137, PERMANENT ACADEMIC RECORD, PERMANENT RECORD',
-        'f137_not_sent_certification'  => 'NOT SENT, NOT BEEN SENT, F137-A, FORM 137',
+        'f137_not_sent_certification'  => 'NOT SENT, NOT BEEN SENT, NON-RELEASE, CERTIFICATE OF NON-RELEASE, NOT RELEASED, NOT BEEN RELEASED, NOT FORWARDED, NOT BEEN FORWARDED, ANY COLLEGE OR UNIVERSITY, F137-A, FORM 137',
         'non_enrollment_certification' => 'NON-ENROLLMENT, NON ENROLLMENT, NOT ENROLLED',
         'notarized_waiver'             => 'NOTARIZED WAIVER, WAIVER, CONCEALMENT, NULL AND VOID',
         'als_certificate_completion'   => 'CERTIFICATE OF COMPLETION, ALTERNATIVE LEARNING SYSTEM, ALS',
@@ -784,9 +784,20 @@ function requirementKeywordSeeds()
     ];
 }
 
+function requirementKeywordSeedUpgrades()
+{
+    return [
+        'f137_not_sent_certification' => 'NOT SENT, NOT BEEN SENT, F137-A, FORM 137',
+    ];
+}
+
 function fillRequirementKeywords($conn, array $row, $seed)
 {
     $current = trim((string) ($row['keywords'] ?? ''));
+    $oldSeed = requirementKeywordSeedUpgrades()[$row['code'] ?? ''] ?? null;
+    if ($seed !== '' && $oldSeed !== null && $current === $oldSeed) {
+        $current = '';
+    }
     $stamp = md5((string) $row['label'] . '|' . (string) $row['ai_hint']);
     $auto = (string) ($row['keywords_auto'] ?? '');
     if ($current !== '' && ($auto === '' || $auto === $stamp)) {
