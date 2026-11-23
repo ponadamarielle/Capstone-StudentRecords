@@ -171,6 +171,28 @@ function decideStudentNotification(array $snapshot, ?array $last)
     return null;
 }
 
+// "An email is being sent right now" marker, so the profile can show "Sending email..." until the result is recorded.
+function studentNotificationSendingFile($studentId)
+{
+    return rtrim(sys_get_temp_dir(), '/\\') . DIRECTORY_SEPARATOR . 'pup_email_sending_' . (int) $studentId . '.txt';
+}
+
+function markStudentNotificationSending($studentId)
+{
+    @file_put_contents(studentNotificationSendingFile($studentId), (string) time(), LOCK_EX);
+}
+
+function clearStudentNotificationSending($studentId)
+{
+    @unlink(studentNotificationSendingFile($studentId));
+}
+
+function studentNotificationSending($studentId)
+{
+    $started = @file_get_contents(studentNotificationSendingFile($studentId));
+    return $started !== false && (time() - (int) $started) < 90;
+}
+
 function notifyStudentRequirements($conn, $studentId, array $requirements, $force = false)
 {
     try {
@@ -282,6 +304,12 @@ function deliverStudentNotification(array $snapshot, $type, $recipient)
     if (!is_file($mailerDir . 'PHPMailer.php')) {
         return 'PHPMailer was not found.';
     }
+    // Offline: fail in a moment instead of waiting for the full SMTP timeout.
+    $socket = @fsockopen('smtp.gmail.com', 587, $errno, $errstr, 3);
+    if (!$socket) {
+        return 'There is no internet connection, so the email could not be sent.';
+    }
+    fclose($socket);
     try {
         require_once $mailerDir . 'PHPMailer.php';
         require_once $mailerDir . 'SMTP.php';
@@ -298,7 +326,7 @@ function deliverStudentNotification(array $snapshot, $type, $recipient)
         $mail->Password   = $pass;
         $mail->SMTPSecure = 'tls';
         $mail->Port       = 587;
-        $mail->Timeout    = 15;
+        $mail->Timeout    = 10;
         $mail->CharSet    = 'UTF-8';
         $mail->setFrom($user, notifyEnv('NOTIFY_FROM_NAME', 'PUP eRecords'));
         $mail->addAddress($recipient, (string) ($student['name'] ?? ''));

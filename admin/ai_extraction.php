@@ -1173,6 +1173,7 @@ function aiPageReadMessages(array $dataUrls)
               . "The Grade or Grade Level written on the card decides: Grade 10 is grade_10_card, Grade 11 is grade_11_card, Grade 12 is grade_12_card, "
               . "even when the form code says SF9-JHS or the page only shows attendance and signatures. "
               . "SF9 / Form 138 is a report card for one grade level; SF10 / Form 137 is the permanent record that lists several grade levels. "
+              . "The back of an SF9 has Attendance Record, Parent/Guardian's Signature, Certificate of Transfer and Cancellation of Eligibility sections: that is still the report card, never honorable_dismissal (which comes from a college/university registrar). "
               . "Pages may be scanned sideways or upside down; read the rotated text.\n"
               . "Use only a code from the list below, written exactly as listed.\n"
               . "\"doc_confidence\": high, medium or low.\n\"grade_level\": for a report card, only the number written in its Grade or Grade Level field (for example 11), otherwise empty. "
@@ -1468,7 +1469,8 @@ function aiReadPdfPages($pdfPath, array $pages, $workDir, array $knownTypes = []
     foreach ($results as $page => $read) {
         $isCard = in_array((string) $read['doc_type'], $cardCodes, true)
             || ($page === 1 && in_array((string) $read['doc_type'], ['', 'none'], true) && preg_match($cardPattern, (string) $read['text']))
-            || ((string) $read['doc_type'] === 'sf10_form137' && preg_match('/\bSF\s*-?\s*9\b|F\s*-?\s*138/i', (string) $read['text']));
+            || ((string) $read['doc_type'] === 'sf10_form137' && preg_match('/\bSF\s*-?\s*9\b|F\s*-?\s*138/i', (string) $read['text']))
+            || ((string) $read['doc_type'] === 'honorable_dismissal' && preg_match('/\bSF\s*-?\s*9\b|F\s*-?\s*138|report\s*card|attendance\s*record|learner.?s\s+progress/i', (string) $read['text']));
         $gradeKnown = in_array((string) ($read['grade_level'] ?? ''), ['10', '11', '12'], true)
             && (string) $read['doc_type'] === 'grade_' . $read['grade_level'] . '_card';
         if (!$isCard || $gradeKnown) {

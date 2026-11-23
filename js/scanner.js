@@ -144,10 +144,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function updateReady() {
         const count = readyFiles.length + (currentToken ? 1 : 0);
-        useBtn.textContent = count > 1 ? 'USE ' + count + ' SCANS' : 'USE THIS SCAN';
+        useBtn.textContent = count > 1 ? 'USE ' + count + ' DOCUMENTS' : 'USE THIS SCAN';
         readyInfo.hidden = readyFiles.length === 0;
         readyInfo.textContent = readyFiles.length
-            ? readyFiles.length + ' document' + (readyFiles.length === 1 ? '' : 's') + ' ready. Each document is saved as its own file.'
+            ? readyFiles.length + ' document' + (readyFiles.length === 1 ? '' : 's') + ' ready'
+                + (currentToken ? ', plus the one shown below (' + (readyFiles.length + 1) + ' in total).' : '.')
+                + ' Each document is saved as its own file.'
             : '';
     }
 
@@ -234,6 +236,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (!result) continue;
             if (result.success && result.waiting) {
                 if (seq === waitSeq) showWaiting(result.receiving ? 'Receiving the scanned page...' : waitingMessage());
+                if (result.receiving && Date.now() - lastFolderClose > 3000) closeScannerFolder([0, 2000]);
                 continue;
             }
             if (!result.success) {
@@ -262,8 +265,10 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    function closeScannerFolder() {
-        [0, 2000, 5000].forEach((delay) => setTimeout(() => {
+    let lastFolderClose = 0;
+    function closeScannerFolder(delays) {
+        lastFolderClose = Date.now();
+        (delays || [0, 1000, 2500, 5000, 8000]).forEach((delay) => setTimeout(() => {
             const data = new FormData();
             data.append('action', 'close_folder');
             fetch(SCANNER_URL, { method: 'POST', body: data }).catch(() => {});

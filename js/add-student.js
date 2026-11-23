@@ -1382,7 +1382,7 @@ document.addEventListener('DOMContentLoaded', function () {
         if (!n || n.skipped) return null;
         const status = n.status ? ' (' + n.status + ')' : '';
         if (n.sent) return { ok: true, text: 'Email notification sent to ' + n.recipient + status + '.' };
-        return { ok: false, text: 'Email notification was not sent' + status + ': ' + (n.error || 'unknown error') + '.' };
+        return { ok: false, text: 'Email notification was not sent' + status + '.' };
     }
 
     function submitStudent() {

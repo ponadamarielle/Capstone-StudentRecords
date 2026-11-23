@@ -61,6 +61,13 @@ $DBName = "db_pup_eRecords";
 
 define('PDFTOPPM_BIN', 'C:\\xampp\\htdocs\\CAPSTONE\\poppler-26.02.0\\Library\\bin\\pdftoppm.exe');
 
+// true: saving a student answers right away and the email is sent afterwards
+// (the profile shows "Sending email..." until it is done).
+// false: the save waits for the email and shows its result.
+if (!defined('SAVE_EMAIL_IN_BACKGROUND')) {
+    define('SAVE_EMAIL_IN_BACKGROUND', true);
+}
+
 loadEnv(__DIR__ . '/../.env');
 
 $conn = mysqli_connect($DBHost, $DBUser, $DBPass, $DBName);
@@ -1708,6 +1715,32 @@ function minimumBirthDate()
     return ((int) date('Y') - 17) . '-12-31';
 }
 
+// Sends the response now and lets the script keep running (e.g. to send the email) without making the browser wait.
+function respondAndContinue($json)
+{
+    ignore_user_abort(true);
+    @set_time_limit(120);
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();   // do not block the next page load while the email is sent
+    }
+    if (function_exists('fastcgi_finish_request')) {
+        echo $json;
+        fastcgi_finish_request();
+        return;
+    }
+    while (ob_get_level() > 0) {
+        @ob_end_clean();
+    }
+    if (!headers_sent()) {
+        header('Content-Type: application/json');
+        header('Content-Encoding: none');
+        header('Content-Length: ' . strlen($json));
+        header('Connection: close');
+    }
+    echo $json;
+    @flush();
+}
+
 function handleAddStudent($conn)
 {
     $studentNumber = trim($_POST['student_number'] ?? '');
@@ -1979,17 +2012,34 @@ function handleAddStudent($conn)
                 ]);
         }
 
-        $notification = notifyStudentRequirements($conn, $studentId, requirementsForClient());
-
         $archiveBlocked = null;
+        $emailInBackground = SAVE_EMAIL_IN_BACKGROUND;
+        $notification = $emailInBackground
+            ? ['sent' => false, 'skipped' => true, 'reason' => 'The email is sent after saving.']
+            : notifyStudentRequirements($conn, $studentId, requirementsForClient());
 
-        echo json_encode([
+        $response = json_encode([
             'success'         => true,
             'message'         => 'Student record saved successfully.',
             'student_id'      => $studentId,
             'notification'    => $notification,
             'archive_blocked' => $archiveBlocked,
         ]);
+        if ($emailInBackground) {
+            markStudentNotificationSending($studentId);   // before answering, so the profile shows "Sending email..."
+            respondAndContinue($response);
+            try {
+                $emailStarted = microtime(true);
+                notifyStudentRequirements($conn, $studentId, requirementsForClient());
+                error_log(sprintf('Save: the email notification took %.1fs (sent after the response).', microtime(true) - $emailStarted));
+            } catch (Throwable $e) {
+                error_log('Save: the email notification failed after the response was sent: ' . $e->getMessage());
+            } finally {
+                clearStudentNotificationSending($studentId);
+            }
+        } else {
+            echo $response;
+        }
     } catch (Exception $e) {
         mysqli_rollback($conn);
 

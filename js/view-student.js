@@ -2398,6 +2398,62 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
 
+    function showEmailResultModal(ok, title, message, detail) {
+        const modalEl = document.getElementById('emailResultModal');
+        if (!modalEl) {
+            window.alert(message + (detail ? ' ' + detail : ''));
+            return;
+        }
+        document.getElementById('emailResultTitle').textContent = title;
+        document.getElementById('emailResultMessage').textContent = message;
+        document.getElementById('emailResultDetail').textContent = detail || '';
+        const icon = document.getElementById('emailResultIcon');
+        icon.className = 'email-result-icon ' + (ok ? 'email-result-ok' : 'email-result-fail');
+        icon.innerHTML = '<i class="bi ' + (ok ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill') + '"></i>';
+        bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    }
+
+    const EMAIL_FAILED_MESSAGE = 'The email could not be sent. Please check your internet connection and try again.';
+
+    function applyEmailStatus(result) {
+        const note = document.querySelector('[data-email-note]');
+        const noteText = document.querySelector('[data-email-note-text]');
+        const btn = document.getElementById('resendEmailBtn');
+        if (note && noteText) {
+            note.removeAttribute('data-email-sending');
+            noteText.textContent = result.text || '';
+            note.hidden = !result.text;
+            const danger = !!(result.failed || result.show_resend);
+            note.classList.toggle('text-danger', danger);
+            note.classList.toggle('text-muted', !danger);
+        }
+        if (btn) btn.hidden = !result.show_resend;
+    }
+
+    // Saving a student sends the email afterwards: keep checking until its result is recorded.
+    (function watchEmailSending() {
+        const note = document.querySelector('[data-email-note][data-email-sending]');
+        const btn = document.getElementById('resendEmailBtn');
+        if (!note || !btn) return;
+        let tries = 0;
+        const timer = setInterval(async function () {
+            tries++;
+            try {
+                const res = await fetch(ACTIONS_URL + '?action=email_status&student_id=' + encodeURIComponent(btn.dataset.studentId));
+                const result = await parseJsonResponse(res);
+                if (result && result.success && !result.sending) {
+                    clearInterval(timer);
+                    applyEmailStatus(result);
+                    return;
+                }
+            } catch (err) { /* try again on the next tick */ }
+            if (tries >= 45) {
+                clearInterval(timer);
+                applyEmailStatus({ text: 'The email status is not available yet. Refresh this page in a moment.', failed: false, show_resend: false });
+            }
+        }, 2000);
+    })();
+
     const resendEmailBtn = document.getElementById('resendEmailBtn');
     if (resendEmailBtn) {
         resendEmailBtn.addEventListener('click', async function () {
@@ -2405,7 +2461,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const noteText = document.querySelector('[data-email-note-text]');
             const original = resendEmailBtn.innerHTML;
             resendEmailBtn.disabled = true;
-            resendEmailBtn.textContent = 'SENDING...';
+            resendEmailBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> SENDING...';
             try {
                 const data = new FormData();
                 data.append('student_id', resendEmailBtn.dataset.studentId);
@@ -2414,19 +2470,19 @@ document.addEventListener('DOMContentLoaded', function () {
                 const result = await parseJsonResponse(res);
                 const n = (result && result.notification) || {};
                 if (result && result.last && note && noteText) {
-                    noteText.textContent = result.last.text;
+                    noteText.textContent = result.last.success ? result.last.text : String(result.last.text || '').replace(/^(.*?\b(?:AM|PM)):\s[\s\S]*$/i, '$1');
                     note.hidden = false;
                     note.classList.toggle('text-danger', !result.last.success);
                     note.classList.toggle('text-muted', !!result.last.success);
                 }
                 if (n.sent) {
                     resendEmailBtn.hidden = true;
-                    window.alert('Email notification sent to ' + n.recipient + ' (' + n.status + ').');
+                    showEmailResultModal(true, 'Email sent', 'Email notification sent to ' + n.recipient + '.', n.status ? 'Status: ' + n.status : '');
                 } else {
-                    window.alert('Email notification was not sent: ' + (n.error || n.reason || (result && result.message) || 'unknown error') + '.');
+                    showEmailResultModal(false, 'Email not sent', EMAIL_FAILED_MESSAGE, '');
                 }
             } catch (err) {
-                window.alert('Email notification was not sent: ' + (err.message || 'unknown error') + '.');
+                showEmailResultModal(false, 'Email not sent', EMAIL_FAILED_MESSAGE, '');
             } finally {
                 resendEmailBtn.disabled = false;
                 resendEmailBtn.innerHTML = original;

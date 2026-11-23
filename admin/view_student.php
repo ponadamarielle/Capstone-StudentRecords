@@ -129,6 +129,9 @@ if ($action !== '') {
         case 'notify_requirements':
             handleNotifyRequirements($conn);
             break;
+        case 'email_status':
+            handleEmailStatus($conn);
+            break;
         case 'change_status':
             handleChangeStatus($conn);
             break;
@@ -1631,6 +1634,31 @@ function handleNotifyRequirements($conn)
     echo json_encode(['success' => true, 'notification' => $notification, 'last' => studentNotificationSummary($conn, (int) $studentId)]);
 }
 
+function handleEmailStatus($conn)
+{
+    $studentId = $_GET['student_id'] ?? $_POST['student_id'] ?? '';
+    if ($studentId === '' || !ctype_digit((string) $studentId)) {
+        echo json_encode(['success' => false, 'message' => 'Invalid student.']);
+        return;
+    }
+    $studentId = (int) $studentId;
+    $sending = studentNotificationSending($studentId);
+    $last = studentNotificationSummary($conn, $studentId);
+    $failed = $last && !$last['success'];
+    $text = $last ? (string) $last['text'] : '';
+    if ($failed) {
+        $text = preg_replace('/^(.*?\\b(?:AM|PM)):\\s.*$/si', '$1', $text);
+    }
+    $pending = ($sending || $failed) ? null : studentNotificationPending($conn, $studentId, requirementsForClient());
+    echo json_encode([
+        'success'     => true,
+        'sending'     => $sending,
+        'failed'      => (bool) $failed,
+        'text'        => $pending ? $pending['text'] : $text,
+        'show_resend' => (bool) ($failed || $pending),
+    ]);
+}
+
 function handleChangeStatus($conn)
 {
     $studentId = $_POST['student_id'] ?? '';
@@ -2375,6 +2403,29 @@ include 'navbar.php';
     <link href="../css/student-report.css?v=<?= @filemtime(__DIR__ . '/../css/student-report.css') ?>" rel="stylesheet">
     <link href="../css/student-profile.css?v=<?= @filemtime(__DIR__ . '/../css/student-profile.css') ?>" rel="stylesheet">
     <link href="../css/course-filter.css?v=<?= @filemtime(__DIR__ . '/../css/course-filter.css') ?>" rel="stylesheet">
+    <style>
+        /* "Send email again" button (regular layout) */
+        #resendEmailBtn.btn-outline-danger {
+            display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+            min-width: 190px; padding: .55rem 1.15rem; margin-top: .75rem !important;
+            font-size: .875rem; font-weight: 600; line-height: 1.2; letter-spacing: .02em;
+            color: #7a0c10; background: #fff; border: 1.5px solid #7a0c10; border-radius: .6rem;
+            box-shadow: 0 1px 2px rgba(122, 12, 16, .08);
+            transition: background-color .15s ease, color .15s ease, box-shadow .15s ease;
+        }
+        #resendEmailBtn.btn-outline-danger:hover:not(:disabled),
+        #resendEmailBtn.btn-outline-danger:focus-visible {
+            color: #fff; background: #7a0c10; border-color: #7a0c10;
+            box-shadow: 0 2px 8px rgba(122, 12, 16, .25);
+        }
+        #resendEmailBtn.btn-outline-danger:disabled { opacity: .75; cursor: not-allowed; }
+        #resendEmailBtn[hidden] { display: none !important; }
+
+        /* Email result modal */
+        #emailResultModal .email-result-icon { font-size: 3.25rem; line-height: 1; margin-bottom: .75rem; }
+        #emailResultModal .email-result-ok { color: #198754; }
+        #emailResultModal .email-result-fail { color: #dc3545; }
+    </style>
 </head>
 <body data-student-id="<?= (int) $studentId ?>">
     <div class="view-container profile-page">
@@ -2522,14 +2573,19 @@ include 'navbar.php';
                     $graduationDocs = $graduation ? array_values(array_filter($orderedDocs, fn($d) => isset($graduationCodes[$d['requirement_code'] ?? '']))) : [];
                     $emailSummary = studentNotificationSummary($conn, $studentId);
                     $emailFailed = $emailSummary && !$emailSummary['success'];
-                    $emailPending = $emailFailed ? null : studentNotificationPending($conn, (int) $studentId, requirementsForClient());
+                    $emailSummaryText = $emailSummary ? (string) $emailSummary['text'] : '';
+                    if ($emailFailed) {
+                        $emailSummaryText = preg_replace('/^(.*?\b(?:AM|PM)):\s.*$/si', '$1', $emailSummaryText);
+                    }
+                    $emailSending = studentNotificationSending((int) $studentId);
+                    $emailPending = ($emailFailed || $emailSending) ? null : studentNotificationPending($conn, (int) $studentId, requirementsForClient());
                     ?>
-                    <?php if ($graduation && ($emailSummary || $emailPending)): ?>
+                    <?php if ($graduation && ($emailSummary || $emailPending || $emailSending)): ?>
                     <div class="requirement-summary requirement-email">
-                        <small class="requirement-email-text <?= $emailFailed || $emailPending ? 'text-danger' : 'text-muted' ?>" data-email-note<?= $emailSummary || $emailPending ? '' : ' hidden' ?>>
-                            <i class="bi bi-envelope"></i> <span data-email-note-text><?= $emailPending ? htmlspecialchars($emailPending['text']) : ($emailSummary ? htmlspecialchars($emailSummary['text']) : '') ?></span>
+                        <small class="requirement-email-text <?= !$emailSending && ($emailFailed || $emailPending) ? 'text-danger' : 'text-muted' ?>" data-email-note<?= $emailSummary || $emailPending || $emailSending ? '' : ' hidden' ?><?= $emailSending ? ' data-email-sending="1"' : '' ?>>
+                            <i class="bi bi-envelope"></i> <span data-email-note-text><?= $emailSending ? 'Sending email notification…' : ($emailPending ? htmlspecialchars($emailPending['text']) : ($emailSummary ? htmlspecialchars($emailSummaryText) : '')) ?></span>
                         </small>
-                        <button type="button" class="profile-btn profile-btn-primary requirement-email-btn" id="resendEmailBtn" data-student-id="<?= (int) $studentId ?>"<?= ($emailFailed || $emailPending) && !$isArchivedView ? '' : ' hidden' ?>><i class="bi bi-send"></i> <?= $emailPending ? 'SEND EMAIL' : 'SEND EMAIL AGAIN' ?></button>
+                        <button type="button" class="profile-btn profile-btn-primary requirement-email-btn" id="resendEmailBtn" data-student-id="<?= (int) $studentId ?>"<?= !$emailSending && ($emailFailed || $emailPending) && !$isArchivedView ? '' : ' hidden' ?>><i class="bi bi-send"></i> <?= $emailPending ? 'SEND EMAIL' : 'SEND EMAIL AGAIN' ?></button>
                     </div>
                     <?php endif; ?>
                     <?php if ($graduation): ?>
@@ -2551,10 +2607,10 @@ include 'navbar.php';
                             <?= (int) $completion['fulfilled'] ?> of <?= (int) $completion['total'] ?> required documents<?= $completion['missing'] ? ' · Not yet submitted: ' . htmlspecialchars(implode(', ', $completion['missing'])) : '' ?>
                         </small>
                         <?php if (!$graduation): ?>
-                        <small class="d-block mt-1 <?= $emailFailed || $emailPending ? 'text-danger' : 'text-muted' ?>" data-email-note<?= $emailSummary || $emailPending ? '' : ' hidden' ?>>
-                            <i class="bi bi-envelope"></i> <span data-email-note-text><?= $emailPending ? htmlspecialchars($emailPending['text']) : ($emailSummary ? htmlspecialchars($emailSummary['text']) : '') ?></span>
+                        <small class="d-block mt-1 <?= !$emailSending && ($emailFailed || $emailPending) ? 'text-danger' : 'text-muted' ?>" data-email-note<?= $emailSummary || $emailPending || $emailSending ? '' : ' hidden' ?><?= $emailSending ? ' data-email-sending="1"' : '' ?>>
+                            <i class="bi bi-envelope"></i> <span data-email-note-text><?= $emailSending ? 'Sending email notification…' : ($emailPending ? htmlspecialchars($emailPending['text']) : ($emailSummary ? htmlspecialchars($emailSummaryText) : '')) ?></span>
                         </small>
-                        <button type="button" class="btn btn-sm btn-outline-danger mt-2" id="resendEmailBtn" data-student-id="<?= (int) $studentId ?>"<?= ($emailFailed || $emailPending) && !$isArchivedView ? '' : ' hidden' ?>><i class="bi bi-send"></i> <?= $emailPending ? 'SEND EMAIL' : 'SEND EMAIL AGAIN' ?></button>
+                        <button type="button" class="btn btn-sm btn-outline-danger mt-2" id="resendEmailBtn" data-student-id="<?= (int) $studentId ?>"<?= !$emailSending && ($emailFailed || $emailPending) && !$isArchivedView ? '' : ' hidden' ?>><i class="bi bi-send"></i> <?= $emailPending ? 'SEND EMAIL' : 'SEND EMAIL AGAIN' ?></button>
                         <?php endif; ?>
                     </div>
                     <div id="documentList" class="d-flex flex-column gap-2">
@@ -3037,6 +3093,25 @@ include 'navbar.php';
                 <div class="modal-footer">
                     <button type="button" class="btn btn-cancel" data-bs-dismiss="modal">Cancel</button>
                     <button type="button" class="btn btn-save" id="confirmDeleteDocBtn">Delete</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- email notification result modal -->
+    <div class="modal fade" id="emailResultModal" tabindex="-1" aria-hidden="true" data-bs-focus="false">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="emailResultTitle">Email notification</h5>
+                </div>
+                <div class="modal-body text-center">
+                    <div class="email-result-icon" id="emailResultIcon"><i class="bi"></i></div>
+                    <p class="mb-1" id="emailResultMessage"></p>
+                    <small class="text-muted d-block" id="emailResultDetail"></small>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-save" data-bs-dismiss="modal">OK</button>
                 </div>
             </div>
         </div>

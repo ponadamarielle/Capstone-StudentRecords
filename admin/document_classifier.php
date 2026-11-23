@@ -93,7 +93,7 @@ function getDocumentRequirements()
             'group' => 'credential', 'store' => true, 'required_for' => ['shs_current', 'shs_past'],
             'ref' => '2.1.1', 'note' => 'Original High School Card (F138 / Grade 12 card).',
             'extract_fields' => false, 'field_priority' => 9,
-            'ai_hint' => 'SHS Grade 12 card: 1st/2nd semester, Core/Applied/Specialized subjects. Senior High School Grade 12 report card (Form 138 / SF9 / Learner\'s Progress Report Card) showing Grade 12 subjects, semester grades, general average.',
+            'ai_hint' => 'SHS Grade 12 card: 1st/2nd semester, Core/Applied/Specialized subjects. Senior High School Grade 12 report card (Form 138 / SF9 / Learner\'s Progress Report Card) showing Grade 12 subjects, semester grades, general average. Its back side (attendance record, parent/guardian signature, Certificate of Transfer, Cancellation of Eligibility to Transfer) also belongs to this card.',
         ],
         'grade_11_card' => [
             'label' => 'Grade 11 Report Card',
@@ -194,7 +194,7 @@ function getDocumentRequirements()
             'group' => 'transferee', 'store' => true, 'required_for' => ['transferee'],
             'ref' => 'Transferee', 'note' => 'Issued by the registrar of the previous school.',
             'extract_fields' => true, 'field_priority' => 7,
-            'ai_hint' => 'Honorable Dismissal / Certificate of Transfer Credential / Transfer Credentials from a previous college or university registrar, granting the student permission to transfer.',
+            'ai_hint' => 'Honorable Dismissal / Transfer Credentials issued by the registrar of a previous COLLEGE or UNIVERSITY, granting the student permission to transfer. NOT a DepEd report card: the "Certificate of Transfer" / "Cancellation of Eligibility to Transfer" boxes printed on the back of an SF9 / Form 138 are part of that report card.',
         ],
         'transcript_of_records' => [
             'label' => 'Transcript of Records / Certified Copy of Grades',
@@ -640,6 +640,7 @@ function aiClassifyPages(array $pageTexts)
         . "gets the same code as that previous page.\n"
         . "- For report cards, choose the grade level printed as the card's own level, not a 'promoted to Grade X' line.\n"
         . "- The Grade or Grade Level field on a report card decides its type (Grade 10, 11 or 12), even when the form code says SF9-JHS.\n"
+        . "- The back of a DepEd report card (SF9 / Form 138) has Attendance Record, Parent/Guardian's Signature, Certificate of Transfer and Cancellation of Eligibility sections. That page is the report card (use its Grade field), never honorable_dismissal.\n"
         . "- Some types have a name only; recognize them from what that name means.\n"
         . "- Use \"none\" for blank pages or documents that match no type.\n"
         . "- confidence: high = unmistakable; medium = probably right; low = a guess the admin should check.\n"
@@ -770,7 +771,7 @@ function requirementKeywordSeeds()
         'als_certificate_completion'   => 'CERTIFICATE OF COMPLETION, ALTERNATIVE LEARNING SYSTEM, ALS',
         'als_certificate_rating'       => 'CERTIFICATE OF RATING, ACCREDITATION AND EQUIVALENCY, ALS',
         'als_passers_list'             => 'LIST OF PASSERS, NATIONAL LIST, ALS',
-        'honorable_dismissal'          => 'HONORABLE DISMISSAL, TRANSFER CREDENTIAL, CERTIFICATE OF TRANSFER',
+        'honorable_dismissal'          => 'HONORABLE DISMISSAL, TRANSFER CREDENTIAL',
         'transcript_of_records'        => 'TRANSCRIPT OF RECORDS, TRANSCRIPT, CERTIFIED TRUE COPY OF GRADES',
         'shifting_form'                => 'SHIFTING, APPLICATION FOR SHIFTING, SHIFTING FORM',
         'copy_of_grades'               => 'COPY OF GRADES, GRADE SLIP, PUPSIS',
@@ -788,6 +789,7 @@ function requirementKeywordSeedUpgrades()
 {
     return [
         'f137_not_sent_certification' => 'NOT SENT, NOT BEEN SENT, F137-A, FORM 137',
+        'honorable_dismissal'         => 'HONORABLE DISMISSAL, TRANSFER CREDENTIAL, CERTIFICATE OF TRANSFER',
     ];
 }
 
@@ -922,6 +924,24 @@ function systemClassifyPage($text, $gradeLevel = '', $aiCode = null)
     if (!$candidates) {
         return null;
     }
+
+    // A DepEd report card (SF9) prints "Certificate of Transfer" / "Cancellation of Eligibility" on its back.
+    // If the page clearly looks like a report card and has no real transfer-document title, only report cards may match.
+    $cardSignals = 0;
+    foreach (['/\\bSF 9\\b/', '/\\bF ?138\\b|\\bFORM 138\\b/', '/REPORT CARD/', '/LEARNER S PROGRESS/', '/ATTENDANCE RECORD/',
+              '/DEAR PARENT/', '/GUARDIAN S SIGNATURE/', '/CANCELLATION OF ELIGIBILITY/'] as $signal) {
+        if (preg_match($signal, $plain)) {
+            $cardSignals++;
+        }
+    }
+    $hasTransferTitle = preg_match('/HONORABLE DISMISSAL|TRANSFER CREDENTIAL|TRANSCRIPT OF RECORD/', $plain);
+    if ($cardSignals >= 2 && !$hasTransferTitle) {
+        $candidates = array_intersect_key($candidates, array_flip($cardCodes));
+        if (!$candidates) {
+            return null;
+        }
+    }
+
     uasort($candidates, fn($a, $b) => [$b['score'], $b['length']] <=> [$a['score'], $a['length']]);
     $top = reset($candidates);
     $tied = array_keys(array_filter($candidates, fn($c) => $c['score'] === $top['score'] && $c['length'] === $top['length']));

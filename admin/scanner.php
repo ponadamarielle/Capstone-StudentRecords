@@ -762,7 +762,7 @@ function scanStartDialogHider()
 
     $title  = str_replace("'", "''", scanEnv('SCANNER_DIALOG_TITLE', '^\s*Scan\s*$'));
     $script = <<<'PS'
-param([int]$Seconds = 300)
+param([int]$Seconds = 300, [string]$Folder = '')
 $Title = '__TITLE__'
 Add-Type -TypeDefinition @"
 using System;
@@ -777,6 +777,7 @@ public static class PupScanDialog {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
     static string Text(IntPtr h) { var s = new StringBuilder(256); GetWindowText(h, s, 256); return s.ToString(); }
     static string Cls(IntPtr h) { var s = new StringBuilder(256); GetClassName(h, s, 256); return s.ToString(); }
     static bool HasProgressBar(IntPtr h) {
@@ -793,11 +794,27 @@ public static class PupScanDialog {
         }, IntPtr.Zero);
         return n;
     }
+    public static int CloseFolder(string name) {
+        int n = 0;
+        EnumWindows((h, l) => {
+            if (IsWindowVisible(h) && Cls(h) == "CabinetWClass") {
+                string t = Text(h);
+                if (string.Equals(t, name, StringComparison.OrdinalIgnoreCase) || t.StartsWith(name + " - ", StringComparison.OrdinalIgnoreCase)) {
+                    ShowWindow(h, 0);
+                    PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero);
+                    n++;
+                }
+            }
+            return true;
+        }, IntPtr.Zero);
+        return n;
+    }
 }
 "@
 $end = (Get-Date).AddSeconds($Seconds)
 while ((Get-Date) -lt $end) {
     try { [void][PupScanDialog]::Hide($Title) } catch {}
+    if ($Folder -ne '') { try { [void][PupScanDialog]::CloseFolder($Folder) } catch {} }
     Start-Sleep -Milliseconds 150
 }
 PS;
@@ -809,8 +826,9 @@ PS;
         }
     }
 
+    $folderName = scanEnv('SCANNER_CLOSE_FOLDER', '1') === '0' ? '' : str_replace('"', '', basename(scanWatchFolder()));
     $command = 'powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "'
-        . $file . '" -Seconds ' . $seconds;
+        . $file . '" -Seconds ' . $seconds . ($folderName !== '' ? ' -Folder "' . $folderName . '"' : '');
     if (class_exists('COM')) {
         try {
             $shell = new COM('WScript.Shell');
