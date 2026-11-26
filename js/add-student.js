@@ -357,6 +357,10 @@ document.addEventListener('DOMContentLoaded', function () {
         return Array.isArray(r.required_for) && r.required_for.indexOf(currentTrack()) !== -1;
     }
 
+    function isOptionalForTrack(r) {
+        return Array.isArray(r.optional_for) && r.optional_for.indexOf(currentTrack()) !== -1;
+    }
+
     function suggestTrackFromDocuments() {
         const groups = uploadedDocuments.map(function (d) {
             const r = requirementByCode[d.requirement_code];
@@ -601,6 +605,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function sendOcrRequest(file) {
         const formData = new FormData();
+        formData.set('csrf_token', document.querySelector('meta[name="csrf-token"]').content);
         formData.append('document', file);
         if (studentPhotoSet) formData.append('has_photo', '1');
         if (uploadInput && uploadInput.dataset.scannedFile === file.name) {
@@ -928,7 +933,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (r.group !== groupKey) return false;
                 if (r.code === doc.requirement_code) return true;
                 if (r.clinic_only || HIDDEN_TYPE_OPTIONS.indexOf(r.code) !== -1) return false;
-                return doc.offline || isRequiredForTrack(r) || !(r.required_for || []).length;
+                return doc.offline || isRequiredForTrack(r) || isOptionalForTrack(r);
             });
             if (!reqs.length) return;
             const optgroup = document.createElement('optgroup');
@@ -937,7 +942,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 const opt = document.createElement('option');
                 opt.value = r.code;
                 const takenBy = findDocByRequirement(r.code, index);
-                opt.textContent = r.label + (takenBy !== -1 ? ' (already attached)' : '');
+                const optionalOnly = isOptionalForTrack(r) && !isRequiredForTrack(r);
+                opt.textContent = r.label + (optionalOnly ? ' (optional)' : '') + (takenBy !== -1 ? ' (already attached)' : '');
                 opt.disabled = takenBy !== -1;
                 optgroup.appendChild(opt);
             });
@@ -1390,6 +1396,8 @@ document.addEventListener('DOMContentLoaded', function () {
         toggleSaveDisabled(true);
 
         const formData = new FormData(form);
+
+        formData.set('csrf_token', document.querySelector('meta[name="csrf-token"]').content);
         formData.set('documents', JSON.stringify(uploadedDocuments));
 
         fetch(ACTIONS_URL + '?action=add_student', {
@@ -1464,6 +1472,7 @@ document.addEventListener('DOMContentLoaded', function () {
     function deleteFileSet(doc) {
         if (!doc || (!doc.file_path && !doc.image_path && !doc.photo_path)) return;
         const formData = new FormData();
+        formData.set('csrf_token', document.querySelector('meta[name="csrf-token"]').content);
         if (doc.file_path) formData.append('file_path', doc.file_path);
         if (doc.image_path && doc.image_path !== doc.file_path) {
             formData.append('image_path', doc.image_path);

@@ -36,7 +36,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     async function send(action) {
-        const response = await fetch('student_directory.php?action=' + action, { method: 'POST' });
+        const response = await fetch('student_directory.php?action=' + action, { method: 'POST', body: new URLSearchParams({ csrf_token: document.querySelector('meta[name="csrf-token"]').content }) });
         return response.json();
     }
 

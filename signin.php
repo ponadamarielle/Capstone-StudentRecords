@@ -1,4 +1,3 @@
-<!DOCTYPE html>
 <?php
 include 'security_headers.php';
 session_start();
@@ -10,12 +9,22 @@ header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 header('Pragma: no-cache');
 header('Expires: Sat, 01 Jan 2000 00:00:00 GMT');
 
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && (
+    array_key_exists('email', $_GET) ||
+    array_key_exists('password', $_GET) ||
+    array_key_exists('csrf_token', $_GET)
+)) {
+    header('Allow: POST');
+    http_response_code(405);
+    exit('Invalid sign-in request.');
+}
+
 const MAX_LOGIN_ATTEMPTS    = 3;
 const LOGIN_LOCK_MINUTES    = 5;
 const LOGIN_ATTEMPT_WINDOW  = 15;
 
 if (isset($_SESSION['name'], $_SESSION['role'])) {
-    if (in_array($_SESSION['role'], ['Admin', 'Intern'], true) && ($_SESSION['is_first_login'] ?? 0) == 1) {
+    if (in_array($_SESSION['role'], ['Super Admin', 'Admin', 'Intern'], true) && ($_SESSION['is_first_login'] ?? 0) == 1) {
         header("Location: change_password.php");
         exit();
     }
@@ -53,7 +62,9 @@ $DBName = "db_pup_eRecords";
 $conn = mysqli_connect($DBHost, $DBUser, $DBPass, $DBName);
 
 if(!$conn) {
-    die("Connection failed: " .mysqli_connect_error());
+    error_log(mysqli_connect_error());
+    http_response_code(503);
+    exit("Service temporarily unavailable.");
 }
 
 ensureAccountRoles($conn);
@@ -120,17 +131,22 @@ function lockMessage($seconds)
 if($_SERVER['REQUEST_METHOD'] == 'POST'){
 
  if (
-    !isset($_POST['csrf_token']) ||
+    !is_string($_POST['csrf_token'] ?? null) ||
     !isset($_SESSION['csrf_token']) ||
     !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])
 ) {
+    http_response_code(403);
     die("CSRF validation failed.");
 }
 
+    if (!is_string($_POST['email'] ?? null) || !is_string($_POST['password'] ?? null)) {
+        http_response_code(400);
+        exit('Invalid sign-in request.');
+    }
     $email = trim($_POST['email']);
     $pass = $_POST['password'];
 
-    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+    if (strlen($email) > 254 || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $error = "Please enter a valid email address.";
     } else {
 
@@ -180,6 +196,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
     }
 }
 ?>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -188,7 +205,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
     <link href="css/bootstrap.min.css" rel="stylesheet">
     <link href="css/bootstrap-icons.css" rel="stylesheet">
     <link href="css/font.css" rel="stylesheet">
-    <link href="css/signin.css?v=<?= @filemtime(__DIR__ . '/css/signin.css') ?>" rel="stylesheet">
+    <link href="css/signin.css?v=<?= hash_file('sha256', __DIR__ . '/css/signin.css') ?>" rel="stylesheet">
 </head>
 <body class="auth-body">
 
@@ -229,7 +246,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
                     <input
                         type="hidden"
                         name="csrf_token"
-                        value="<?php echo $_SESSION['csrf_token']; ?>"
+                        value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>"
                     >
 
                     <label class="auth-label" for="signinEmail">Email address</label>
@@ -241,7 +258,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
                             id="signinEmail"
                             name="email"
                             placeholder="name@example.com"
-                            value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>"
+                            value=""
                             pattern="[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
                             title="Please enter a valid email address"
                             autocomplete="username"
@@ -295,6 +312,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         </section>
     </main>
 
-<script src="js/auth.js?v=<?= @filemtime(__DIR__ . '/js/auth.js') ?>"></script>
+<script src="js/auth.js?v=<?= hash_file('sha256', __DIR__ . '/js/auth.js') ?>"></script>
 </body>
 </html>

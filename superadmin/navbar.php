@@ -11,11 +11,13 @@
 
 <link href="../css/bootstrap-icons.css" rel="stylesheet">
 <link href="../css/navbar-superadmin.css" rel="stylesheet">
-<link href="../css/update-password.css?v=<?= @filemtime(__DIR__ . '/../css/update-password.css') ?>" rel="stylesheet">
+<link href="../css/update-password.css?v=<?= @hash_file('sha256', __DIR__ . '/../css/update-password.css') ?>" rel="stylesheet">
 <script src="../js/bootstrap.bundle.min.js"></script>
 <script src="../js/sidebar.js"></script>
-<script src="../js/update-password.js?v=<?= @filemtime(__DIR__ . '/../js/update-password.js') ?>" defer></script>
-<script src="../js/update-email.js?v=<?= @filemtime(__DIR__ . '/../js/update-email.js') ?>" defer></script>
+<link href="../css/account-settings.css" rel="stylesheet">
+<script src="../js/account-settings.js" defer></script>
+<script src="../js/update-password.js?v=<?= @hash_file('sha256', __DIR__ . '/../js/update-password.js') ?>" defer></script>
+<script src="../js/update-email.js?v=<?= @hash_file('sha256', __DIR__ . '/../js/update-email.js') ?>" defer></script>
 
 <?php
     $pageTitles = [
@@ -106,32 +108,39 @@
         </button>
         <ul class="dropdown-menu dropdown-menu-end account-menu" aria-labelledby="userDropdown">
             <li>
-                <button type="button" class="dropdown-item" data-bs-toggle="modal" data-bs-target="#changePasswordModal">
-                    <i class="bi bi-key"></i>Change password
-                </button>
-            </li>
-            <li>
-                <button type="button" class="dropdown-item" data-bs-toggle="modal" data-bs-target="#changeEmailModal">
-                    <i class="bi bi-envelope"></i>Change email address
+                <button type="button" class="dropdown-item" data-bs-toggle="modal" data-bs-target="#accountSettingsModal">
+                    <i class="bi bi-person-gear"></i>Account Settings
                 </button>
             </li>
         </ul>
     </div>
 </header>
 
-<div class="modal fade" id="changePasswordModal" tabindex="-1" aria-labelledby="changePasswordTitle" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
+<div class="modal fade" id="accountSettingsModal" tabindex="-1" aria-labelledby="accountSettingsTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
         <div class="modal-content">
-            <form id="changePasswordForm" action="update_password.php" method="POST" novalidate>
+            <div class="modal-header cp-header as-header"><span class="cp-icon"><i class="bi bi-person-gear"></i></span><div><h5 class="modal-title" id="accountSettingsTitle">Account Settings</h5><p class="cp-subtitle">Manage your personal information and account security.</p></div><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+            <div class="as-tabs" role="group" aria-label="Account settings sections">
+                <button type="button" class="as-tab active" data-section="profile" aria-pressed="true">Profile</button>
+                <button type="button" class="as-tab" data-section="password" aria-pressed="false">Password</button>
+                <button type="button" class="as-tab" data-section="email" aria-pressed="false">Email Address</button>
+            </div>
+            <div class="as-sections">
+                <section data-panel="profile"><form id="changeProfileForm" action="update_profile.php" method="POST">
+    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($_SESSION['csrf_token']) ?>">
+    <div class="modal-body cp-body">
+        <div class="as-profile"><span class="admin-avatar as-avatar"><?= htmlspecialchars($userInitials) ?></span><div><strong id="asDisplayName"><?= htmlspecialchars($userName) ?></strong><div class="cp-subtitle">Super Admin</div></div></div>
+        <div class="cp-field"><label class="cp-label" for="asName">Full name <span class="cp-req">*</span></label><div class="cp-input"><input class="form-control" id="asName" name="name" value="<?= htmlspecialchars($userName) ?>" maxlength="100" required></div></div>
+        <div class="cp-field"><label class="cp-label" for="asRole">Role</label><div class="cp-input"><input class="form-control" id="asRole" value="Super Admin" disabled></div></div>
+        <p class="cp-subtitle">Your updated name will be displayed throughout the system.</p>
+        <div id="asMessage" role="status" class="cp-error"></div>
+    </div>
+    <div class="modal-footer cp-footer"><button type="button" class="btn cp-cancel" data-bs-dismiss="modal" id="asCancel">Cancel</button><button type="submit" class="btn cp-save" id="asSave">Save changes</button></div>
+</form></section>
+                <section data-panel="password" hidden><form id="changePasswordForm" action="update_password.php" method="POST" novalidate>
                 <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token']); ?>">
-                <div class="modal-header cp-header">
-                    <span class="cp-icon"><i class="bi bi-key"></i></span>
-                    <div>
-                        <h5 class="modal-title" id="changePasswordTitle">Change password</h5>
-                        <p class="cp-subtitle">Use at least 8 characters with uppercase and lowercase letters, a number and a symbol.</p>
-                    </div>
-                </div>
-                <div class="modal-body cp-body">
+                
+                <div class="modal-body cp-body"><p class="cp-subtitle">Use at least 8 characters with uppercase and lowercase letters, a number and a symbol.</p>
                     <div class="cp-success d-none" id="cpSuccess" role="status">
                         <i class="bi bi-check-circle-fill"></i><span>Your password was changed.</span>
                     </div>
@@ -154,24 +163,11 @@
                     <button type="button" class="btn cp-cancel" data-bs-dismiss="modal" id="cpCancelBtn">Cancel</button>
                     <button type="submit" class="btn cp-save" id="cpSaveBtn">Save password</button>
                 </div>
-            </form>
-        </div>
-    </div>
-</div>
-
-<div class="modal fade" id="changeEmailModal" tabindex="-1" aria-labelledby="changeEmailTitle" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content">
-            <form id="changeEmailForm" action="update_email.php" method="POST" novalidate>
+            </form></section>
+                <section data-panel="email" hidden><form id="changeEmailForm" action="update_email.php" method="POST" novalidate>
                 <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token']); ?>">
-                <div class="modal-header cp-header">
-                    <span class="cp-icon"><i class="bi bi-envelope"></i></span>
-                    <div>
-                        <h5 class="modal-title" id="changeEmailTitle">Change email address</h5>
-                        <p class="cp-subtitle" id="ceSubtitle">Sign-in codes will be sent to the new email address.</p>
-                    </div>
-                </div>
-                <div class="modal-body cp-body">
+                
+                <div class="modal-body cp-body"><p class="cp-subtitle" id="ceSubtitle">Sign-in codes will be sent to the new email address.</p>
                     <div class="cp-success d-none" id="ceSuccess" role="status">
                         <i class="bi bi-check-circle-fill"></i><span id="ceSuccessText">Your email address was changed.</span>
                     </div>
@@ -216,12 +212,12 @@
                     <button type="button" class="btn cp-cancel" data-bs-dismiss="modal" id="ceCancelBtn">Cancel</button>
                     <button type="submit" class="btn cp-save" id="ceSaveBtn">Send code</button>
                 </div>
-            </form>
+            </form></section>
+            </div>
         </div>
     </div>
 </div>
 
-<!-- Logout Modal -->
 <div class="modal fade" id="logoutModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content text-center p-4">

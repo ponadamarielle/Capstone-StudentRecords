@@ -310,13 +310,17 @@ function requirementTrackColumns()
     return array_merge(array_keys(getAdmissionTracks()), [GRADUATION_TRACK]);
 }
 
-function setRequirementTracks($conn, $code, array $tracks, $value)
+function setRequirementTracks($conn, $code, array $tracks, $value, $required = true)
 {
+    $isRequired = $required ? 1 : 0;
     foreach (array_intersect(requirementTrackColumns(), $tracks) as $track) {
-        $stmt = mysqli_prepare($conn, $value
-            ? "INSERT IGNORE INTO requirement_tracks (code, track) VALUES (?, ?)"
-            : "DELETE FROM requirement_tracks WHERE code = ? AND track = ?");
-        mysqli_stmt_bind_param($stmt, 'ss', $code, $track);
+        if ($value) {
+            $stmt = mysqli_prepare($conn, "INSERT INTO requirement_tracks (code, track, is_required) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE is_required = VALUES(is_required)");
+            mysqli_stmt_bind_param($stmt, 'ssi', $code, $track, $isRequired);
+        } else {
+            $stmt = mysqli_prepare($conn, "DELETE FROM requirement_tracks WHERE code = ? AND track = ?");
+            mysqli_stmt_bind_param($stmt, 'ss', $code, $track);
+        }
         mysqli_stmt_execute($stmt);
         mysqli_stmt_close($stmt);
     }
@@ -337,9 +341,18 @@ function ensureRequirementTables($conn, array $builtin)
     mysqli_query($conn, "CREATE TABLE IF NOT EXISTS requirement_tracks (
         code VARCHAR(64) NOT NULL,
         track VARCHAR(20) NOT NULL,
+        is_required TINYINT(1) NOT NULL DEFAULT 1,
         added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (code, track)
     ) DEFAULT CHARSET=utf8mb4");
+    $trackColumns = [];
+    $result = mysqli_query($conn, "SHOW COLUMNS FROM requirement_tracks");
+    while ($result && ($row = mysqli_fetch_assoc($result))) {
+        $trackColumns[$row['Field']] = true;
+    }
+    if ($trackColumns && !isset($trackColumns['is_required'])) {
+        mysqli_query($conn, "ALTER TABLE requirement_tracks ADD COLUMN is_required TINYINT(1) NOT NULL DEFAULT 1 AFTER track");
+    }
 
     $columns = [];
     $result = mysqli_query($conn, "SHOW COLUMNS FROM requirement_documents");
@@ -396,9 +409,14 @@ function applyRequirementSettings(array $catalog)
     try {
         ensureRequirementTables($conn, $catalog);
         $tracks = [];
-        $result = mysqli_query($conn, "SELECT code, track FROM requirement_tracks ORDER BY added_at, track");
+        $optionalTracks = [];
+        $result = mysqli_query($conn, "SELECT code, track, is_required FROM requirement_tracks ORDER BY added_at, track");
         while ($result && ($row = mysqli_fetch_assoc($result))) {
-            $tracks[$row['code']][] = $row['track'];
+            if ((int) $row['is_required'] === 1) {
+                $tracks[$row['code']][] = $row['track'];
+            } else {
+                $optionalTracks[$row['code']][] = $row['track'];
+            }
         }
         $result = mysqli_query($conn, "SELECT code, label, ai_hint, keywords, keywords_auto, doc_group, is_custom FROM requirement_documents ORDER BY created_at, code");
         $seeds = requirementKeywordSeeds();
@@ -411,6 +429,7 @@ function applyRequirementSettings(array $catalog)
             if (isset($catalog[$code])) {
                 if (!empty($catalog[$code]['store'])) {
                     $catalog[$code]['required_for'] = $tracks[$code] ?? [];
+                    $catalog[$code]['optional_for'] = $optionalTracks[$code] ?? [];
                 }
                 continue;
             }
@@ -420,6 +439,7 @@ function applyRequirementSettings(array $catalog)
             $catalog[$code] = [
                 'label' => $row['label'],
                 'group' => $row['doc_group'], 'store' => true, 'required_for' => $tracks[$code] ?? [],
+                'optional_for' => $optionalTracks[$code] ?? [],
                 'ref' => '', 'note' => '',
                 'extract_fields' => false, 'field_priority' => 9,
                 'ai_hint' => $row['ai_hint'],
@@ -469,6 +489,7 @@ function getDocumentRequirementsForClient()
             'label'    => $req['label'],
             'group'    => $req['group'],
             'required_for' => $req['required_for'] ?? [],
+            'optional_for' => $req['optional_for'] ?? [],
             'ref'      => $req['ref'] ?? '',
             'note'     => $req['note'] ?? '',
         ];

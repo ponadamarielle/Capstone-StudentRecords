@@ -108,6 +108,8 @@
         setRestoreBusy(true);
 
         const formData = new FormData();
+
+        formData.set('csrf_token', document.querySelector('meta[name="csrf-token"]').content);
         formData.append('student_id', btn.dataset.id);
 
         let done = false;

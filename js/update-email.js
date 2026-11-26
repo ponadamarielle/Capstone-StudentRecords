@@ -1,5 +1,5 @@
 document.addEventListener('DOMContentLoaded', function () {
-    const modalEl = document.getElementById('changeEmailModal');
+    const modalEl = document.getElementById('accountSettingsModal');
     const form = document.getElementById('changeEmailForm');
     if (!modalEl || !form) return;
 
@@ -274,6 +274,6 @@ document.addEventListener('DOMContentLoaded', function () {
     });
     modalEl.addEventListener('hidden.bs.modal', reset);
     modalEl.addEventListener('shown.bs.modal', function () {
-        passwordInput.focus();
+        if (!form.closest("[data-panel]").hidden) passwordInput.focus();
     });
 });

@@ -162,7 +162,6 @@ if (addModalEl) {
 }
 }
 
-// deactivating last active admin account
 if (flags.getAttribute('data-show-toggle-error') === 'true') {
     var toggleErrorEl = document.getElementById('toggleErrorModal');
 if (toggleErrorEl) {

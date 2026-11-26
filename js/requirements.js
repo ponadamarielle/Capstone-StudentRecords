@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', function () {
     var formModal = document.getElementById('requirementFormModal');
     var form = document.getElementById('requirementForm');
     var labelInput = document.getElementById('requirementLabel');
+    var optionalCheck = document.getElementById('requirementOptional');
 
     function setError(input, message) {
         var feedback = document.getElementById(input.id + 'Feedback');
@@ -22,6 +23,7 @@ document.addEventListener('DOMContentLoaded', function () {
         formModal.addEventListener('show.bs.modal', function (e) {
             if (!e.relatedTarget) return;
             labelInput.value = '';
+            optionalCheck.checked = false;
             setError(labelInput, '');
         });
         formModal.addEventListener('shown.bs.modal', function () {

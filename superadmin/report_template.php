@@ -37,7 +37,7 @@ function templateUrl($name)
     $images = reportTemplateImages();
     $path = $name === 'draft' ? $files['preview'] : $images[$name];
     $relative = '../' . ltrim(str_replace('\\', '/', substr($path, strlen(dirname(__DIR__)))), '/');
-    return $relative . '?v=' . (@filemtime($path) ?: time());
+    return $relative . '?v=' . (@hash_file('sha256', $path) ?: 'missing');
 }
 
 if ($isAjax) {
@@ -117,7 +117,7 @@ if ($isAjax) {
     <link href="../css/bootstrap-icons.css" rel="stylesheet">
     <link href="../css/font.css" rel="stylesheet">
     <link href="../css/navbar-superadmin.css" rel="stylesheet">
-    <link href="../css/report-template.css?v=<?= @filemtime(__DIR__ . '/../css/report-template.css') ?>" rel="stylesheet">
+    <link href="../css/report-template.css?v=<?= @hash_file('sha256', __DIR__ . '/../css/report-template.css') ?>" rel="stylesheet">
 </head>
 <body>
 
@@ -172,6 +172,6 @@ if ($isAjax) {
     </section>
 </div>
 
-<script src="../js/report-template.js?v=<?= @filemtime(__DIR__ . '/../js/report-template.js') ?>"></script>
+<script src="../js/report-template.js?v=<?= @hash_file('sha256', __DIR__ . '/../js/report-template.js') ?>"></script>
 </body>
 </html>

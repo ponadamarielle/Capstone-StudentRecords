@@ -315,7 +315,7 @@ include 'navbar.php';
     <link href="../css/bootstrap.min.css" rel="stylesheet">
     <link href="../css/bootstrap-icons.css" rel="stylesheet">
     <link href="../css/font.css" rel="stylesheet">
-    <link href="../css/activity-logs.css?v=<?= @filemtime(__DIR__ . '/../css/activity-logs.css') ?>" rel="stylesheet">
+    <link href="../css/activity-logs.css?v=<?= @hash_file('sha256', __DIR__ . '/../css/activity-logs.css') ?>" rel="stylesheet">
 </head>
 <body>
 <div class="logs-container">
@@ -556,7 +556,7 @@ include 'navbar.php';
     </section>
 </div>
 
-<script src="../js/activity-logs.js?v=<?= @filemtime(__DIR__ . '/../js/activity-logs.js') ?>"></script>
-<script src="../js/backup-download.js?v=<?= @filemtime(__DIR__ . '/../js/backup-download.js') ?>"></script>
+<script src="../js/activity-logs.js?v=<?= @hash_file('sha256', __DIR__ . '/../js/activity-logs.js') ?>"></script>
+<script src="../js/backup-download.js?v=<?= @hash_file('sha256', __DIR__ . '/../js/backup-download.js') ?>"></script>
 </body>
 </html>

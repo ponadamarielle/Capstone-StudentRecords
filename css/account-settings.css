@@ -1,0 +1,43 @@
+#accountSettingsModal .modal-dialog { max-width: 600px; }
+#accountSettingsModal .modal-content { border: 0; border-radius: 16px; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.18); overflow: hidden; font-family: var(--font-sans); }
+#accountSettingsModal .as-header { display: flex; align-items: center; gap: 12px; padding: 20px 24px; border-bottom: 1px solid var(--neutral-border, #E9E5E0); }
+#accountSettingsModal .btn-close { margin-left: auto; }
+#accountSettingsModal .as-tabs { display: flex; flex-wrap: wrap; gap: 8px; padding: 20px 24px 0; }
+#accountSettingsModal .as-tab { border: 0; border-radius: 24px; background: transparent; color: var(--text-secondary); padding: 9px 16px; font-weight: 600; font-size: 14px; }
+#accountSettingsModal .as-tab.active { background: var(--neutral-bg); color: var(--text-primary); }
+#accountSettingsModal .as-tab:focus-visible { outline: 2px solid var(--brand-maroon); }
+#accountSettingsModal .as-sections { overflow-y: auto; min-height: 0; }
+#accountSettingsModal .as-profile { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+#accountSettingsModal .as-avatar { width: 64px; height: 64px; font-size: 22px; }
+#accountSettingsModal .cp-body { padding: 20px 24px; }
+#accountSettingsModal .cp-footer { padding: 16px 24px; }
+#accountSettingsModal .cp-field { margin-bottom: 16px; }
+#accountSettingsModal .cp-input .form-control { border-radius: 10px; }
+
+#accountSettingsModal .cp-body > .cp-subtitle { margin-bottom: 16px; }
+
+#accountSettingsModal .modal-title { font-size: 18px; font-weight: 700; color: var(--text-primary, #1C1917); }
+#accountSettingsModal .cp-icon { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; flex-shrink: 0; border-radius: 10px; background: var(--brand-maroon-50, #FBF1F1); color: var(--brand-maroon, #7B1113); }
+#accountSettingsModal .cp-subtitle { font-size: 13px; color: var(--text-secondary, #625B55); }
+#accountSettingsModal .cp-header .cp-subtitle { margin: 4px 0 0; }
+#accountSettingsModal .cp-label { display: block; margin-bottom: 6px; font-size: 14px; font-weight: 600; color: var(--text-primary, #1C1917); }
+#accountSettingsModal .cp-input { position: relative; }
+#accountSettingsModal .cp-input .form-control { min-height: 44px; padding: 10px 14px; border: 1px solid var(--neutral-border-strong, #D6D0C9); font-size: 14px; }
+#accountSettingsModal .cp-input:has(.cp-toggle) .form-control { padding-right: 44px; }
+#accountSettingsModal .cp-input .form-control:focus { border-color: var(--brand-maroon, #7B1113); box-shadow: 0 0 0 0.2rem rgba(123, 17, 19, 0.15); }
+#accountSettingsModal .cp-input .form-control.is-invalid { border-color: #dc3545; }
+#accountSettingsModal .cp-input .form-control:disabled, #accountSettingsModal .ce-current { background: var(--neutral-subtle, #FAF9F7); border: 1px solid var(--neutral-border, #E9E5E0); border-radius: 10px; }
+#accountSettingsModal .ce-current { padding: 10px 14px; overflow-wrap: anywhere; }
+#accountSettingsModal .cp-toggle { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); border: 0; background: transparent; color: var(--text-secondary, #625B55); }
+#accountSettingsModal .cp-footer { background: var(--neutral-subtle, #FAF9F7); border-top: 1px solid var(--neutral-border, #E9E5E0); gap: 10px; }
+#accountSettingsModal .cp-footer .btn { margin: 0; min-height: 40px; padding: 9px 16px; border-radius: 10px; font-size: 14px; font-weight: 600; }
+#accountSettingsModal .cp-footer .cp-cancel { background: #fff; border: 1px solid var(--neutral-border-strong, #D6D0C9); color: var(--text-primary, #1C1917); }
+#accountSettingsModal .cp-footer .cp-cancel:hover { background: var(--neutral-bg, #F6F4F1); }
+#accountSettingsModal .cp-footer .cp-save { background: var(--brand-maroon, #7B1113); border: 1px solid var(--brand-maroon, #7B1113); color: #fff; }
+#accountSettingsModal .cp-footer .cp-save:hover { background: #650d0f; border-color: #650d0f; }
+#accountSettingsModal .cp-footer .cp-save:disabled { opacity: .65; }
+@media (max-width: 576px) {
+    #accountSettingsModal .as-header, #accountSettingsModal .cp-body, #accountSettingsModal .cp-footer { padding: 16px; }
+    #accountSettingsModal .as-tabs { padding: 16px 16px 0; gap: 4px; }
+    #accountSettingsModal .as-tab { padding: 8px 10px; }
+}

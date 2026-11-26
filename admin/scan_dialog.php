@@ -5,6 +5,13 @@ if (!isset($_SESSION['name'], $_SESSION['role']) || !isOfficeRole()) {
     http_response_code(403);
     exit();
 }
+if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST' || !is_string($_POST['csrf_token'] ?? null) || !is_string($_SESSION['csrf_token'] ?? null) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
+    http_response_code(403);
+    header('Content-Type: application/json');
+    echo json_encode(['success' => false, 'message' => 'CSRF validation failed.']);
+    exit();
+}
+
 session_write_close();
 header('Content-Type: application/json');
 

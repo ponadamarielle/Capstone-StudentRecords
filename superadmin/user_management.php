@@ -324,7 +324,7 @@ unset($_SESSION['um_reset_flash']);
     <link href="../css/bootstrap-icons.css" rel="stylesheet">
     <link href="../css/font.css" rel="stylesheet">
     <link href="../css/navbar-superadmin.css" rel="stylesheet">
-    <link href="../css/user_management.css?v=<?= @filemtime(__DIR__ . '/../css/user_management.css') ?>" rel="stylesheet">
+    <link href="../css/user_management.css?v=<?= @hash_file('sha256', __DIR__ . '/../css/user_management.css') ?>" rel="stylesheet">
 </head>
 <body>
 
@@ -460,7 +460,6 @@ unset($_SESSION['um_reset_flash']);
 
 </div>
 
-<!-- add admin -->
 <div class="modal fade" id="addStudentModal" tabindex="-1" aria-labelledby="addStudentModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
@@ -603,6 +602,6 @@ unset($_SESSION['um_reset_flash']);
     data-show-add-modal="<?= (isset($error) && isset($_POST['add_admin'])) ? 'true' : 'false' ?>"
     data-show-toggle-error="<?= isset($toggleError) ? 'true' : 'false' ?>">
 </div>
-<script src="../js/user_management.js?v=<?= @filemtime(__DIR__ . '/../js/user_management.js') ?>"></script>
+<script src="../js/user_management.js?v=<?= @hash_file('sha256', __DIR__ . '/../js/user_management.js') ?>"></script>
 </body>
 </html>

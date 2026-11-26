@@ -16,7 +16,7 @@
 <script src="../js/bootstrap.bundle.min.js"></script>
 <script src="../js/sidebar.js"></script>
 <script src="../js/navbar-admin.js"></script>
-<script src="../js/session-check.js?v=<?php echo @filemtime(__DIR__ . '/../js/session-check.js'); ?>"></script>
+<script src="../js/session-check.js?v=<?php echo @hash_file('sha256', __DIR__ . '/../js/session-check.js'); ?>"></script>
 
 <?php
     $pageTitles = [

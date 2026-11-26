@@ -20,10 +20,15 @@ $hasApp = trim((string) ($row['totp_secret'] ?? '')) !== '';
 $methodLabels = ['email' => 'email code', 'app' => 'Google Authenticator'];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], (string) $_POST['csrf_token'])) {
+    if (!is_string($_POST['csrf_token'] ?? null) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
+        http_response_code(403);
         die('CSRF validation failed.');
     }
     $action = $_POST['action'] ?? '';
+    if (!is_string($action) || !in_array($action, ['cancel', 'use_app', 'use_email', 'resend', 'verify'], true) || ($action === 'verify' && !is_string($_POST['code'] ?? null)) || (isset($_POST['trust']) && $_POST['trust'] !== '1')) {
+        http_response_code(400);
+        exit('Invalid verification request.');
+    }
     $pending = &$_SESSION['tf_pending'];
     $pending['error'] = '';
     $pending['notice'] = '';
@@ -133,8 +138,8 @@ $csrf = htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8');
     <link href="css/bootstrap.min.css" rel="stylesheet">
     <link href="css/bootstrap-icons.css" rel="stylesheet">
     <link href="css/font.css" rel="stylesheet">
-    <link href="css/signin.css?v=<?= @filemtime(__DIR__ . '/css/signin.css') ?>" rel="stylesheet">
-    <link href="css/two-factor.css?v=<?= @filemtime(__DIR__ . '/css/two-factor.css') ?>" rel="stylesheet">
+    <link href="css/signin.css?v=<?= @hash_file('sha256', __DIR__ . '/css/signin.css') ?>" rel="stylesheet">
+    <link href="css/two-factor.css?v=<?= @hash_file('sha256', __DIR__ . '/css/two-factor.css') ?>" rel="stylesheet">
 </head>
 <body class="auth-body">
 
@@ -266,6 +271,6 @@ $csrf = htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8');
         </section>
     </main>
 
-<script src="js/two-factor.js?v=<?= @filemtime(__DIR__ . '/js/two-factor.js') ?>"></script>
+<script src="js/two-factor.js?v=<?= @hash_file('sha256', __DIR__ . '/js/two-factor.js') ?>"></script>
 </body>
 </html>

@@ -173,6 +173,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function hideScannerDialog() {
         const data = new FormData();
+        data.set('csrf_token', document.querySelector('meta[name="csrf-token"]').content);
         data.append('action', 'keep');
         fetch('scan_dialog.php', { method: 'POST', body: data }).catch(() => {});
     }
@@ -211,6 +212,7 @@ document.addEventListener('DOMContentLoaded', function () {
         showWaiting(waitingMessage());
         hideScannerDialog();
         const start = new FormData();
+        start.set('csrf_token', document.querySelector('meta[name="csrf-token"]').content);
         start.append('action', 'watch_start');
         try {
             await fetch(SCANNER_URL, { method: 'POST', body: start });
@@ -226,6 +228,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
             const poll = new FormData();
+            poll.set('csrf_token', document.querySelector('meta[name="csrf-token"]').content);
             poll.append('action', 'watch_poll');
             if (currentToken) poll.append('append', currentToken);
             if (currentToken && replacePage) poll.append('replace_page', String(replacePage));
@@ -270,6 +273,7 @@ document.addEventListener('DOMContentLoaded', function () {
         lastFolderClose = Date.now();
         (delays || [0, 1000, 2500, 5000, 8000]).forEach((delay) => setTimeout(() => {
             const data = new FormData();
+            data.set('csrf_token', document.querySelector('meta[name="csrf-token"]').content);
             data.append('action', 'close_folder');
             fetch(SCANNER_URL, { method: 'POST', body: data }).catch(() => {});
         }, delay));
@@ -336,6 +340,7 @@ document.addEventListener('DOMContentLoaded', function () {
         let result = null;
         try {
             const data = new FormData();
+            data.set('csrf_token', document.querySelector('meta[name="csrf-token"]').content);
             data.append('action', 'remove_page');
             data.append('token', currentToken);
             data.append('n', String(n));
@@ -432,6 +437,7 @@ document.addEventListener('DOMContentLoaded', function () {
     function discard(token) {
         if (!token) return;
         const data = new FormData();
+        data.set('csrf_token', document.querySelector('meta[name="csrf-token"]').content);
         data.append('action', 'discard');
         data.append('token', token);
         fetch(SCANNER_URL, { method: 'POST', body: data }).catch(() => {});
@@ -460,6 +466,7 @@ document.addEventListener('DOMContentLoaded', function () {
     async function runScan(append) {
         if (busy) return;
         const data = new FormData();
+        data.set('csrf_token', document.querySelector('meta[name="csrf-token"]').content);
         data.append('action', 'scan');
         if (append && currentToken) data.append('append', currentToken);
         if (append && currentToken && replacePage) data.append('replace_page', String(replacePage));
@@ -768,6 +775,7 @@ document.addEventListener('DOMContentLoaded', function () {
     window.addEventListener('pagehide', function () {
         if (currentToken && navigator.sendBeacon) {
             const data = new FormData();
+            data.set('csrf_token', document.querySelector('meta[name="csrf-token"]').content);
             data.append('action', 'discard');
             data.append('token', currentToken);
             navigator.sendBeacon(SCANNER_URL, data);

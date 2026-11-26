@@ -40,7 +40,9 @@ function tfDb()
     if ($conn === null) {
         $conn = mysqli_connect('localhost', 'root', '', 'db_pup_eRecords');
         if (!$conn) {
-            die('Connection failed: ' . mysqli_connect_error());
+            error_log(mysqli_connect_error());
+            http_response_code(503);
+            exit('Service temporarily unavailable.');
         }
         mysqli_set_charset($conn, 'utf8mb4');
         tfEnsureSchema($conn);
@@ -404,7 +406,7 @@ function tfFinishLogin(array $row, $method)
         'details' => ['email' => $row['email'], 'verification' => $method],
     ]);
 
-    if ($row['is_first_login'] == 1 && in_array($row['role'], ['Admin', 'Intern'], true)) {
+    if ($row['is_first_login'] == 1 && in_array($row['role'], ['Super Admin', 'Admin', 'Intern'], true)) {
         header('Location: change_password.php');
         exit();
     }

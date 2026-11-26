@@ -596,6 +596,11 @@ function scanFriendlyError($output)
 
 $action = $_GET['action'] ?? $_POST['action'] ?? '';
 
+if (!in_array($action, ['preview', 'page', 'status', 'devices'], true) && (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST' || !is_string($_POST['csrf_token'] ?? null) || !is_string($_SESSION['csrf_token'] ?? null) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token']))) {
+    scanJson(['success' => false, 'message' => 'CSRF validation failed.'], 403);
+}
+
+
 if ($action === 'preview') {
     $token = $_GET['token'] ?? '';
     session_write_close();

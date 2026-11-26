@@ -72,6 +72,11 @@ function rqUrl($type, $sub)
     return 'requirements.php' . ($sub !== 'shs_current' ? '?track=' . urlencode($sub) : '');
 }
 
+function rqRequiredCount(array $items)
+{
+    return count(array_filter($items, fn($item) => empty($item['optional'])));
+}
+
 function rqRedirect($type, $sub, $kind, $message)
 {
     $_SESSION['rq_flash'] = ['type' => $kind, 'message' => $message];
@@ -81,7 +86,7 @@ function rqRedirect($type, $sub, $kind, $message)
 
 $catalog = getDocumentRequirements();
 $formErrors = [];
-$formOld = ['label' => ''];
+$formOld = ['label' => '', 'mode' => 'required'];
 $openForm = false;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -98,7 +103,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'add') {
         $label = rqCleanText($_POST['label'] ?? '');
         $hint = '';
-        $formOld = ['label' => $label];
+        $isRequired = ($_POST['mode'] ?? '') !== 'optional';
+        $formOld = ['label' => $label, 'mode' => $isRequired ? 'required' : 'optional'];
         $openForm = true;
 
         if (!preg_match("/^[\p{L}\p{N}][\p{L}\p{N}\p{M} .,'&()\/\-]{2,119}$/u", $label)) {
@@ -113,10 +119,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     break;
                 }
             }
+            $where = $type === 'regular' ? $trackNames[$sub] : $typeName . ' students';
             if ($match !== null && empty($catalog[$match]['store'])) {
                 $formErrors['label'] = '"' . $catalog[$match]['label'] . '" is only used to read student information and cannot be a requirement.';
-            } elseif ($match !== null && !array_diff($tracks, $catalog[$match]['required_for'] ?? [])) {
-                $formErrors['label'] = '"' . $catalog[$match]['label'] . '" is already required for ' . ($type === 'regular' ? $trackNames[$sub] : $typeName . ' students') . '.';
+            } elseif ($match !== null && $isRequired && !array_diff($tracks, $catalog[$match]['required_for'] ?? [])) {
+                $formErrors['label'] = '"' . $catalog[$match]['label'] . '" is already required for ' . $where . '.';
+            } elseif ($match !== null && !$isRequired && array_intersect($tracks, $catalog[$match]['required_for'] ?? [])) {
+                $formErrors['label'] = '"' . $catalog[$match]['label'] . '" is already required for ' . $where . '. Remove it first to make it optional.';
+            } elseif ($match !== null && !$isRequired && !array_diff($tracks, $catalog[$match]['optional_for'] ?? [])) {
+                $formErrors['label'] = '"' . $catalog[$match]['label'] . '" is already optional for ' . $where . '.';
             }
         }
 
@@ -147,12 +158,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 mysqli_stmt_execute($stmt);
                 mysqli_stmt_close($stmt);
             }
-            setRequirementTracks($conn, $code, $tracks, true);
-            logActivity('requirement_added', 'Added requirement ' . $label . ' for ' . $typeName . ' students', [
+            setRequirementTracks($conn, $code, $tracks, true, $isRequired);
+            logActivity('requirement_added', 'Added ' . ($isRequired ? '' : 'optional ') . 'requirement ' . $label . ' for ' . $typeName . ' students', [
                 'target_type' => 'requirement',
-                'details'     => ['code' => $code, 'document' => $label, 'student_type' => $typeName, 'existing_document' => $match !== null ? 'Yes' : 'No'],
+                'details'     => ['code' => $code, 'document' => $label, 'student_type' => $typeName, 'requirement_type' => $isRequired ? 'Required' : 'Optional', 'existing_document' => $match !== null ? 'Yes' : 'No'],
             ]);
-            rqRedirect($type, $sub, 'success', $label . ' is now required for ' . ($type === 'regular' ? $trackNames[$sub] : $typeName . ' students') . '.');
+            rqRedirect($type, $sub, 'success', $label . ' is now ' . ($isRequired ? 'required' : 'optional') . ' for ' . ($type === 'regular' ? $trackNames[$sub] : $typeName . ' students') . '.');
         }
     }
 
@@ -162,12 +173,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             rqRedirect($type, $sub, 'error', 'The requirement could not be found. Please try again.');
         }
         $label = $catalog[$code]['label'];
+        $wasOptional = !array_intersect($tracks, $catalog[$code]['required_for'] ?? [])
+            && array_intersect($tracks, $catalog[$code]['optional_for'] ?? []);
         setRequirementTracks($conn, $code, $tracks, false);
-        logActivity('requirement_removed', 'Removed requirement ' . $label . ' for ' . $typeName . ' students', [
+        logActivity('requirement_removed', 'Removed ' . ($wasOptional ? 'optional ' : '') . 'requirement ' . $label . ' for ' . $typeName . ' students', [
             'target_type' => 'requirement',
-            'details'     => ['code' => $code, 'document' => $label, 'student_type' => $typeName, 'effect' => 'Documents already uploaded are kept.'],
+            'details'     => ['code' => $code, 'document' => $label, 'student_type' => $typeName, 'requirement_type' => $wasOptional ? 'Optional' : 'Required', 'effect' => 'Documents already uploaded are kept.'],
         ]);
-        rqRedirect($type, $sub, 'success', $label . ' is no longer required for ' . ($type === 'regular' ? $trackNames[$sub] : $typeName . ' students') . '.');
+        rqRedirect($type, $sub, 'success', $label . ($wasOptional ? ' is no longer listed as optional for ' : ' is no longer required for ') . ($type === 'regular' ? $trackNames[$sub] : $typeName . ' students') . '.');
     }
 }
 
@@ -182,10 +195,13 @@ foreach (array_merge($trackGroups, array_map(fn($t) => [$t], array_combine(array
         if (empty($req['store'])) {
             continue;
         }
-        if (array_intersect($groupTracks, $req['required_for'] ?? [])) {
-            $items[] = ['code' => $code, 'label' => $req['label'], 'custom' => !empty($req['custom'])];
+        $isReq = (bool) array_intersect($groupTracks, $req['required_for'] ?? []);
+        $isOpt = !$isReq && (bool) array_intersect($groupTracks, $req['optional_for'] ?? []);
+        if ($isReq || $isOpt) {
+            $items[] = ['code' => $code, 'label' => $req['label'], 'custom' => !empty($req['custom']), 'optional' => $isOpt];
         }
     }
+    usort($items, fn($a, $b) => $a['optional'] <=> $b['optional']);
     if (isset($trackShort[$key])) {
         $subLists[$key] = $items;
     } else {
@@ -196,6 +212,8 @@ $shown = $type === 'regular' ? $subLists[$sub] : $lists[$type];
 $typeName = $type === 'regular' ? 'Regular - ' . $trackShort[$sub] : $typeLabels[$type];
 $studentsName = $type === 'regular' ? $trackNames[$sub] : $typeLabels[$type] . ' students';
 $formAction = htmlspecialchars(rqUrl($type, $sub));
+$requiredShown = rqRequiredCount($shown);
+$optionalShown = count($shown) - $requiredShown;
 ?>
 
 <html>
@@ -206,7 +224,7 @@ $formAction = htmlspecialchars(rqUrl($type, $sub));
     <link href="../css/font.css" rel="stylesheet">
     <link href="../css/navbar-superadmin.css" rel="stylesheet">
     <link href="../css/course_management.css" rel="stylesheet">
-    <link href="../css/requirements.css?v=6" rel="stylesheet">
+    <link href="../css/requirements.css?v=9" rel="stylesheet">
 </head>
 <body>
 
@@ -225,7 +243,7 @@ $formAction = htmlspecialchars(rqUrl($type, $sub));
     <div class="cm-tabs" role="tablist">
         <?php foreach ($typeLabels as $key => $label): ?>
             <a class="cm-tab<?= $type === $key ? ' active' : '' ?>" href="requirements.php<?= $key !== 'regular' ? '?type=' . $key : '' ?>">
-                <?= $label ?> <span class="cm-tab-count"><?= count($lists[$key]) ?></span>
+                <?= $label ?> <span class="cm-tab-count"><?= rqRequiredCount($lists[$key]) ?></span>
             </a>
         <?php endforeach; ?>
     </div>
@@ -239,7 +257,7 @@ $formAction = htmlspecialchars(rqUrl($type, $sub));
     <span class="rq-subtabs-label">Admission track</span>
     <?php foreach ($trackShort as $key => $label): ?>
         <a class="rq-subtab<?= $sub === $key ? ' active' : '' ?>" href="<?= htmlspecialchars(rqUrl('regular', $key)) ?>">
-            <?= $label ?> <span class="rq-subtab-count"><?= count($subLists[$key]) ?></span>
+            <?= $label ?> <span class="rq-subtab-count"><?= rqRequiredCount($subLists[$key]) ?></span>
         </a>
     <?php endforeach; ?>
 </div>
@@ -249,6 +267,7 @@ $formAction = htmlspecialchars(rqUrl($type, $sub));
 <table class="cm-table rq-table">
     <tr>
         <th>Document</th>
+        <th>Type</th>
         <th>Actions</th>
     </tr>
     <?php foreach ($shown as $row): ?>
@@ -257,6 +276,13 @@ $formAction = htmlspecialchars(rqUrl($type, $sub));
             <?= htmlspecialchars($row['label']) ?>
             <?php if ($row['custom']): ?>
                 <span class="rq-badge">Added</span>
+            <?php endif; ?>
+        </td>
+        <td>
+            <?php if ($row['optional']): ?>
+                <span class="rq-type rq-type-optional">Optional</span>
+            <?php else: ?>
+                <span class="rq-type rq-type-required">Required</span>
             <?php endif; ?>
         </td>
         <td>
@@ -271,10 +297,10 @@ $formAction = htmlspecialchars(rqUrl($type, $sub));
     </tr>
     <?php endforeach; ?>
     <?php if (!$shown): ?>
-    <tr><td colspan="2" class="cm-empty">No requirements yet for <?= htmlspecialchars($studentsName) ?>.</td></tr>
+    <tr><td colspan="3" class="cm-empty">No requirements yet for <?= htmlspecialchars($studentsName) ?>.</td></tr>
     <?php endif; ?>
 </table>
-<div class="cm-table-footer">Showing <?= count($shown) ?> requirement<?= count($shown) === 1 ? '' : 's' ?></div>
+<div class="cm-table-footer">Showing <?= $requiredShown ?> required<?= $optionalShown ? ' and ' . $optionalShown . ' optional' : '' ?> document<?= count($shown) === 1 ? '' : 's' ?></div>
 </div>
 
 </div>
@@ -291,7 +317,7 @@ $formAction = htmlspecialchars(rqUrl($type, $sub));
           <span class="cm-modal-icon"><i class="bi bi-file-earmark-plus"></i></span>
           <div>
             <h5 class="modal-title" id="requirementFormTitle">Add new requirement</h5>
-            <p class="cm-modal-subtitle">Required for <?= htmlspecialchars($studentsName) ?></p>
+            <p class="cm-modal-subtitle">For <?= htmlspecialchars($studentsName) ?></p>
           </div>
         </div>
         <div class="modal-body">
@@ -300,6 +326,13 @@ $formAction = htmlspecialchars(rqUrl($type, $sub));
             <input type="text" class="form-control<?= isset($formErrors['label']) ? ' is-invalid' : '' ?>" id="requirementLabel" name="label" maxlength="120" autocomplete="off"
                    placeholder="e.g. Certificate of Enrollment" value="<?= htmlspecialchars($formOld['label']) ?>">
             <div class="invalid-feedback" id="requirementLabelFeedback"><?= htmlspecialchars($formErrors['label'] ?? '') ?></div>
+          </div>
+          <div class="form-check rq-check mt-3">
+            <input class="form-check-input" type="checkbox" name="mode" value="optional" id="requirementOptional"<?= $formOld['mode'] === 'optional' ? ' checked' : '' ?>>
+            <label class="form-check-label" for="requirementOptional">
+              <span class="rq-check-title">Optional</span>
+              <small>Leave unchecked if this document is required to complete the student's requirements.</small>
+            </label>
           </div>
         </div>
         <div class="modal-footer cm-modal-footer">
@@ -317,7 +350,7 @@ $formAction = htmlspecialchars(rqUrl($type, $sub));
       <div class="modal-body mb-3">
         <span class="cm-confirm-icon"><i class="bi bi-file-earmark-x"></i></span>
         <div class="cm-confirm-title" id="removeTitle"></div>
-        <p class="cm-confirm-text">It will no longer be required for <?= htmlspecialchars($studentsName) ?>. Documents already uploaded are kept.</p>
+        <p class="cm-confirm-text">It will be removed from the list for <?= htmlspecialchars($studentsName) ?>. Documents already uploaded are kept.</p>
       </div>
       <form method="POST" action="<?= $formAction ?>">
         <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
@@ -335,6 +368,6 @@ $formAction = htmlspecialchars(rqUrl($type, $sub));
 </div>
 
 <div id="rqFlags" data-open-form="<?= $openForm && $formErrors ? 'true' : 'false' ?>"></div>
-<script src="../js/requirements.js?v=5"></script>
+<script src="../js/requirements.js?v=8"></script>
 </body>
 </html>

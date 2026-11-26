@@ -122,7 +122,9 @@ function dashboardStats($conn)
 
 if ($isStatsRequest) {
     header('Content-Type: application/json');
-    header('Cache-Control: no-store');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    header('Expires: Sat, 01 Jan 2000 00:00:00 GMT');
     ini_set('display_errors', '0');
     echo json_encode(['success' => true] + dashboardStats($conn));
     exit();
@@ -211,7 +213,7 @@ include 'navbar.php';
     <link href="../css/bootstrap.min.css" rel="stylesheet">
     <link href="../css/bootstrap-icons.css" rel="stylesheet">
     <link href="../css/font.css" rel="stylesheet">
-    <link href="../css/dashboard-superadmin.css?v=<?= @filemtime(__DIR__ . '/../css/dashboard-superadmin.css') ?>" rel="stylesheet">
+    <link href="../css/dashboard-superadmin.css?v=<?= @hash_file('sha256', __DIR__ . '/../css/dashboard-superadmin.css') ?>" rel="stylesheet">
 </head>
 <body>
 <div class="dash-container">
@@ -398,6 +400,6 @@ include 'navbar.php';
     </div>
 
 </div>
-<script src="../js/dashboard-superadmin.js?v=<?= @filemtime(__DIR__ . '/../js/dashboard-superadmin.js') ?>"></script>
+<script src="../js/dashboard-superadmin.js?v=<?= @hash_file('sha256', __DIR__ . '/../js/dashboard-superadmin.js') ?>"></script>
 </body>
 </html>
